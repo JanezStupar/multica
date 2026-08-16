@@ -144,12 +144,13 @@ describe("agent draft execution overrides", () => {
     const request = buildCreateAgentRequest({
       draft: { ...draft(), thinkingLevel: "high", serviceTier: "priority" },
       runtimeId: "runtime-1",
-      duplicateSource: sourceAgent(),
+      duplicateSource: sourceAgent({ enabled_builtin_skill_ids: [] }),
     });
 
     expect(request.custom_args).toEqual(["--verbose"]);
     expect(request.max_concurrent_tasks).toBe(9);
     expect(request.thinking_level).toBe("high");
+    expect(request.enabled_builtin_skill_ids).toEqual([]);
   });
 
   it.each([0, -1, 51])(

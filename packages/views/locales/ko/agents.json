@@ -517,8 +517,16 @@
       "save_failed_toast": "라우팅 설정 저장 실패"
     },
     "skills": {
+      "intro": "이 에이전트의 유효한 스킬 집합입니다. 워크스페이스 스킬, Multica 기본 제공 스킬, Codex 또는 Claude Code에서 상속된 스킬을 관리할 수 있습니다.",
       "assigned_title": "에이전트에 할당됨",
       "assigned_hint": "워크스페이스 스킬은 에이전트와 함께 이동합니다. 제거하지 않고 일시적으로 끌 수 있습니다.",
+      "builtin_title": "Multica 기본 제공",
+      "builtin_hint": "플랫폼 워크플로는 기본으로 활성화됩니다. 변경 후에는 업그레이드 이후에도 이 목록이 에이전트에 제공되는 정확한 집합이 됩니다.",
+      "builtin_unavailable": "이 서버에서는 기본 제공 스킬 제어를 사용할 수 없습니다.",
+      "builtin_toggle_aria": "기본 제공 {{name}} 전환",
+      "builtin_toggle_failed_toast": "기본 제공 스킬 상태를 변경하지 못했습니다",
+      "builtin_reset_action": "기본값 사용",
+      "builtin_reset_failed_toast": "기본 제공 스킬 기본값을 복원하지 못했습니다",
       "runtime_title": "런타임에서 상속",
       "runtime_hint": "{{runtime}}에서 자동으로 탐색되며 이 에이전트가 해당 런타임에서 실행될 때 사용할 수 있습니다.",
       "workspace_badge": "워크스페이스",

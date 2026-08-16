@@ -2026,16 +2026,25 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.Agent.Instructions = service.ComposeMikaInstructions(agent.Name, agent.Instructions)
 		}
 		if useSkillRefs {
-			_, skillRefs := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID)
+			_, skillRefs := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.EnabledBuiltinSkillIds)
 			skillRefs = append(skillRefs, pluginSkillRefs...)
-			agentSkillCount = len(skillRefs)
+			for _, skill := range skillRefs {
+				if skill.Source == skillbundle.SourceBuiltin {
+					builtinSkillCount++
+				} else {
+					agentSkillCount++
+				}
+			}
 			resp.Agent.SkillRefs = skillRefs
 		} else {
-			skills := h.TaskService.LoadAgentSkills(r.Context(), task.AgentID)
-			agentSkillCount = len(skills)
-			builtinSkills := h.TaskService.BuiltinSkills()
-			builtinSkillCount = len(builtinSkills)
-			skills = append(skills, builtinSkills...)
+			skills, _ := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.EnabledBuiltinSkillIds)
+			for _, skill := range skills {
+				if skill.Source == skillbundle.SourceBuiltin {
+					builtinSkillCount++
+				} else {
+					agentSkillCount++
+				}
+			}
 			resp.Agent.Skills = skills
 		}
 	}
@@ -3257,7 +3266,12 @@ func (h *Handler) ResolveTaskSkillBundles(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	bundles, _ := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID)
+	agent, err := h.Queries.GetAgent(r.Context(), task.AgentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load task agent")
+		return
+	}
+	bundles, _ := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.EnabledBuiltinSkillIds)
 	pluginBundles, _, _, err := h.TaskService.LoadTaskPluginSkillBundles(r.Context(), task.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "pinned plugin contributions are unavailable")

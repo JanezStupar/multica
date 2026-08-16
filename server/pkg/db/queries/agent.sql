@@ -28,8 +28,8 @@ SELECT * FROM agent
 WHERE id = $1;
 
 -- name: GetAgentForUpdate :one
--- Serializes read-modify-write updates to disabled_runtime_skills so two
--- concurrent per-skill toggles cannot overwrite each other.
+-- Serializes read-modify-write updates to per-agent skill controls so two
+-- concurrent toggles cannot overwrite each other.
 SELECT * FROM agent
 WHERE id = $1
 FOR UPDATE;
@@ -58,14 +58,15 @@ INSERT INTO agent (
     runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id,
     instructions, custom_env, custom_args, mcp_config, model, thinking_level,
     service_tier,
-    composio_toolkit_allowlist, permission_mode
+    composio_toolkit_allowlist, permission_mode, enabled_builtin_skill_ids
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
     $11, $12, $13, $14, $15, $16,
     $17,
     sqlc.narg('composio_toolkit_allowlist')::text[],
-    COALESCE(sqlc.narg('permission_mode'), 'private')
+    COALESCE(sqlc.narg('permission_mode'), 'private'),
+    sqlc.narg('enabled_builtin_skill_ids')::text[]
 )
 RETURNING *;
 
@@ -192,6 +193,12 @@ RETURNING *;
 -- name: UpdateAgentDisabledRuntimeSkills :one
 UPDATE agent
 SET disabled_runtime_skills = $2, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: UpdateAgentEnabledBuiltinSkillIDs :one
+UPDATE agent
+SET enabled_builtin_skill_ids = $2, updated_at = now()
 WHERE id = $1
 RETURNING *;
 

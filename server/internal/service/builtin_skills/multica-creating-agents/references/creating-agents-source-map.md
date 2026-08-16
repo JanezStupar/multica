@@ -31,6 +31,7 @@ go test ./internal/service -run TestBuiltinSkillsConformToTemplate
 | `agent skills set` = replace-all | 922 | `PUT /api/agents/{id}/skills` (940); `--skill-ids ''` clears all (928–931) | `multica agent skills set --help` |
 | `agent skills add` = additive | 947 | `POST /api/agents/{id}/skills/add` (968); requires ≥1 id (953–958) | `multica agent skills add --help` |
 | `agent skills list` | 890 | reads bindings, no side effect | `multica agent skills list --help` |
+| Per-agent built-in controls | `agent_builtin_skills.go` | `PUT /api/agents/{id}/builtin-skills/enabled` creates/updates the exact allow-list; `DELETE /api/agents/{id}/builtin-skills` restores inherit-all |
 | `agent env get` | 1024 | `GET /api/agents/{id}/env` (1034) | `multica agent env get --help` |
 | `agent env set` | 1059 | `PUT /api/agents/{id}/env` with full `custom_env` map (1079) | `multica agent env set --help` |
 
@@ -117,8 +118,7 @@ go test ./internal/service -run TestBuiltinSkillsConformToTemplate
 | Contract | Line | Behavior |
 |---|---|---|
 | Fresh agent re-read on claim | 1109–1111 | `GetAgent(task.AgentID)` — claim uses persisted fields, not create output |
-| Workspace skills FIRST | 1115 | `skills := h.TaskService.LoadAgentSkills(...)` |
-| Built-ins appended | 1116 | `skills = append(skills, h.TaskService.BuiltinSkills()...)` |
+| Effective skill set | `buildClaimedTaskResponse` | `LoadAgentSkillBundles` resolves enabled workspace skills plus the agent's exact built-in allow-list for both slim-ref and full-bundle daemon payloads |
 | Runtime payload | `daemon.go` `TaskAgentData` | Carries `Instructions`, `Skills`, `CustomEnv`, `CustomArgs`, `Model`, `ThinkingLevel`, `ServiceTier`, and `McpConfig`; metadata-only fields remain absent |
 
 ## Skill loading — `server/internal/service/task.go`
@@ -126,19 +126,21 @@ go test ./internal/service -run TestBuiltinSkillsConformToTemplate
 | Contract | Line | Behavior |
 |---|---|---|
 | `LoadAgentSkills` | 1685 | `ListAgentSkills` + per-skill `ListSkillFiles` → content + supporting files for execution |
+| `LoadAgentSkillBundles` | function body | Appends only `EnabledBuiltinSkills(enabled_builtin_skill_ids)`; nil means inherit-all and a non-nil list is exact |
 
 ## Built-in skills — `server/internal/service/builtin_skills.go`
 
 | Contract | Line | Behavior |
 |---|---|---|
-| `go:embed builtin_skills` | 10–11 | skills embedded at compile time |
-| `loadBuiltinSkill` | 45 | reads `<name>/SKILL.md` (47) + walks sibling files into `Files` (56–68) |
+| `go:embed builtin_skills` | 12–13 | skills embedded at compile time |
+| `loadBuiltinSkill` | 77 | reads `<name>/SKILL.md` (79) + walks sibling files into `Files` (89–103) |
+| Stable identity and policy | `BuiltinSkillID`, `EnabledBuiltinSkills` | IDs use `builtin:<directory-name>`; unknown IDs are harmless and an explicit empty list disables all built-ins |
 
 ## Persisted columns — `server/pkg/db/generated/agent.sql.go`
 
 | Contract | Line | Behavior |
 |---|---|---|
-| `CreateAgent` INSERT | generated from `queries/agent.sql` | columns include `runtime_config, runtime_id, instructions, custom_env, custom_args, mcp_config, model, thinking_level, service_tier` |
-| `CreateAgentParams` | generated from `queries/agent.sql` | typed params include nullable `Model`, `ThinkingLevel`, and `ServiceTier` |
+| `CreateAgent` INSERT | generated from `queries/agent.sql` | columns include `runtime_config, runtime_id, instructions, custom_env, custom_args, mcp_config, model, thinking_level, service_tier, enabled_builtin_skill_ids` |
+| `CreateAgentParams` | generated from `queries/agent.sql` | typed params include nullable `Model`, `ThinkingLevel`, `ServiceTier`, and exact `EnabledBuiltinSkillIds` |
 | `UpdateAgent` SET | generated from `queries/agent.sql` | COALESCE updates include model/thinking/service tier; dedicated clear queries restore each nullable override |
 | `UpdateAgentCustomEnv` (called by the `UpdateAgentEnv` handler) | 2652 | `SET custom_env = $2` — the only write path for env values |

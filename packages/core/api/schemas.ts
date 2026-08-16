@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type {
+  Agent,
   AgentBuilderRuntimeSwitch,
   AgentBuilderSession,
   AgentBuilderSessionSummary,
@@ -1383,6 +1384,113 @@ const RuntimeUsageByHourSchema = z.object({
 }).loose();
 
 export const RuntimeUsageByHourListSchema = z.array(RuntimeUsageByHourSchema);
+
+const AgentInvocationTargetSchema = z
+  .object({
+    target_type: z.enum(["workspace", "member", "team"]).catch("team"),
+    target_id: z.string().nullable().default(null),
+  })
+  .loose();
+
+const AgentSkillSummarySchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    description: z.string().default(""),
+    enabled: z.boolean().optional(),
+  })
+  .loose();
+
+const DisabledRuntimeSkillSchema = z
+  .object({
+    runtime_id: z.string(),
+    provider: z.string(),
+    root: z.string() as unknown as z.ZodType<
+      NonNullable<Agent["disabled_runtime_skills"]>[number]["root"]
+    >,
+    key: z.string(),
+    name: z.string().optional(),
+    plugin: z.string().optional(),
+  })
+  .loose();
+
+// Agent responses are consumed by installed desktop builds and must degrade
+// safely when a newer or malformed backend drifts. Keep enums open via plain
+// strings, default additive legacy omissions, but validate nested collections
+// before UI code iterates them.
+export const AgentSchema: z.ZodType<Agent> = z
+  .object({
+    id: z.string(),
+    workspace_id: z.string().default(""),
+    runtime_id: z.string().default(""),
+    runtime_bound: z.boolean().optional(),
+    name: z.string().default(""),
+    description: z.string().default(""),
+    instructions: z.string().default(""),
+    system_key: z.string().optional(),
+    system_instructions: z.string().optional(),
+    avatar_url: z.string().nullable().default(null),
+    runtime_mode: z.string().default("local") as unknown as z.ZodType<
+      Agent["runtime_mode"]
+    >,
+    runtime_config: z.record(z.string(), z.unknown()).default({}),
+    custom_args: z.array(z.string()).default([]),
+    has_custom_env: z.boolean().optional(),
+    custom_env_key_count: z.number().optional(),
+    mcp_config: z.unknown().optional(),
+    mcp_config_redacted: z.boolean().optional(),
+    composio_toolkit_allowlist: z.array(z.string()).optional(),
+    composio_toolkit_allowlist_redacted: z.boolean().optional(),
+    visibility: z.string().default("private") as unknown as z.ZodType<
+      Agent["visibility"]
+    >,
+    permission_mode: z.enum(["private", "public_to"]).catch("private"),
+    invocation_targets: z.array(AgentInvocationTargetSchema).default([]),
+    status: z.string().default("idle") as unknown as z.ZodType<Agent["status"]>,
+    max_concurrent_tasks: z.number().default(1),
+    model: z.string().default(""),
+    thinking_level: z.string().optional(),
+    service_tier: z.string().optional(),
+    owner_id: z.string().nullable().default(null),
+    skills: z.array(AgentSkillSummarySchema).default([]),
+    builtin_skills: z.array(AgentSkillSummarySchema).optional(),
+    enabled_builtin_skill_ids: z.array(z.string()).nullable().optional(),
+    disabled_runtime_skills: z.array(DisabledRuntimeSkillSchema).optional(),
+    created_at: z.string().default(""),
+    updated_at: z.string().default(""),
+    archived_at: z.string().nullable().default(null),
+    archived_by: z.string().nullable().default(null),
+  })
+  .loose();
+
+export const AgentListSchema = z.array(AgentSchema);
+
+export const EMPTY_AGENT: Agent = {
+  id: "",
+  workspace_id: "",
+  runtime_id: "",
+  name: "",
+  description: "",
+  instructions: "",
+  avatar_url: null,
+  runtime_mode: "local",
+  runtime_config: {},
+  custom_args: [],
+  visibility: "private",
+  permission_mode: "private",
+  invocation_targets: [],
+  status: "idle",
+  max_concurrent_tasks: 1,
+  model: "",
+  owner_id: null,
+  skills: [],
+  created_at: "",
+  updated_at: "",
+  archived_at: null,
+  archived_by: null,
+};
+
+export const EMPTY_AGENT_LIST: Agent[] = [];
 
 // ---------------------------------------------------------------------------
 // Agent task responses. The base object stays loose so daemon/runtime fields

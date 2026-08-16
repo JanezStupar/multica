@@ -627,9 +627,16 @@
       "save_failed_toast": "Failed to save routing config"
     },
     "skills": {
-      "intro": "This is the agent's effective skill set. Workspace skills are managed here; inherited Codex and Claude Code skills can also be turned off per agent.",
+      "intro": "This is the agent's effective skill set. Manage workspace skills, Multica built-ins, and inherited Codex or Claude Code skills here.",
       "assigned_title": "Assigned to agent",
       "assigned_hint": "Workspace skills travel with the agent. Turn one off temporarily without removing it.",
+      "builtin_title": "Built into Multica",
+      "builtin_hint": "Platform workflows are enabled by default. Once changed, this becomes the exact set this agent receives, including after upgrades.",
+      "builtin_unavailable": "Built-in skill controls aren't available from this server.",
+      "builtin_toggle_aria": "Toggle built-in {{name}}",
+      "builtin_toggle_failed_toast": "Failed to change built-in skill status",
+      "builtin_reset_action": "Use defaults",
+      "builtin_reset_failed_toast": "Failed to restore default built-ins",
       "runtime_title": "Inherited from runtime",
       "runtime_hint": "Discovered automatically from {{runtime}} and available whenever this agent runs there.",
       "workspace_badge": "Workspace",

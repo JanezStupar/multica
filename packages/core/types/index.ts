@@ -38,6 +38,7 @@ export type {
   SkillSummary,
   AgentSkillSummary,
   DisabledRuntimeSkill,
+  SetAgentBuiltinSkillEnabledRequest,
   SetAgentRuntimeSkillEnabledRequest,
   SkillFile,
   CreateSkillRequest,

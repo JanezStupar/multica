@@ -509,8 +509,16 @@
       "save_failed_toast": "ルーティング設定の保存に失敗しました"
     },
     "skills": {
+      "intro": "このエージェントの有効なスキルセットです。ワークスペースのスキル、Multica 組み込みスキル、Codex または Claude Code から継承したスキルを管理できます。",
       "assigned_title": "エージェントに割り当て済み",
       "assigned_hint": "ワークスペースのスキルはエージェントと一緒に移動します。削除せず一時的に無効化できます。",
+      "builtin_title": "Multica 組み込み",
+      "builtin_hint": "プラットフォームのワークフローは既定で有効です。変更後は、アップグレード後もこの一覧がエージェントに渡される正確なセットになります。",
+      "builtin_unavailable": "このサーバーでは組み込みスキルの制御を利用できません。",
+      "builtin_toggle_aria": "組み込み {{name}} を切り替え",
+      "builtin_toggle_failed_toast": "組み込みスキルの状態を変更できませんでした",
+      "builtin_reset_action": "既定値を使用",
+      "builtin_reset_failed_toast": "組み込みスキルの既定値を復元できませんでした",
       "runtime_title": "ランタイムから継承",
       "runtime_hint": "{{runtime}} から自動検出され、このエージェントがそこで実行されるときに利用できます。",
       "workspace_badge": "ワークスペース",

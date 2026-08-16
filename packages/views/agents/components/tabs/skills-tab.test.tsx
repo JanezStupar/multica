@@ -13,7 +13,10 @@ const TEST_RESOURCES = { en: { common: enCommon, agents: enAgents } };
 
 const mockListSkills = vi.hoisted(() => vi.fn());
 const mockGetSkill = vi.hoisted(() => vi.fn());
+const mockGetAgent = vi.hoisted(() => vi.fn());
 const mockSetAgentSkillEnabled = vi.hoisted(() => vi.fn());
+const mockSetAgentBuiltinSkillEnabled = vi.hoisted(() => vi.fn());
+const mockResetAgentBuiltinSkills = vi.hoisted(() => vi.fn());
 const mockSetAgentRuntimeSkillEnabled = vi.hoisted(() => vi.fn());
 const mockRemoveAgentSkill = vi.hoisted(() => vi.fn());
 const mockRuntimeCapabilities = vi.hoisted(() => vi.fn());
@@ -42,8 +45,13 @@ vi.mock("@multica/core/api", () => ({
   api: {
     listSkills: (...args: unknown[]) => mockListSkills(...args),
     getSkill: (...args: unknown[]) => mockGetSkill(...args),
+    getAgent: (...args: unknown[]) => mockGetAgent(...args),
     setAgentSkills: vi.fn(),
     setAgentSkillEnabled: (...args: unknown[]) => mockSetAgentSkillEnabled(...args),
+    setAgentBuiltinSkillEnabled: (...args: unknown[]) =>
+      mockSetAgentBuiltinSkillEnabled(...args),
+    resetAgentBuiltinSkills: (...args: unknown[]) =>
+      mockResetAgentBuiltinSkills(...args),
     setAgentRuntimeSkillEnabled: (...args: unknown[]) =>
       mockSetAgentRuntimeSkillEnabled(...args),
     removeAgentSkill: (...args: unknown[]) => mockRemoveAgentSkill(...args),
@@ -144,7 +152,10 @@ describe("SkillsTab", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockListSkills.mockResolvedValue([]);
+    mockGetAgent.mockResolvedValue(agent);
     mockSetAgentSkillEnabled.mockResolvedValue(undefined);
+    mockSetAgentBuiltinSkillEnabled.mockResolvedValue(undefined);
+    mockResetAgentBuiltinSkills.mockResolvedValue(undefined);
     mockSetAgentRuntimeSkillEnabled.mockResolvedValue(undefined);
     mockRemoveAgentSkill.mockResolvedValue(undefined);
     mockRuntimeCapabilities.mockResolvedValue({
@@ -186,6 +197,92 @@ describe("SkillsTab", () => {
       false,
     );
     expect(mockRemoveAgentSkill).not.toHaveBeenCalled();
+  });
+
+  it("turns off a Multica built-in for this agent", async () => {
+    const user = userEvent.setup();
+    renderSkillsTab({
+      builtin_skills: [
+        {
+          id: "builtin:multica-working-on-issues",
+          name: "multica-working-on-issues",
+          description: "Work on Multica issues",
+          enabled: true,
+        },
+      ],
+    });
+
+    await user.click(
+      screen.getByRole("switch", {
+        name: /Toggle built-in multica-working-on-issues/i,
+      }),
+    );
+
+    expect(mockSetAgentBuiltinSkillEnabled).toHaveBeenCalledWith("agent-1", {
+      skill_id: "builtin:multica-working-on-issues",
+      enabled: false,
+    });
+  });
+
+  it("loads built-in controls from agent detail when the list shape omits them", async () => {
+    mockGetAgent.mockResolvedValue({
+      ...agent,
+      builtin_skills: [
+        {
+          id: "builtin:multica-mentioning",
+          name: "multica-mentioning",
+          description: "Mention collaborators",
+          enabled: true,
+        },
+      ],
+    });
+
+    renderSkillsTab();
+
+    expect(
+      await screen.findByRole("switch", {
+        name: /Toggle built-in multica-mentioning/i,
+      }),
+    ).toBeChecked();
+    expect(mockGetAgent).toHaveBeenCalledWith("agent-1");
+  });
+
+  it("renders an excluded Multica built-in as off", () => {
+    renderSkillsTab({
+      builtin_skills: [
+        {
+          id: "builtin:multica-mentioning",
+          name: "multica-mentioning",
+          description: "Mention collaborators",
+          enabled: false,
+        },
+      ],
+    });
+
+    expect(
+      screen.getByRole("switch", {
+        name: /Toggle built-in multica-mentioning/i,
+      }),
+    ).not.toBeChecked();
+  });
+
+  it("restores inherit-all defaults after the built-in set was customized", async () => {
+    const user = userEvent.setup();
+    renderSkillsTab({
+      enabled_builtin_skill_ids: [],
+      builtin_skills: [
+        {
+          id: "builtin:multica-mentioning",
+          name: "multica-mentioning",
+          description: "Mention collaborators",
+          enabled: false,
+        },
+      ],
+    });
+
+    await user.click(screen.getByRole("button", { name: "Use defaults" }));
+
+    expect(mockResetAgentBuiltinSkills).toHaveBeenCalledWith("agent-1");
   });
 
   it("shows inherited skills discovered from the assigned runtime", async () => {

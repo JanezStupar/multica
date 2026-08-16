@@ -761,6 +761,90 @@ func TestClaimTaskByRuntime_SkillBundleRefsAndResolve(t *testing.T) {
 	}
 }
 
+func TestClaimTaskByRuntime_EmptyBuiltinPolicyReachesFullSlimAndResolve(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+	builtins := testHandler.TaskService.BuiltinSkills()
+	if len(builtins) == 0 {
+		t.Fatal("no built-in skills available")
+	}
+	_, builtinRefs := service.BuildAgentSkillBundles([]service.AgentSkillData{builtins[0]})
+	disabledRef := builtinRefs[0]
+
+	claim := func(label, capability string) (string, string, *AgentTaskResponse) {
+		t.Helper()
+		runtimeID := createClaimReclaimRuntime(t, ctx, label+" runtime")
+		agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, label+" agent")
+		if _, err := testPool.Exec(ctx, `
+			UPDATE agent SET enabled_builtin_skill_ids = '{}'::text[] WHERE id = $1
+		`, agentID); err != nil {
+			t.Fatalf("setup: disable all built-ins: %v", err)
+		}
+
+		var taskID string
+		if err := testPool.QueryRow(ctx, `
+			INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority)
+			VALUES ($1, $2, $3, 'queued', 0)
+			RETURNING id
+		`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
+			t.Fatalf("setup: create task: %v", err)
+		}
+		t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+
+		w := httptest.NewRecorder()
+		req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil, testWorkspaceID, label+"-daemon")
+		if capability != "" {
+			req.Header.Set("X-Client-Capabilities", capability)
+		}
+		req = withURLParam(req, "runtimeId", runtimeID)
+		testHandler.ClaimTaskByRuntime(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("ClaimTaskByRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var response struct {
+			Task *AgentTaskResponse `json:"task"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode claim: %v", err)
+		}
+		if response.Task == nil || response.Task.Agent == nil {
+			t.Fatalf("missing task agent in response: %s", w.Body.String())
+		}
+		return runtimeID, taskID, response.Task
+	}
+
+	_, _, full := claim("empty-builtins-full", "")
+	for _, skill := range full.Agent.Skills {
+		if skill.Source == disabledRef.Source {
+			t.Fatalf("disabled built-in leaked into full claim: %+v", skill)
+		}
+	}
+
+	runtimeID, taskID, slim := claim(
+		"empty-builtins-slim",
+		protocol.DaemonCapabilitySkillBundlesV1,
+	)
+	for _, ref := range slim.Agent.SkillRefs {
+		if ref.Source == disabledRef.Source {
+			t.Fatalf("disabled built-in leaked into slim claim: %+v", ref)
+		}
+	}
+
+	resolveBody := resolveSkillBundlesRequest{Skills: []resolveSkillBundleRef{{
+		ID: disabledRef.ID, Source: disabledRef.Source, Hash: disabledRef.Hash,
+	}}}
+	w := httptest.NewRecorder()
+	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/"+taskID+"/skill-bundles/resolve", resolveBody, testWorkspaceID, "empty-builtins-slim-daemon")
+	req = withURLParams(req, "runtimeId", runtimeID, "taskId", taskID)
+	testHandler.ResolveTaskSkillBundles(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("disabled built-in resolve: expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestClaimTaskByRuntime_PopulatesWorkspaceContext verifies the claim
 // response carries workspace.context so the daemon can inject the
 // workspace-level system prompt into every agent brief. Regression coverage

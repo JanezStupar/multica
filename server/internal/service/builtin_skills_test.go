@@ -80,6 +80,29 @@ func TestBuiltinSkillsConformToTemplate(t *testing.T) {
 	}
 }
 
+func TestEnabledBuiltinSkillsUsesNilAsInheritAndNonNilAsExactSet(t *testing.T) {
+	service := &TaskService{}
+	all := service.BuiltinSkills()
+	if len(all) < 2 {
+		t.Fatalf("need at least two built-in skills, got %d", len(all))
+	}
+	if got := service.EnabledBuiltinSkills(nil); len(got) != len(all) {
+		t.Fatalf("nil policy returned %d skills, want all %d", len(got), len(all))
+	}
+	if got := service.EnabledBuiltinSkills([]string{}); len(got) != 0 {
+		t.Fatalf("empty exact policy returned %d skills, want none", len(got))
+	}
+
+	wantID := BuiltinSkillID(all[1].Name)
+	got := service.EnabledBuiltinSkills([]string{wantID, "builtin:future-skill"})
+	if len(got) != 1 || BuiltinSkillID(got[0].Name) != wantID {
+		t.Fatalf("subset = %+v, want only %s", got, wantID)
+	}
+	if got[0].Description == "" {
+		t.Fatal("built-in summary must expose its frontmatter description")
+	}
+}
+
 // TestBuiltinSkillsFrontmatterIsStrictYAML is the regression guard for MUL-3100
 // / GitHub #3851: a built-in SKILL.md whose frontmatter is not valid YAML 1.2
 // (the canonical break is an unquoted `: ` inside the description) is silently

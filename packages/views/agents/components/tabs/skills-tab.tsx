@@ -6,6 +6,7 @@ import {
   Plus,
   RefreshCw,
   Server,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 import { SkillIcon } from "../../../skills/lib/skill-icon";
@@ -24,6 +25,7 @@ import {
   runtimeDisplayLabel,
 } from "@multica/core/runtimes";
 import {
+  agentDetailOptions,
   skillDetailOptions,
   skillListOptions,
   workspaceKeys,
@@ -60,6 +62,15 @@ export function SkillsTab({
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
   const { data: workspaceSkills = [] } = useQuery(skillListOptions(wsId));
+  // The workspace agent list deliberately omits the built-in inventory to
+  // avoid multiplying every built-in description by every agent. Fetch the
+  // detail shape only while this tab is mounted and the caller supplied the
+  // lean list shape.
+  const builtinDetailQuery = useQuery({
+    ...agentDetailOptions(wsId, agent.id),
+    enabled: !!wsId && !!agent.id && agent.builtin_skills == null,
+  });
+  const effectiveAgent = builtinDetailQuery.data ?? agent;
   const runtimeId =
     runtime?.runtime_mode === "local" && runtime.status === "online"
       ? runtime.id
@@ -135,7 +146,43 @@ export function SkillsTab({
     }
   };
 
+  const handleBuiltinToggle = async (skillId: string, enabled: boolean) => {
+    setBusyId(skillId);
+    try {
+      await api.setAgentBuiltinSkillEnabled(agent.id, {
+        skill_id: skillId,
+        enabled,
+      });
+      await refreshAgent();
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t(($) => $.tab_body.skills.builtin_toggle_failed_toast),
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleBuiltinReset = async () => {
+    setBusyId("builtin:reset");
+    try {
+      await api.resetAgentBuiltinSkills(agent.id);
+      await refreshAgent();
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t(($) => $.tab_body.skills.builtin_reset_failed_toast),
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const runtimeSkills = runtimeQuery.data?.skills ?? [];
+  const builtinSkills = effectiveAgent.builtin_skills ?? [];
 
   return (
     <div className="space-y-8">
@@ -222,6 +269,81 @@ export function SkillsTab({
                       </Button>
                     </>
                   )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </CapabilitySection>
+
+      <CapabilitySection
+        title={t(($) => $.tab_body.skills.builtin_title)}
+        description={t(($) => $.tab_body.skills.builtin_hint)}
+        action={
+          canEdit && effectiveAgent.enabled_builtin_skill_ids != null ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleBuiltinReset}
+              disabled={busyId !== null}
+            >
+              {busyId === "builtin:reset" && (
+                <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
+              )}
+              {t(($) => $.tab_body.skills.builtin_reset_action)}
+            </Button>
+          ) : null
+        }
+      >
+        {agent.builtin_skills == null && builtinDetailQuery.isPending ? (
+          <div className="flex justify-center py-6">
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground motion-reduce:animate-none" />
+          </div>
+        ) : builtinSkills.length === 0 ? (
+          <RuntimeNotice text={t(($) => $.tab_body.skills.builtin_unavailable)} />
+        ) : (
+          <ul className="divide-y rounded-lg border bg-surface-raised/40">
+            {builtinSkills.map((skill) => {
+              const enabled = skill.enabled !== false;
+              const busy = busyId === skill.id;
+              return (
+                <li key={skill.id} className="flex items-center gap-3 p-3">
+                  <span
+                    className={cn(
+                      "flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground",
+                      !enabled && "opacity-50",
+                    )}
+                  >
+                    <Sparkles className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span
+                      className={cn(
+                        "block text-body font-medium",
+                        !enabled && "text-muted-foreground",
+                      )}
+                    >
+                      {skill.name}
+                    </span>
+                    <span className="block truncate text-caption text-muted-foreground">
+                      {skill.description || t(($) => $.tab_body.skills.no_description)}
+                    </span>
+                  </span>
+                  {canEdit &&
+                    (busy ? (
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground motion-reduce:animate-none" />
+                    ) : (
+                      <Switch
+                        checked={enabled}
+                        onCheckedChange={(checked) =>
+                          handleBuiltinToggle(skill.id, checked)
+                        }
+                        aria-label={t(
+                          ($) => $.tab_body.skills.builtin_toggle_aria,
+                          { name: skill.name },
+                        )}
+                      />
+                    ))}
                 </li>
               );
             })}

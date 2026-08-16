@@ -616,9 +616,16 @@
       "save_failed_toast": "保存路由配置失败"
     },
     "skills": {
-      "intro": "这里展示该智能体实际拥有的全部 skill。工作区 skill 可在此管理；从 Codex 和 Claude Code 继承的 skill 也可以按智能体单独关闭。",
+      "intro": "这里展示该智能体实际拥有的全部 skill。你可以在此管理工作区 skill、Multica 内置 skill，以及从 Codex 或 Claude Code 继承的 skill。",
       "assigned_title": "分配给智能体",
       "assigned_hint": "工作区 skill 会跟随智能体。你可以临时关闭，而不必将其移除。",
+      "builtin_title": "Multica 内置",
+      "builtin_hint": "平台工作流默认启用。更改后，此列表将成为该智能体收到的准确集合，升级后也不会自动增加。",
+      "builtin_unavailable": "此服务器不支持内置 skill 控制。",
+      "builtin_toggle_aria": "切换内置 {{name}}",
+      "builtin_toggle_failed_toast": "无法更改内置 skill 状态",
+      "builtin_reset_action": "使用默认设置",
+      "builtin_reset_failed_toast": "无法恢复默认内置 skill",
       "runtime_title": "从运行时继承",
       "runtime_hint": "自动从 {{runtime}} 发现；只要该智能体在这个运行时执行，就可以直接使用。",
       "workspace_badge": "工作区",

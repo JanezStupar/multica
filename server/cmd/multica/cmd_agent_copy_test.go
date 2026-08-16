@@ -26,19 +26,20 @@ func newAgentCopyTestCmd() *cobra.Command {
 // portable field populated, so copy tests can assert the whole whitelist.
 func fullSourceAgent() map[string]any {
 	return map[string]any{
-		"id":                   "agent-src",
-		"name":                 "Src",
-		"runtime_id":           "runtime-1",
-		"description":          "a description",
-		"instructions":         "some instructions",
-		"avatar_url":           "https://img.example/a.png",
-		"custom_args":          []any{"--foo", "--bar"},
-		"max_concurrent_tasks": 9,
-		"model":                "claude-sonnet-4-6",
-		"thinking_level":       "high",
-		"service_tier":         "priority",
-		"permission_mode":      "public_to",
-		"invocation_targets":   []any{map[string]any{"target_type": "workspace"}},
+		"id":                        "agent-src",
+		"name":                      "Src",
+		"runtime_id":                "runtime-1",
+		"description":               "a description",
+		"instructions":              "some instructions",
+		"avatar_url":                "https://img.example/a.png",
+		"custom_args":               []any{"--foo", "--bar"},
+		"max_concurrent_tasks":      9,
+		"model":                     "claude-sonnet-4-6",
+		"thinking_level":            "high",
+		"service_tier":              "priority",
+		"enabled_builtin_skill_ids": []any{},
+		"permission_mode":           "public_to",
+		"invocation_targets":        []any{map[string]any{"target_type": "workspace"}},
 		"skills": []any{
 			map[string]any{"id": "skill-1", "name": "One"},
 			map[string]any{"id": "skill-2", "name": "Two"},
@@ -139,6 +140,9 @@ func TestAgentCopySameRuntimeCopiesPortableFields(t *testing.T) {
 	// Skills bind in the same create request.
 	if !reflect.DeepEqual(gotBody["skill_ids"], []any{"skill-1", "skill-2"}) {
 		t.Errorf("skill_ids = %v, want [skill-1 skill-2]", gotBody["skill_ids"])
+	}
+	if policy, ok := gotBody["enabled_builtin_skill_ids"].([]any); !ok || len(policy) != 0 {
+		t.Errorf("enabled_builtin_skill_ids = %v, want explicit empty list", gotBody["enabled_builtin_skill_ids"])
 	}
 	// Secrets / machine-local config must never be copied.
 	for _, k := range []string{"custom_env", "mcp_config", "runtime_config", "has_custom_env"} {

@@ -4901,11 +4901,12 @@ func (s *TaskService) LoadAgentSkills(ctx context.Context, agentID pgtype.UUID) 
 	return result
 }
 
-// LoadAgentSkillBundles returns every skill visible to an agent, including
-// built-ins, with stable bundle hashes and lightweight refs for slim claims.
-func (s *TaskService) LoadAgentSkillBundles(ctx context.Context, agentID pgtype.UUID) ([]AgentSkillData, []AgentSkillRefData) {
+// LoadAgentSkillBundles returns every skill visible to an agent, including its
+// exact enabled built-in set, with stable bundle hashes and lightweight refs
+// for slim claims. A nil built-in list preserves legacy inherit-all behavior.
+func (s *TaskService) LoadAgentSkillBundles(ctx context.Context, agentID pgtype.UUID, enabledBuiltinSkillIDs []string) ([]AgentSkillData, []AgentSkillRefData) {
 	skills := s.LoadAgentSkills(ctx, agentID)
-	skills = append(skills, s.BuiltinSkills()...)
+	skills = append(skills, s.EnabledBuiltinSkills(enabledBuiltinSkillIDs)...)
 	return BuildAgentSkillBundles(skills)
 }
 
@@ -5024,7 +5025,7 @@ func BuildAgentSkillBundles(skills []AgentSkillData) ([]AgentSkillData, []AgentS
 			}
 		}
 		if id == "" && source == skillbundle.SourceBuiltin {
-			id = "builtin:" + skill.Name
+			id = BuiltinSkillID(skill.Name)
 		}
 		skill.Source = source
 		skill.ID = id

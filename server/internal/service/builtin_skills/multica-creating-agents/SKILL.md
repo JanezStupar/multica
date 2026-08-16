@@ -74,6 +74,8 @@ The HTTP body (`CreateAgentRequest`) accepts: `name`, `description`,
 `instructions`, `avatar_url`, `runtime_id`, `runtime_config`, `custom_env`,
 `custom_args`, `model`, `thinking_level`, `service_tier`, `visibility`,
 `max_concurrent_tasks`, `mcp_config`, `skill_ids`.
+`enabled_builtin_skill_ids` is also accepted for copy/restore callers: `null`
+or omission inherits every built-in, while an array is the exact enabled set.
 
 ## Copying an agent
 
@@ -82,7 +84,8 @@ configuration into a brand-new agent, leaving the source untouched. It is the
 CLI/headless equivalent of the web "Duplicate" action. No dedicated server API
 is involved: `runAgentCopy` reads the source with `GET /api/agents/<id>`, then
 POSTs a `CreateAgentRequest` — passing the source's skill ids in `skill_ids` so
-the bindings attach in the SAME create transaction (unlike `agent create`, which
+the bindings attach in the SAME create transaction and preserving its exact
+built-in policy in `enabled_builtin_skill_ids` (unlike `agent create`, which
 binds nothing). The mutation is therefore a single atomic create.
 
 ```bash
@@ -93,7 +96,7 @@ multica agent copy <source-agent-id> --runtime-id <target> --model <model>  # cr
 - Copied by default, each overridable with the matching flag: `name` (suffixed
   `" (copy)"`), `description`, `instructions`, avatar, `custom_args`,
   `max_concurrent_tasks`, invocation permission (`permission_mode` +
-  allow-list), and assigned workspace skills.
+  allow-list), assigned workspace skills, and the exact built-in skill policy.
 - A copied `max_concurrent_tasks` is included only when the source value is
   within 1–50. Historical out-of-range values are omitted so the new agent
   receives the server default (`6`); an explicit out-of-range
@@ -288,12 +291,18 @@ multica agent skills add <agent-id> --skill-ids <skill-id> --output json
 multica agent skills list <agent-id> --output json
 ```
 
-At claim time the daemon assembles the agent's skills as workspace-bound skills
-FIRST, then appends the platform built-in skills. `LoadAgentSkills` loads each
-bound skill's content plus its supporting files; built-in skills are embedded
-at compile time and loaded from `SKILL.md` + sibling files. Both reach the
-provider as skill content — which is why capability belongs in a bound skill,
-not pasted into `instructions`.
+At claim time the daemon assembles the agent's enabled workspace-bound skills
+plus its enabled platform built-ins. Built-ins default to inherit-all. The first
+per-agent built-in toggle snapshots an exact allow-list, so a later Multica
+upgrade does not silently add new built-ins to that customized agent.
+`LoadAgentSkills` loads each bound skill's content plus its supporting files;
+built-ins are embedded at compile time and loaded from `SKILL.md` + sibling
+files. Both reach the provider as skill content — which is why capability
+belongs in a bound skill, not pasted into `instructions`.
+
+A workspace skill never overrides a built-in by matching its name or purpose.
+To replace a built-in, assign the workspace skill and turn the built-in off for
+that agent. If both stay enabled, both are available to the provider.
 
 ## Side effects needing approval
 

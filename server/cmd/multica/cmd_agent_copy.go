@@ -252,6 +252,12 @@ func runAgentCopy(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+	// Built-in policy is portable agent configuration, independent of runtime
+	// and distinct from workspace bindings. Preserve key presence so an exact
+	// empty set remains "all off" instead of becoming NULL/inherit-all.
+	if policy, ok := src["enabled_builtin_skill_ids"]; ok {
+		body["enabled_builtin_skill_ids"] = policy
+	}
 
 	// Secret / machine-local fields are never copied from the source (they are
 	// redacted or masked on GET). Set them only when supplied explicitly, via

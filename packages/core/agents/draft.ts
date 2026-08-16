@@ -202,7 +202,7 @@ export function buildDuplicateDraft(
  * Assembles the `POST /api/agents` body. Empty execution overrides are omitted
  * rather than sent as `""` so the runtime resolves its own default, and the
  * duplicate-only fields are the runtime-independent ones (`custom_args`,
- * concurrency) — mirroring `multica agent copy`.
+ * concurrency, built-in skill policy) — mirroring `multica agent copy`.
  */
 export function buildCreateAgentRequest(options: {
   draft: AgentDraft;
@@ -238,6 +238,10 @@ export function buildCreateAgentRequest(options: {
       sourceConcurrency <= AGENT_MAX_CONCURRENT_TASKS_MAX
     ) {
       request.max_concurrent_tasks = sourceConcurrency;
+    }
+    if (duplicateSource.enabled_builtin_skill_ids !== undefined) {
+      request.enabled_builtin_skill_ids =
+        duplicateSource.enabled_builtin_skill_ids;
     }
   }
   return request;
