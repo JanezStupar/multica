@@ -2165,15 +2165,24 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		resp.Agent.Instructions = service.ComposeMikaInstructions(agent.Name, agent.Instructions)
 	}
 	if useSkillRefs {
-		_, skillRefs := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID)
-		agentSkillCount = len(skillRefs)
+		_, skillRefs := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.EnabledBuiltinSkillIds)
+		for _, skill := range skillRefs {
+			if skill.Source == skillbundle.SourceBuiltin {
+				builtinSkillCount++
+			} else {
+				agentSkillCount++
+			}
+		}
 		resp.Agent.SkillRefs = skillRefs
 	} else {
-		skills := h.TaskService.LoadAgentSkills(r.Context(), task.AgentID)
-		agentSkillCount = len(skills)
-		builtinSkills := h.TaskService.BuiltinSkills()
-		builtinSkillCount = len(builtinSkills)
-		skills = append(skills, builtinSkills...)
+		skills, _ := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.EnabledBuiltinSkillIds)
+		for _, skill := range skills {
+			if skill.Source == skillbundle.SourceBuiltin {
+				builtinSkillCount++
+			} else {
+				agentSkillCount++
+			}
+		}
 		resp.Agent.Skills = skills
 	}
 	if !claimResponseAgentIdentityMatches(resp) {
@@ -3420,7 +3429,12 @@ func (h *Handler) ResolveTaskSkillBundles(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	bundles, _ := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID)
+	agent, err := h.Queries.GetAgent(r.Context(), task.AgentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load task agent")
+		return
+	}
+	bundles, _ := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.EnabledBuiltinSkillIds)
 	allowed := make(map[string]service.AgentSkillData, len(bundles))
 	for _, bundle := range bundles {
 		allowed[bundle.Source+"\x00"+bundle.ID] = bundle

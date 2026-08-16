@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/multica-ai/multica/server/internal/service"
 )
 
 // TestListSkills_OmitsContent guards the fix for GH multica-ai/multica#2174:
@@ -223,6 +224,145 @@ func TestSetAgentRuntimeSkillEnabledPersistsScopedOverride(t *testing.T) {
 	}
 	if disabled = decodeDisabledRuntimeSkills(row.DisabledRuntimeSkills); len(disabled) != 0 {
 		t.Fatalf("re-enabled skill still disabled: %+v", disabled)
+	}
+}
+
+func TestSetAgentBuiltinSkillEnabledCreatesExactAllowlist(t *testing.T) {
+	var agentID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO agent (
+			workspace_id, name, description, runtime_mode, runtime_config,
+			visibility, permission_mode, max_concurrent_tasks, owner_id
+		)
+		VALUES ($1, $2, '', 'local', '{}'::jsonb, 'private', 'private', 1, $3)
+		RETURNING id
+	`, testWorkspaceID, "Built-in Skill Toggle "+t.Name(), testUserID).Scan(&agentID); err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID)
+	})
+
+	builtins := testHandler.TaskService.BuiltinSkills()
+	if len(builtins) < 2 {
+		t.Fatalf("need at least two built-ins, got %d", len(builtins))
+	}
+	targetID := service.BuiltinSkillID(builtins[0].Name)
+	setEnabled := func(skillID string, enabled bool) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest("PUT", "/api/agents/"+agentID+"/builtin-skills/enabled", map[string]any{
+			"skill_id": skillID,
+			"enabled":  enabled,
+		})
+		req = withURLParam(req, "id", agentID)
+		testHandler.SetAgentBuiltinSkillEnabled(w, req)
+		return w
+	}
+
+	if w := setEnabled(targetID, false); w.Code != 204 {
+		t.Fatalf("disable built-in: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	row, err := testHandler.Queries.GetAgent(context.Background(), parseUUID(agentID))
+	if err != nil {
+		t.Fatalf("load agent: %v", err)
+	}
+	if row.EnabledBuiltinSkillIds == nil {
+		t.Fatal("first edit must replace inherit-all with an explicit allowlist")
+	}
+	if len(row.EnabledBuiltinSkillIds) != len(builtins)-1 {
+		t.Fatalf("enabled ids = %d, want %d", len(row.EnabledBuiltinSkillIds), len(builtins)-1)
+	}
+	for _, id := range row.EnabledBuiltinSkillIds {
+		if id == targetID {
+			t.Fatalf("disabled built-in %s remained enabled", targetID)
+		}
+	}
+	{
+		w := httptest.NewRecorder()
+		req := newRequest("GET", "/api/agents/"+agentID, nil)
+		req = withURLParam(req, "id", agentID)
+		testHandler.GetAgent(w, req)
+		if w.Code != 200 {
+			t.Fatalf("get customized agent: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var response AgentResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode customized agent: %v", err)
+		}
+		if response.EnabledBuiltinSkillIDs == nil || len(response.BuiltinSkills) != len(builtins) {
+			t.Fatalf("agent detail omitted built-in policy/inventory: %+v", response)
+		}
+		for _, summary := range response.BuiltinSkills {
+			if summary.ID == targetID && summary.Enabled {
+				t.Fatalf("agent detail rendered disabled built-in %s as enabled", targetID)
+			}
+		}
+	}
+	resolved, refs := testHandler.TaskService.LoadAgentSkillBundles(
+		context.Background(), parseUUID(agentID), row.EnabledBuiltinSkillIds,
+	)
+	if len(resolved) != len(builtins)-1 || len(refs) != len(builtins)-1 {
+		t.Fatalf("execution resolved %d bundles/%d refs, want %d", len(resolved), len(refs), len(builtins)-1)
+	}
+	for _, ref := range refs {
+		if ref.ID == targetID {
+			t.Fatalf("disabled built-in %s leaked into execution refs", targetID)
+		}
+	}
+
+	// Preserve an unknown ID written by a newer server during rolling deploys.
+	const futureID = "builtin:future-skill"
+	if _, err := testPool.Exec(context.Background(), `
+		UPDATE agent SET enabled_builtin_skill_ids = array_append(enabled_builtin_skill_ids, $2)
+		WHERE id = $1
+	`, agentID, futureID); err != nil {
+		t.Fatalf("seed future built-in id: %v", err)
+	}
+	if w := setEnabled(targetID, true); w.Code != 204 {
+		t.Fatalf("re-enable built-in: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	row, err = testHandler.Queries.GetAgent(context.Background(), parseUUID(agentID))
+	if err != nil {
+		t.Fatalf("reload agent: %v", err)
+	}
+	foundTarget, foundFuture := false, false
+	for _, id := range row.EnabledBuiltinSkillIds {
+		foundTarget = foundTarget || id == targetID
+		foundFuture = foundFuture || id == futureID
+	}
+	if !foundTarget || !foundFuture {
+		t.Fatalf("re-enabled/forward-compatible ids missing: %v", row.EnabledBuiltinSkillIds)
+	}
+
+	before := append([]string(nil), row.EnabledBuiltinSkillIds...)
+	if w := setEnabled("builtin:not-real", false); w.Code != 400 {
+		t.Fatalf("unknown built-in: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	row, err = testHandler.Queries.GetAgent(context.Background(), parseUUID(agentID))
+	if err != nil || strings.Join(row.EnabledBuiltinSkillIds, "\x00") != strings.Join(before, "\x00") {
+		t.Fatalf("unknown built-in changed policy: before=%v after=%v err=%v", before, row.EnabledBuiltinSkillIds, err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest("DELETE", "/api/agents/"+agentID+"/builtin-skills", nil)
+	req = withURLParam(req, "id", agentID)
+	testHandler.ResetAgentBuiltinSkills(w, req)
+	if w.Code != 204 {
+		t.Fatalf("reset built-ins: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	row, err = testHandler.Queries.GetAgent(context.Background(), parseUUID(agentID))
+	if err != nil {
+		t.Fatalf("reload reset agent: %v", err)
+	}
+	if row.EnabledBuiltinSkillIds != nil {
+		t.Fatalf("reset policy = %v, want nil inherit-all", row.EnabledBuiltinSkillIds)
+	}
+	resolved, refs = testHandler.TaskService.LoadAgentSkillBundles(
+		context.Background(), parseUUID(agentID), row.EnabledBuiltinSkillIds,
+	)
+	if len(resolved) != len(builtins) || len(refs) != len(builtins) {
+		t.Fatalf("reset execution resolved %d bundles/%d refs, want all %d", len(resolved), len(refs), len(builtins))
 	}
 }
 
