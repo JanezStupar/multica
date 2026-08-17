@@ -127,7 +127,13 @@ multica skill list
 multica skill get <skill-id>
 multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
+multica agent builtins list <agent-id>
+multica agent builtins disable <agent-id> builtin:multica-working-on-issues
 ```
+
+Built-ins inherit the platform defaults until the first disable. Use
+`multica agent builtins reset <agent-id>` to inherit every current and future
+built-in again.
 
 When an import hits a skill with the same name, the default is to stop without modifying existing content. Pick by intent:
 
@@ -263,6 +269,7 @@ The tables below cover every current top-level command, grouped the way the CLI 
 | | `avatar <id>` | Upload an avatar | |
 | | `env get/set <agent-id>` | Read and write custom environment variables (owner and admin only) | |
 | | `skills list/set/add <agent-id>` | Manage attached skills | `--skill-ids` (`set` replaces the full list, `add` appends) |
+| | `builtins list/enable/disable/reset <agent-id>` | Manage Multica built-in skills for one agent | `list` reports `inherit_all` or `exact`; `reset` restores every current and future built-in |
 | | `mcp list/add/enable/disable/remove <agent-id>` | Assign workspace MCP servers to this agent | Take the server id from `workspace mcp list`. A library entry does nothing until it is added here; `disable` stops sending it without dropping the assignment |
 | `autopilot` | `list/get/create/update/delete` | Manage automations | `create`: `--title`, `--agent`, `--mode` (all required), `--priority`, `--project`, `--subscriber` (repeatable) |
 | | `trigger <id>` | Trigger a run manually | |

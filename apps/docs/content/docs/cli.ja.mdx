@@ -127,7 +127,12 @@ multica skill list
 multica skill get <skill-id>
 multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
+multica agent builtins list <agent-id>
+multica agent builtins disable <agent-id> builtin:multica-working-on-issues
 ```
+
+組み込みスキルは、最初に無効化するまではプラットフォームのデフォルトを継承します。
+`multica agent builtins reset <agent-id>` を実行すると、現在および将来のすべての組み込みスキルを再び継承します。
 
 インポートで同名のスキルに当たった場合、デフォルトでは既存の内容を変更せずに停止します。意図に応じて選択してください:
 
@@ -255,6 +260,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | | `avatar <id>` | アバターをアップロード | |
 | | `env get/set <agent-id>` | カスタム環境変数の読み書き（owner と admin のみ） | |
 | | `skills list/set/add <agent-id>` | 紐付けられたスキルを管理 | `--skill-ids`（`set` は全置換、`add` は追加） |
+| | `builtins list/enable/disable/reset <agent-id>` | エージェントごとの Multica 組み込みスキルを管理 | `list` は `inherit_all` または `exact` を表示。`reset` は現在および将来のすべての組み込みスキルの継承を復元 |
 | | `mcp list/add/enable/disable/remove <agent-id>` | ワークスペース MCP サーバーをこのエージェントに割り当て | server id は `workspace mcp list` から取得。ライブラリの項目はここで追加するまで機能しません。`disable` は割り当てを残したまま送信を停止します |
 | `autopilot` | `list/get/create/update/delete` | オートパイロットを管理 | `create`: `--title`、`--agent`、`--mode`（いずれも必須）、`--priority`、`--project`、`--subscriber`（繰り返し可） |
 | | `trigger <id>` | 手動で 1 回トリガー | |

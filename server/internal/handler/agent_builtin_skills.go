@@ -86,6 +86,14 @@ func (h *Handler) SetAgentBuiltinSkillEnabled(w http.ResponseWriter, r *http.Req
 
 	current := locked.EnabledBuiltinSkillIds
 	if current == nil {
+		// In inherit-all mode every known built-in is already enabled. Keep a
+		// redundant enable idempotent instead of freezing today's inventory into
+		// an exact allow-list; this matters for scripted/API callers, which may
+		// safely repeat an enable operation without knowing the current mode.
+		if *req.Enabled {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		current = make([]string, 0, len(known))
 		for id := range known {
 			current = append(current, id)

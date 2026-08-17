@@ -31,9 +31,17 @@ go test ./internal/service -run TestBuiltinSkillsConformToTemplate
 | `agent skills set` = replace-all | 922 | `PUT /api/agents/{id}/skills` (940); `--skill-ids ''` clears all (928–931) | `multica agent skills set --help` |
 | `agent skills add` = additive | 947 | `POST /api/agents/{id}/skills/add` (968); requires ≥1 id (953–958) | `multica agent skills add --help` |
 | `agent skills list` | 890 | reads bindings, no side effect | `multica agent skills list --help` |
-| Per-agent built-in controls | `agent_builtin_skills.go` | `PUT /api/agents/{id}/builtin-skills/enabled` creates/updates the exact allow-list; `DELETE /api/agents/{id}/builtin-skills` restores inherit-all |
 | `agent env get` | 1024 | `GET /api/agents/{id}/env` (1034) | `multica agent env get --help` |
 | `agent env set` | 1059 | `PUT /api/agents/{id}/env` with full `custom_env` map (1079) | `multica agent env set --help` |
+
+## Built-in skill commands — `server/cmd/multica/cmd_agent_builtins.go`
+
+| Contract | Anchor | Behavior | Safe check |
+|---|---|---|---|
+| `agent builtins list` | `runAgentBuiltinsList` | Reads `GET /api/agents/{id}` and prints both the complete built-in inventory and `inherit_all` versus `exact` policy mode | `multica agent builtins list --help` |
+| `agent builtins enable` / `disable` | `setAgentBuiltinEnabled` | Sends one stable `builtin:<name>` ID to `PUT /api/agents/{id}/builtin-skills/enabled`, then reads the effective policy back | `multica agent builtins enable --help`; `multica agent builtins disable --help` |
+| `agent builtins reset` | `runAgentBuiltinsReset` | `DELETE /api/agents/{id}/builtin-skills`, then reads back `inherit_all` | `multica agent builtins reset --help` |
+| Per-agent built-in controls | `server/internal/handler/agent_builtin_skills.go` | Atomic row lock; redundant inherited enable preserves `NULL`; disable creates/updates the exact allow-list; reset restores inherit-all | `go test ./internal/handler -run TestSetAgentBuiltinSkillEnabledCreatesExactAllowlist` |
 
 ## Copy command — `server/cmd/multica/cmd_agent_copy.go`
 

@@ -127,7 +127,12 @@ multica skill list
 multica skill get <skill-id>
 multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
+multica agent builtins list <agent-id>
+multica agent builtins disable <agent-id> builtin:multica-working-on-issues
 ```
+
+内置 skill 默认继承平台设置；首次禁用后会改为精确列表。运行
+`multica agent builtins reset <agent-id>` 可重新继承当前及未来的所有内置 skill。
 
 导入时遇到同名 skill，默认会停止且不修改现有内容。按意图选择：
 
@@ -255,6 +260,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | | `avatar <id>` | 上传头像 | |
 | | `env get/set <agent-id>` | 读写自定义环境变量（仅 owner 和 admin） | |
 | | `skills list/set/add <agent-id>` | 管理绑定的 skill | `--skill-ids`（`set` 全量替换，`add` 增量添加） |
+| | `builtins list/enable/disable/reset <agent-id>` | 管理单个智能体的 Multica 内置 skill | `list` 显示 `inherit_all` 或 `exact`；`reset` 恢复继承当前及未来的所有内置 skill |
 | | `mcp list/add/enable/disable/remove <agent-id>` | 给该 agent 分配工作区 MCP 服务 | server id 从 `workspace mcp list` 获取。库里的条目在这里添加之前不会生效；`disable` 只停止下发，保留分配 |
 | `autopilot` | `list/get/create/update/delete` | 管理自动化 | `create`：`--title`、`--agent`、`--mode`（均必填）、`--priority`、`--project`、`--subscriber`（可重复） |
 | | `trigger <id>` | 手动触发一次 | |
