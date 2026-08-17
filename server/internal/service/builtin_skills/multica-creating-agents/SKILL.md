@@ -20,6 +20,7 @@ These commands read state and have no side effects:
 ```bash
 multica agent get <agent-id> --output json      # full persisted agent record
 multica agent skills list <agent-id> --output json   # current skill bindings
+multica agent builtins list <agent-id> --output json # built-in inventory + inherit/exact policy
 multica agent env get <agent-id> --output json  # plaintext env (agent owner or ws owner/admin; agents denied)
 ```
 
@@ -82,6 +83,24 @@ The body accepts more than the CLI exposes. `conversation_starters` has no
 `agent copy`. Setting it for a new agent means either calling `/api/agents`
 directly or telling the human to use the web UI; see below for where they
 will find it.
+
+## Controlling built-in skills
+
+Built-ins are managed independently from workspace skill bindings:
+
+```bash
+multica agent builtins list <agent-id>
+multica agent builtins disable <agent-id> builtin:multica-working-on-issues
+multica agent builtins enable <agent-id> builtin:multica-working-on-issues
+multica agent builtins reset <agent-id>
+```
+
+`list` reads the agent detail endpoint and reports `mode: inherit_all` when
+`enabled_builtin_skill_ids` is `null`, otherwise `mode: exact`. `enable` and
+`disable` call the dedicated atomic toggle endpoint, then read the agent back;
+`reset` restores `null`, so every current and future built-in is inherited.
+Repeating `enable` for a skill that is already enabled by inheritance is a
+no-op and does not freeze the current inventory into an exact list.
 
 ## Copying an agent
 
@@ -343,7 +362,8 @@ that agent. If both stay enabled, both are available to the provider.
 
 ## Side effects needing approval
 
-Read-only (safe): `agent get`, `agent skills list`, `agent env get`.
+Read-only (safe): `agent get`, `agent skills list`, `agent builtins list`,
+`agent env get`.
 
 State-changing (require an explicit instruction — do not run speculatively):
 
@@ -352,6 +372,8 @@ State-changing (require an explicit instruction — do not run speculatively):
   the source is left untouched.
 - `multica agent skills add` / `set` — mutate bindings (`set` is destructive:
   it drops bindings not in the new list).
+- `multica agent builtins enable` / `disable` / `reset` — mutate the agent's
+  built-in allow-list; `reset` restores inherit-all behavior.
 - `multica agent env set` — overwrites the full `custom_env` map and writes an
   audit row.
 

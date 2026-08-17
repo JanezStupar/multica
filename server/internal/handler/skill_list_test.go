@@ -260,10 +260,21 @@ func TestSetAgentBuiltinSkillEnabledCreatesExactAllowlist(t *testing.T) {
 		return w
 	}
 
+	if w := setEnabled(targetID, true); w.Code != 204 {
+		t.Fatalf("redundant inherited enable: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	row, err := testHandler.Queries.GetAgent(context.Background(), parseUUID(agentID))
+	if err != nil {
+		t.Fatalf("load agent after redundant enable: %v", err)
+	}
+	if row.EnabledBuiltinSkillIds != nil {
+		t.Fatalf("redundant enable froze inherited policy: %v", row.EnabledBuiltinSkillIds)
+	}
+
 	if w := setEnabled(targetID, false); w.Code != 204 {
 		t.Fatalf("disable built-in: expected 204, got %d: %s", w.Code, w.Body.String())
 	}
-	row, err := testHandler.Queries.GetAgent(context.Background(), parseUUID(agentID))
+	row, err = testHandler.Queries.GetAgent(context.Background(), parseUUID(agentID))
 	if err != nil {
 		t.Fatalf("load agent: %v", err)
 	}
