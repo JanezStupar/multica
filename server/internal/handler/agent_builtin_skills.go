@@ -14,7 +14,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-func (h *Handler) builtinSkillSummaries(enabledIDs []string) []AgentSkillSummary {
+func (h *Handler) builtinSkillSummaries(agentSystemKey string, enabledIDs []string) []AgentSkillSummary {
 	if h.TaskService == nil {
 		return []AgentSkillSummary{}
 	}
@@ -24,7 +24,7 @@ func (h *Handler) builtinSkillSummaries(enabledIDs []string) []AgentSkillSummary
 			enabled[id] = struct{}{}
 		}
 	}
-	skills := h.TaskService.BuiltinSkills()
+	skills := h.TaskService.BuiltinSkills(agentSystemKey, false)
 	result := make([]AgentSkillSummary, 0, len(skills))
 	for _, skill := range skills {
 		id := service.BuiltinSkillID(skill.Name)
@@ -63,7 +63,7 @@ func (h *Handler) SetAgentBuiltinSkillEnabled(w http.ResponseWriter, r *http.Req
 	}
 	req.SkillID = strings.TrimSpace(req.SkillID)
 	known := make(map[string]struct{})
-	for _, skill := range h.TaskService.BuiltinSkills() {
+	for _, skill := range h.TaskService.BuiltinSkills(agent.SystemKey.String, false) {
 		known[service.BuiltinSkillID(skill.Name)] = struct{}{}
 	}
 	if _, exists := known[req.SkillID]; !exists {

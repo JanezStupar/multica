@@ -243,7 +243,7 @@ func TestSetAgentBuiltinSkillEnabledCreatesExactAllowlist(t *testing.T) {
 		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID)
 	})
 
-	builtins := testHandler.TaskService.BuiltinSkills()
+	builtins := testHandler.TaskService.BuiltinSkills("", false)
 	if len(builtins) < 2 {
 		t.Fatalf("need at least two built-ins, got %d", len(builtins))
 	}
@@ -310,9 +310,12 @@ func TestSetAgentBuiltinSkillEnabledCreatesExactAllowlist(t *testing.T) {
 			}
 		}
 	}
-	resolved, refs := testHandler.TaskService.LoadAgentSkillBundles(
-		context.Background(), parseUUID(agentID), row.EnabledBuiltinSkillIds,
+	resolved, refs, err := testHandler.TaskService.LoadAgentSkillBundles(
+		context.Background(), parseUUID(agentID), "", false, row.EnabledBuiltinSkillIds,
 	)
+	if err != nil {
+		t.Fatalf("load customized agent skill bundles: %v", err)
+	}
 	if len(resolved) != len(builtins)-1 || len(refs) != len(builtins)-1 {
 		t.Fatalf("execution resolved %d bundles/%d refs, want %d", len(resolved), len(refs), len(builtins)-1)
 	}
@@ -369,9 +372,12 @@ func TestSetAgentBuiltinSkillEnabledCreatesExactAllowlist(t *testing.T) {
 	if row.EnabledBuiltinSkillIds != nil {
 		t.Fatalf("reset policy = %v, want nil inherit-all", row.EnabledBuiltinSkillIds)
 	}
-	resolved, refs = testHandler.TaskService.LoadAgentSkillBundles(
-		context.Background(), parseUUID(agentID), row.EnabledBuiltinSkillIds,
+	resolved, refs, err = testHandler.TaskService.LoadAgentSkillBundles(
+		context.Background(), parseUUID(agentID), "", false, row.EnabledBuiltinSkillIds,
 	)
+	if err != nil {
+		t.Fatalf("load reset agent skill bundles: %v", err)
+	}
 	if len(resolved) != len(builtins) || len(refs) != len(builtins) {
 		t.Fatalf("reset execution resolved %d bundles/%d refs, want all %d", len(resolved), len(refs), len(builtins))
 	}

@@ -14,33 +14,46 @@ var builtinSkillsFS embed.FS
 
 const builtinSkillsRoot = "builtin_skills"
 
-const builtinSkillIDPrefix = "builtin:"
-
-// BuiltinSkillID returns the stable public identity for a built-in skill.
-// Directory names are compile-time product identifiers; display names from
-// frontmatter must never change persisted agent controls.
-func BuiltinSkillID(name string) string {
-	return builtinSkillIDPrefix + name
+// builtinSkillSystemKey restricts a built-in skill to one product-defined
+// agent, keyed by that agent's system key. A skill absent from this map is
+// universal and every agent receives it.
+//
+// The scoping exists because a built-in skill costs every agent that receives
+// it: its description sits in the always-loaded skill listing, and its files
+// are written into every task's workdir. Mika's onboarding walkthrough is one
+// agent's procedure, not a platform contract, so shipping it workspace-wide
+// spent that budget on nine agents out of ten that can never use it.
+var builtinSkillSystemKey = map[string]string{
+	"multica-onboarding": MikaSystemKey,
 }
 
-// BuiltinSkills returns the platform's built-in skills, embedded at compile
-// time. Agents inherit these on top of workspace-bound skills unless their
-// exact per-agent allow-list disables one, so they teach platform-wide "how
-// to" workflows (e.g. mentioning) that the runtime brief leaves to skills.
+// BuiltinSkills returns the platform's built-in skills for an agent with the
+// given system key (empty for an ordinary workspace agent), embedded at compile
+// time. Every agent receives the universal ones on top of its workspace-bound
+// skills, so they teach platform-wide "how to" workflows that the runtime brief
+// intentionally leaves to skills.
 //
 // Layout: builtin_skills/<name>/SKILL.md plus optional supporting files. The
-// <name> directory carries a "multica-" prefix so its on-disk slug can never
-// collide with a workspace skill a user authored (see writeSkillFiles, which
-// derives the skill directory from AgentSkillData.Name).
-func (s *TaskService) BuiltinSkills() []AgentSkillData {
-	return loadBuiltinSkills()
+// <name> directory carries a "multica-" prefix: that is the platform
+// namespace, and the brief names built-ins by their bare name on the
+// assumption that no workspace skill shares one. Nothing server-side reserves
+// the prefix today, so a user could author a skill that sanitizes to the same
+// slug and take the bare directory. That is accepted, not handled — when it
+// becomes real, the fix is to reject the prefix at skill create/import rather
+// than to make every pointer defensive.
+// The compatibility argument is retained at the service boundary because
+// daemons and backends can roll independently. This fork continues to ship the
+// granular names directly, so no redirect bundle is necessary.
+func (s *TaskService) BuiltinSkills(agentSystemKey string, _ bool) []AgentSkillData {
+	return loadBuiltinSkills(agentSystemKey)
 }
 
-// EnabledBuiltinSkills applies an agent's exact built-in allow-list. A nil
-// list means the agent has never customized built-ins and inherits all of
-// them. A non-nil list, including an empty list, is authoritative.
-func (s *TaskService) EnabledBuiltinSkills(enabledIDs []string) []AgentSkillData {
-	skills := s.BuiltinSkills()
+// EnabledBuiltinSkills applies an agent's exact built-in allow-list after
+// product-defined system-agent scoping and daemon-skew compatibility have been
+// resolved. A nil list inherits every available built-in; a non-nil list,
+// including an empty list, is authoritative.
+func (s *TaskService) EnabledBuiltinSkills(agentSystemKey string, legacyRedirects bool, enabledIDs []string) []AgentSkillData {
+	skills := s.BuiltinSkills(agentSystemKey, legacyRedirects)
 	if enabledIDs == nil {
 		return skills
 	}
@@ -57,26 +70,46 @@ func (s *TaskService) EnabledBuiltinSkills(enabledIDs []string) []AgentSkillData
 	return result
 }
 
-func loadBuiltinSkills() []AgentSkillData {
-	entries, err := fs.ReadDir(builtinSkillsFS, builtinSkillsRoot)
+// AllBuiltinSkills returns every built-in skill regardless of agent scope. Only
+// the bundle-resolve path uses it: the claim already decided which built-ins an
+// agent was told about, and a daemon can only ask to resolve a ref it was
+// handed, so re-deriving the scope there would cost an agent read to re-answer
+// a question the claim answered.
+func (s *TaskService) AllBuiltinSkills() []AgentSkillData {
+	return loadBuiltinSkillDirs(func(string) bool { return true })
+}
+
+func loadBuiltinSkills(agentSystemKey string) []AgentSkillData {
+	return loadBuiltinSkillDirs(func(name string) bool {
+		want, scoped := builtinSkillSystemKey[name]
+		return !scoped || want == agentSystemKey
+	})
+}
+
+func loadBuiltinSkillDirs(include func(name string) bool) []AgentSkillData {
+	return loadSkillDirs(builtinSkillsFS, builtinSkillsRoot, include)
+}
+
+func loadSkillDirs(fsys embed.FS, root string, include func(name string) bool) []AgentSkillData {
+	entries, err := fs.ReadDir(fsys, root)
 	if err != nil {
 		return nil
 	}
 	var skills []AgentSkillData
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || !include(entry.Name()) {
 			continue
 		}
-		if skill, ok := loadBuiltinSkill(entry.Name()); ok {
+		if skill, ok := loadBuiltinSkill(fsys, root, entry.Name()); ok {
 			skills = append(skills, skill)
 		}
 	}
 	return skills
 }
 
-func loadBuiltinSkill(name string) (AgentSkillData, bool) {
-	dir := path.Join(builtinSkillsRoot, name)
-	content, err := fs.ReadFile(builtinSkillsFS, path.Join(dir, "SKILL.md"))
+func loadBuiltinSkill(fsys embed.FS, root, name string) (AgentSkillData, bool) {
+	dir := path.Join(root, name)
+	content, err := fs.ReadFile(fsys, path.Join(dir, "SKILL.md"))
 	if err != nil {
 		// A skill directory without a SKILL.md is malformed — skip it rather
 		// than ship an empty skill.
@@ -85,8 +118,8 @@ func loadBuiltinSkill(name string) (AgentSkillData, bool) {
 	_, description := internalSkill.ParseSkillFrontmatter(string(content))
 	skill := AgentSkillData{Name: name, Description: description, Content: string(content)}
 	// Any other file in the directory becomes a supporting file, preserving
-	// its relative path so subdirectories (e.g. rules/styling.md) survive.
-	_ = fs.WalkDir(builtinSkillsFS, dir, func(p string, d fs.DirEntry, walkErr error) error {
+	// its relative path so subdirectories (e.g. references/issues.md) survive.
+	_ = fs.WalkDir(fsys, dir, func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil || d.IsDir() {
 			return walkErr
 		}
@@ -94,7 +127,7 @@ func loadBuiltinSkill(name string) (AgentSkillData, bool) {
 		if rel == "SKILL.md" {
 			return nil
 		}
-		data, readErr := fs.ReadFile(builtinSkillsFS, p)
+		data, readErr := fs.ReadFile(fsys, p)
 		if readErr != nil {
 			return nil
 		}
