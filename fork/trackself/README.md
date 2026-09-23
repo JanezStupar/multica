@@ -64,9 +64,8 @@ From this repository root:
 
 ```bash
 python3 fork/trackself/build_skill.py \
-  --trackself-skill ~/workspaces/trackself/workspace-control/config/multica-skills/trackself-working-on-issues \
-  --output /tmp/trackself-platform.skill
-multica skill import --file /tmp/trackself-platform.skill --on-conflict fail --output json
+  --trackself-skill ~/workspaces/trackself/workspace-control/config/multica-skills/trackself-working-on-issues
+multica skill import --file fork/trackself/trackself-platform.skill --on-conflict fail --output json
 ```
 
 The builder copies the current embedded platform references and the current
