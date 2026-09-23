@@ -14,6 +14,9 @@ import (
 // Feishu's / WeCom's / DingTalk's chat_message transcript all are (MUL-5722).
 func sessionContinuityNoticeFor(task Task) string {
 	if task.ChatSessionID == "" {
+		if skill, ok := taskPlatformReplacement(task); ok {
+			return "## Session Continuity Notice\n\nThis run could not resume its prior provider session. Open the selected `" + skill.Name + "` skill and reconstruct current context as its workflow directs; do not assume your previous working memory survived.\n\n"
+		}
 		return execenv.SessionContinuityNoticeIssue
 	}
 	if task.ChatChannelType == execenv.ChannelTypeSlack {
@@ -27,6 +30,18 @@ func sessionContinuityNoticeFor(task Task) string {
 		return execenv.SessionContinuityNoticeChatTranscript
 	}
 	return execenv.SessionContinuityNoticeUnrecoverable
+}
+
+func taskPlatformReplacement(task Task) (SkillData, bool) {
+	if task.IssueID == "" || task.Agent == nil {
+		return SkillData{}, false
+	}
+	for _, skill := range task.Agent.Skills {
+		if skill.ReplacesBuiltin == "builtin:multica-platform" {
+			return skill, true
+		}
+	}
+	return SkillData{}, false
 }
 
 // backendResumeContinuityNotice returns the notice the BACKEND should inject if
@@ -202,6 +217,10 @@ func buildPromptBody(task Task, provider string) string {
 	if task.WakeupID != "" {
 		var b strings.Builder
 		fmt.Fprintf(&b, "You are running as a local coding agent for a Multica workspace.\n\nYour assigned issue ID is: %s\n\n[WAKEUP]\n%s\n\n", task.IssueID, task.HandoffNote)
+		if skill, ok := taskPlatformReplacement(task); ok {
+			fmt.Fprintf(&b, "Open the selected `%s` skill and follow its issue workflow. This wake is a trigger to reconcile, not a status instruction. Wakeup ID: %s.\n", skill.Name, task.WakeupID)
+			return b.String()
+		}
 		fmt.Fprintf(&b, "Start by running `multica issue get %s --output json`, then read current run/comment state. Decide whether the instruction's goal is met; the trigger reports a fact, not business completion. This is an ordinary run with normal result delivery.\n", task.IssueID)
 		fmt.Fprintf(&b, "Scan comment threads with `multica issue comment list %s --roots-only --summary --compact --output json`, then expand relevant threads with `--thread <id> --tail 30`.\n", task.IssueID)
 		fmt.Fprintf(&b, "Inspect this configuration with `multica issue wakeup get %s %s --output json`. If recurring work is no longer needed, disable it with `multica issue wakeup disable %s %s`.\n", task.IssueID, task.WakeupID, task.IssueID, task.WakeupID)
@@ -230,6 +249,10 @@ func buildPromptBody(task Task, provider string) string {
 	if task.HandoffNote != "" {
 		b.WriteString("You were handed this issue with a handoff note. Treat it as the assigner's scoping instruction for this run; follow it before doing anything broader, and do not reply to it as if it were a comment:\n\n")
 		fmt.Fprintf(&b, "> %s\n\n", task.HandoffNote)
+	}
+	if skill, ok := taskPlatformReplacement(task); ok {
+		fmt.Fprintf(&b, "Open the selected `%s` skill and follow its issue workflow for context, delivery, and status.\n", skill.Name)
+		return b.String()
 	}
 	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then complete it.\n", task.IssueID)
 	// Workflow step 2 owns the catch-up rule for every issue turn; this line
@@ -446,6 +469,18 @@ func buildCommentPrompt(task Task, provider string) string {
 			fmt.Fprintf(&b, "Fetch each id you still need directly: `multica issue comment list %s --thread <comment-id> --tail 30 --compact --output json`. `--thread` accepts a reply id, not just a thread root, so you do not need to know which thread the comment lives in. If it is older than those 30 replies, page back with the `Next reply cursor` values (`--before` / `--before-id`) until it appears. Do not finish this turn until every id above is accounted for.\n\n",
 				task.IssueID)
 		}
+	}
+	if skill, ok := taskPlatformReplacement(task); ok {
+		fmt.Fprintf(&b, "Open the selected `%s` skill and follow its issue workflow. The trigger and coalesced comments above are this turn's inputs.\n", skill.Name)
+		if targets := commentReplyThreads(task); len(targets) >= 2 {
+			b.WriteString("Current reply parents by thread, if replies are warranted:\n")
+			for _, target := range targets {
+				fmt.Fprintf(&b, "- thread %s: `--parent %s`\n", target.ThreadID, target.ParentID)
+			}
+		} else if task.TriggerCommentID != "" {
+			fmt.Fprintf(&b, "Current reply parent, if a reply is warranted: `--parent %s`.\n", task.TriggerCommentID)
+		}
+		return b.String()
 	}
 	// Issue-reading pointer (MUL-7344). Same gate as the comment hint below —
 	// `resumed` is computed once for both, so one turn can never claim the

@@ -79,3 +79,5 @@ data/
 __pycache__/
 *.pyc
 perf-report/
+# Locally packaged Trackself replacement (import through the CLI).
+/fork/trackself/*.skill

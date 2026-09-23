@@ -34,14 +34,15 @@ func fullSourceAgent() map[string]any {
 		"conversation_starters": []any{
 			map[string]any{"label": "Review a PR", "prompt": "Review the open pull request."},
 		},
-		"avatar_url":           "https://img.example/a.png",
-		"custom_args":          []any{"--foo", "--bar"},
-		"max_concurrent_tasks": 9,
-		"model":                "claude-sonnet-4-6",
-		"thinking_level":       "high",
-		"service_tier":         "priority",
-		"permission_mode":      "public_to",
-		"invocation_targets":   []any{map[string]any{"target_type": "workspace"}},
+		"avatar_url":                "https://img.example/a.png",
+		"custom_args":               []any{"--foo", "--bar"},
+		"max_concurrent_tasks":      9,
+		"model":                     "claude-sonnet-4-6",
+		"thinking_level":            "high",
+		"service_tier":              "priority",
+		"enabled_builtin_skill_ids": []any{},
+		"permission_mode":           "public_to",
+		"invocation_targets":        []any{map[string]any{"target_type": "workspace"}},
 		"skills": []any{
 			map[string]any{"id": "skill-1", "name": "One"},
 			map[string]any{"id": "skill-2", "name": "Two"},
@@ -148,11 +149,34 @@ func TestAgentCopySameRuntimeCopiesPortableFields(t *testing.T) {
 	if !reflect.DeepEqual(gotBody["skill_ids"], []any{"skill-1", "skill-2"}) {
 		t.Errorf("skill_ids = %v, want [skill-1 skill-2]", gotBody["skill_ids"])
 	}
+	if policy, ok := gotBody["enabled_builtin_skill_ids"].([]any); !ok || len(policy) != 0 {
+		t.Errorf("enabled_builtin_skill_ids = %v, want explicit empty list", gotBody["enabled_builtin_skill_ids"])
+	}
 	// Secrets / machine-local config must never be copied.
 	for _, k := range []string{"custom_env", "mcp_config", "runtime_config", "has_custom_env"} {
 		if _, ok := gotBody[k]; ok {
 			t.Errorf("body must not contain %q, got %v", k, gotBody[k])
 		}
+	}
+}
+
+func TestAgentCopyPreservesBuiltinSkillReplacement(t *testing.T) {
+	source := fullSourceAgent()
+	source["enabled_builtin_skill_ids"] = []any{"builtin:multica-platform"}
+	source["builtin_skill_replacements"] = map[string]any{"builtin:multica-platform": "skill-1"}
+	var gotBody map[string]any
+	srv := copyMockServer(t, source, &gotBody)
+	defer srv.Close()
+	setCopyTestEnv(t, srv.URL)
+
+	if err := runAgentCopy(newAgentCopyTestCmd(), []string{"agent-src"}); err != nil {
+		t.Fatalf("runAgentCopy: %v", err)
+	}
+	if !reflect.DeepEqual(gotBody["enabled_builtin_skill_ids"], []any{"builtin:multica-platform"}) {
+		t.Errorf("enabled_builtin_skill_ids = %v", gotBody["enabled_builtin_skill_ids"])
+	}
+	if !reflect.DeepEqual(gotBody["builtin_skill_replacements"], map[string]any{"builtin:multica-platform": "skill-1"}) {
+		t.Errorf("builtin_skill_replacements = %v", gotBody["builtin_skill_replacements"])
 	}
 }
 

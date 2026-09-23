@@ -252,10 +252,13 @@ type IssueStatusForEnv struct {
 }
 
 type SkillContextForEnv struct {
-	Name        string
-	Description string
-	Content     string
-	Files       []SkillFileContextForEnv
+	ID              string
+	Source          string
+	ReplacesBuiltin string
+	Name            string
+	Description     string
+	Content         string
+	Files           []SkillFileContextForEnv
 }
 
 // SkillFileContextForEnv represents a supporting file within a skill.

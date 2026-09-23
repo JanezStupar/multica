@@ -763,6 +763,15 @@ func writeWorkflowAutopilot(b *strings.Builder) {
 // it here does move brief bytes when the same agent runs leader one turn and
 // worker the next. Owner-accepted tradeoff; decision recorded in MUL-5811.
 func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
+	if skill, ok := platformReplacementSkill(ctx.AgentSkills); ok {
+		for _, file := range skill.Files {
+			if file.Path == "runtime/issue-workflow.md" {
+				b.WriteString(strings.TrimSpace(file.Content))
+				b.WriteString("\n\n")
+				return
+			}
+		}
+	}
 	b.WriteString("**Every issue turn runs the same workflow.** The per-turn user message carries what triggered this run — an assignment handoff, or a triggering comment with its id and your `--parent` value — plus this issue's real id and ready-to-run context-read commands; assemble other calls from `## Available Commands`.\n\n")
 
 	b.WriteString("1. Read the issue (`multica issue get`) to understand the context.\n")
@@ -799,6 +808,10 @@ func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
 // to create sub-issues, and that moment is exactly what triggers the skill. The
 // brief keeps the one-line map so the flags remain discoverable without it.
 func writeSubIssueCreation(b *strings.Builder, ctx TaskContextForEnv) {
+	if skill, ok := platformReplacementSkill(ctx.AgentSkills); ok {
+		b.WriteString("## Sub-issue Creation\n\nFollow the selected `" + skill.Name + "` skill for planning and dispatch. Open its `references/issues.md` for Multica command effects and status semantics.\n\n")
+		return
+	}
 	b.WriteString("## Sub-issue Creation\n\n")
 	b.WriteString("`--status todo` starts an agent-assigned child immediately; `--status backlog` parks it for later promotion; `--stage <N>` groups children into ordered stages.")
 	if where, ok := issueContractsSkill(modelVisibleSkills(ctx.AgentSkills)); ok {
@@ -811,6 +824,15 @@ func writeSubIssueCreation(b *strings.Builder, ctx TaskContextForEnv) {
 // contracts. It mirrors service.PlatformSkillName, which the daemon must not
 // import; the brief's rendered-output tests pin the two together.
 const platformSkillName = "multica-platform"
+
+func platformReplacementSkill(skills []SkillContextForEnv) (SkillContextForEnv, bool) {
+	for _, skill := range modelVisibleSkills(skills) {
+		if skill.ReplacesBuiltin == "builtin:"+platformSkillName {
+			return skill, true
+		}
+	}
+	return SkillContextForEnv{}, false
+}
 
 // legacyIssueSkillName is what that skill was called before the platform
 // merge (MUL-6986). A daemon can outlive the backend it talks to in either
@@ -826,6 +848,11 @@ const legacyIssueSkillName = "multica-working-on-issues"
 // the agent hunting, and on a miss it may skip the contract entirely. So an
 // unrecognised skill set yields no pointer rather than a guess.
 func issueContractsSkill(skills []SkillContextForEnv) (string, bool) {
+	for _, skill := range skills {
+		if skill.ReplacesBuiltin == "builtin:"+platformSkillName {
+			return "`references/issues.md` in the `" + skill.Name + "` skill", true
+		}
+	}
 	if slug, ok := builtinSlug(skills, platformSkillName); ok {
 		return "`references/issues.md` in the `" + slug + "` skill", true
 	}
@@ -999,6 +1026,11 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 			b.WriteString("**Delivering files here:** run `multica attachment upload <local-path>` — it binds the file to your reply and it renders as an attachment card. That command is the ONLY way a file reaches the user; a path written into your reply text is not.\n")
 		}
 	default:
+		if _, ok := platformReplacementSkill(ctx.AgentSkills); ok {
+			b.WriteString("Follow the selected issue workflow above for result delivery and status. Terminal output and run logs are not user-visible issue records.\n\n")
+			b.WriteString("**Delivering files here:** pass `--attachment <path>` to `multica issue comment add` when a file must reach the reader.\n")
+			break
+		}
 		if ctx.IsSquadLeader {
 			b.WriteString("⚠️ **Final results MUST be delivered via `multica issue comment add`** — unless your outcome is `no_action`, which your Squad Operating Protocol states in full. For every other outcome (`action`, `failed`) a comment is mandatory. The user does NOT see your terminal output or run logs — only comments on the issue.\n\n")
 		} else {

@@ -242,14 +242,15 @@ type DisabledRuntimeSkillData struct {
 
 // SkillData represents a structured skill for task execution.
 type SkillData struct {
-	ID          string          `json:"id"`
-	Source      string          `json:"source,omitempty"`
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Hash        string          `json:"hash,omitempty"`
-	SizeBytes   int64           `json:"size_bytes,omitempty"`
-	Content     string          `json:"content"`
-	Files       []SkillFileData `json:"files,omitempty"`
+	ID              string          `json:"id"`
+	Source          string          `json:"source,omitempty"`
+	ReplacesBuiltin string          `json:"replaces_builtin,omitempty"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description,omitempty"`
+	Hash            string          `json:"hash,omitempty"`
+	SizeBytes       int64           `json:"size_bytes,omitempty"`
+	Content         string          `json:"content"`
+	Files           []SkillFileData `json:"files,omitempty"`
 }
 
 // SkillFileData represents a supporting file within a skill.
@@ -261,14 +262,15 @@ type SkillFileData struct {
 }
 
 type SkillRefData struct {
-	ID          string             `json:"id"`
-	Source      string             `json:"source"`
-	Name        string             `json:"name"`
-	Description string             `json:"description,omitempty"`
-	Hash        string             `json:"hash"`
-	SizeBytes   int64              `json:"size_bytes"`
-	FileCount   int                `json:"file_count"`
-	Files       []SkillFileRefData `json:"files,omitempty"`
+	ID              string             `json:"id"`
+	Source          string             `json:"source"`
+	ReplacesBuiltin string             `json:"replaces_builtin,omitempty"`
+	Name            string             `json:"name"`
+	Description     string             `json:"description,omitempty"`
+	Hash            string             `json:"hash"`
+	SizeBytes       int64              `json:"size_bytes"`
+	FileCount       int                `json:"file_count"`
+	Files           []SkillFileRefData `json:"files,omitempty"`
 }
 
 type SkillFileRefData struct {

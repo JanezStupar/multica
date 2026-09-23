@@ -129,15 +129,20 @@ type AgentResponse struct {
 	// members infer another member's integration footprint. Redacted to
 	// `nil` + `composio_toolkit_allowlist_redacted=true` for non-owners,
 	// mirroring the existing mcp_config redaction contract.
-	ComposioToolkitAllowlist         []string               `json:"composio_toolkit_allowlist,omitempty"`
-	ComposioToolkitAllowlistRedacted bool                   `json:"composio_toolkit_allowlist_redacted,omitempty"`
-	OwnerID                          *string                `json:"owner_id"`
-	Skills                           []AgentSkillSummary    `json:"skills"`
-	DisabledRuntimeSkills            []DisabledRuntimeSkill `json:"disabled_runtime_skills"`
-	CreatedAt                        string                 `json:"created_at"`
-	UpdatedAt                        string                 `json:"updated_at"`
-	ArchivedAt                       *string                `json:"archived_at"`
-	ArchivedBy                       *string                `json:"archived_by"`
+	ComposioToolkitAllowlist         []string            `json:"composio_toolkit_allowlist,omitempty"`
+	ComposioToolkitAllowlistRedacted bool                `json:"composio_toolkit_allowlist_redacted,omitempty"`
+	OwnerID                          *string             `json:"owner_id"`
+	Skills                           []AgentSkillSummary `json:"skills"`
+	BuiltinSkills                    []AgentSkillSummary `json:"builtin_skills,omitempty"`
+	// EnabledBuiltinSkillIDs is nil when the agent inherits every built-in.
+	// Once customized, the non-nil list is the exact enabled set.
+	EnabledBuiltinSkillIDs   []string               `json:"enabled_builtin_skill_ids"`
+	BuiltinSkillReplacements map[string]string      `json:"builtin_skill_replacements"`
+	DisabledRuntimeSkills    []DisabledRuntimeSkill `json:"disabled_runtime_skills"`
+	CreatedAt                string                 `json:"created_at"`
+	UpdatedAt                string                 `json:"updated_at"`
+	ArchivedAt               *string                `json:"archived_at"`
+	ArchivedBy               *string                `json:"archived_by"`
 }
 
 // runtimeConfigGatewayTokenMask is the placeholder the API substitutes for
@@ -205,6 +210,11 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 	// owner-only gate below can decide.
 	composioAllowlist := a.ComposioToolkitAllowlist
 
+	replacements, err := service.DecodeBuiltinSkillReplacements(a.BuiltinSkillReplacements)
+	if err != nil {
+		slog.Warn("invalid built-in replacement map", "agent_id", uuidToString(a.ID), "error", err)
+		replacements = map[string]string{}
+	}
 	return AgentResponse{
 		ID:                       uuidToString(a.ID),
 		WorkspaceID:              uuidToString(a.WorkspaceID),
@@ -234,6 +244,8 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		ComposioToolkitAllowlist: composioAllowlist,
 		OwnerID:                  uuidToPtr(a.OwnerID),
 		Skills:                   []AgentSkillSummary{},
+		EnabledBuiltinSkillIDs:   a.EnabledBuiltinSkillIds,
+		BuiltinSkillReplacements: replacements,
 		DisabledRuntimeSkills:    decodeDisabledRuntimeSkills(a.DisabledRuntimeSkills),
 		CreatedAt:                timestampToString(a.CreatedAt),
 		UpdatedAt:                timestampToString(a.UpdatedAt),
@@ -1251,6 +1263,11 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 	if availability, ok := runtimeAvailability[resp.RuntimeID]; ok {
 		resp.RuntimeAvailability = availability
 	}
+	// Built-in descriptions can be hundreds of characters each and are only
+	// consumed by the detail-page Skills tab. Keep the inventory on this detail
+	// endpoint instead of rebuilding and multiplying it across list, mutation,
+	// and WebSocket payloads.
+	resp.BuiltinSkills = h.builtinSkillSummaries(agent.SystemKey.String, agent.EnabledBuiltinSkillIds)
 	if !h.enrichAgentResponseWithTargetsHTTP(w, r, &resp, agent.ID) {
 		return
 	}
@@ -1328,6 +1345,10 @@ type CreateAgentRequest struct {
 	// SkillIDs are attached inside the same transaction as the agent row so a
 	// create never becomes visible in a partially configured state.
 	SkillIDs []string `json:"skill_ids"`
+	// EnabledBuiltinSkillIDs is copied as portable agent configuration. Nil
+	// inherits all built-ins; a non-nil list, including empty, is exact.
+	EnabledBuiltinSkillIDs   []string          `json:"enabled_builtin_skill_ids"`
+	BuiltinSkillReplacements map[string]string `json:"builtin_skill_replacements"`
 }
 
 func decodeJSONBodyWithRawFields(body io.Reader, dst any) (map[string]json.RawMessage, error) {
@@ -1551,6 +1572,17 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := h.TaskService.ValidateAgentBuiltinPolicy(r.Context(), service.AgentBuiltinPolicy{
+		EnabledIDs: req.EnabledBuiltinSkillIDs, WorkspaceID: wsUUID,
+		Replacements: req.BuiltinSkillReplacements,
+	}); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	replacementJSON, _ := json.Marshal(req.BuiltinSkillReplacements)
+	if req.BuiltinSkillReplacements == nil {
+		replacementJSON = []byte("{}")
+	}
 
 	avatarURL, ok := h.newAgentAvatar(w, r, req.AvatarURL)
 	if !ok {
@@ -1586,6 +1618,8 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		ServiceTier:              pgtype.Text{String: req.ServiceTier, Valid: req.ServiceTier != ""},
 		ConversationStarters:     sp,
 		ComposioToolkitAllowlist: allowlist,
+		EnabledBuiltinSkillIds:   req.EnabledBuiltinSkillIDs,
+		BuiltinSkillReplacements: replacementJSON,
 	})
 	if err != nil {
 		// Unique constraint on (workspace_id, name) — return a clear conflict error

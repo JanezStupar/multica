@@ -6849,12 +6849,19 @@ func (s *TaskService) skillsWithFiles(ctx context.Context, skills []db.Skill) ([
 // It fails closed on a workspace-skill read error for the reason in
 // LoadAgentSkills: a bundle set built from a partial read is indistinguishable
 // from a correct one.
-func (s *TaskService) LoadAgentSkillBundles(ctx context.Context, agentID pgtype.UUID, agentSystemKey string, legacyRedirects bool) ([]AgentSkillData, []AgentSkillRefData, error) {
+func (s *TaskService) LoadAgentSkillBundles(ctx context.Context, agentID pgtype.UUID, agentSystemKey string, legacyRedirects bool, policy ...AgentBuiltinPolicy) ([]AgentSkillData, []AgentSkillRefData, error) {
 	skills, err := s.LoadAgentSkills(ctx, agentID)
 	if err != nil {
 		return nil, nil, err
 	}
-	skills = append(skills, s.BuiltinSkills(agentSystemKey, legacyRedirects)...)
+	effective := AgentBuiltinPolicy{SystemKey: agentSystemKey, LegacyRedirects: legacyRedirects}
+	if len(policy) > 0 {
+		effective = policy[0]
+	}
+	skills, err = s.applyBuiltinPolicy(ctx, skills, effective)
+	if err != nil {
+		return nil, nil, err
+	}
 	bundles, refs := BuildAgentSkillBundles(skills)
 	return bundles, refs, nil
 }
@@ -6888,7 +6895,7 @@ type AgentSkillBundleRef struct {
 // whole agent on every request: N requests, each reading and hashing all N
 // skills to return one. Loading only what was asked for makes that linear,
 // which is why the resolve path must not reuse LoadAgentSkillBundles.
-func (s *TaskService) LoadRequestedAgentSkillBundles(ctx context.Context, agentID pgtype.UUID, refs []AgentSkillBundleRef) (map[string]AgentSkillData, error) {
+func (s *TaskService) LoadRequestedAgentSkillBundles(ctx context.Context, agentID pgtype.UUID, refs []AgentSkillBundleRef, policy ...AgentBuiltinPolicy) (map[string]AgentSkillData, error) {
 	requestedIDs := make([]pgtype.UUID, 0, len(refs))
 	seenWorkspace := make(map[string]struct{}, len(refs))
 	wantBuiltin := make(map[string]struct{}, len(refs))
@@ -6934,8 +6941,14 @@ func (s *TaskService) LoadRequestedAgentSkillBundles(ctx context.Context, agentI
 			requested = append(requested, loaded...)
 		}
 	}
-	if len(wantBuiltin) > 0 {
-		// Every built-in, not the agent-scoped subset — see AllBuiltinSkills.
+	if len(policy) > 0 {
+		var err error
+		requested, err = s.applyBuiltinPolicy(ctx, requested, policy[0])
+		if err != nil {
+			return nil, err
+		}
+	} else if len(wantBuiltin) > 0 {
+		// Compatibility for callers without a claim policy.
 		for _, builtin := range s.AllBuiltinSkills() {
 			if _, ok := wantBuiltin[BuiltinSkillID(builtin.Name)]; ok {
 				requested = append(requested, builtin)
@@ -7005,14 +7018,15 @@ func BuildAgentSkillBundles(skills []AgentSkillData) ([]AgentSkillData, []AgentS
 			})
 		}
 		refs = append(refs, AgentSkillRefData{
-			ID:          skill.ID,
-			Source:      skill.Source,
-			Name:        skill.Name,
-			Description: skill.Description,
-			Hash:        manifest.Hash,
-			SizeBytes:   manifest.SizeBytes,
-			FileCount:   manifest.FileCount,
-			Files:       refFiles,
+			ID:              skill.ID,
+			Source:          skill.Source,
+			ReplacesBuiltin: skill.ReplacesBuiltin,
+			Name:            skill.Name,
+			Description:     skill.Description,
+			Hash:            manifest.Hash,
+			SizeBytes:       manifest.SizeBytes,
+			FileCount:       manifest.FileCount,
+			Files:           refFiles,
 		})
 	}
 	return bundles, refs
@@ -7020,14 +7034,15 @@ func BuildAgentSkillBundles(skills []AgentSkillData) ([]AgentSkillData, []AgentS
 
 // AgentSkillData represents a skill for task execution responses.
 type AgentSkillData struct {
-	ID          string               `json:"id"`
-	Source      string               `json:"source,omitempty"`
-	Name        string               `json:"name"`
-	Description string               `json:"description,omitempty"`
-	Hash        string               `json:"hash,omitempty"`
-	SizeBytes   int64                `json:"size_bytes,omitempty"`
-	Content     string               `json:"content"`
-	Files       []AgentSkillFileData `json:"files,omitempty"`
+	ID              string               `json:"id"`
+	Source          string               `json:"source,omitempty"`
+	ReplacesBuiltin string               `json:"replaces_builtin,omitempty"`
+	Name            string               `json:"name"`
+	Description     string               `json:"description,omitempty"`
+	Hash            string               `json:"hash,omitempty"`
+	SizeBytes       int64                `json:"size_bytes,omitempty"`
+	Content         string               `json:"content"`
+	Files           []AgentSkillFileData `json:"files,omitempty"`
 }
 
 // AgentSkillFileData represents a supporting file within a skill.
@@ -7039,14 +7054,15 @@ type AgentSkillFileData struct {
 }
 
 type AgentSkillRefData struct {
-	ID          string                  `json:"id"`
-	Source      string                  `json:"source"`
-	Name        string                  `json:"name"`
-	Description string                  `json:"description,omitempty"`
-	Hash        string                  `json:"hash"`
-	SizeBytes   int64                   `json:"size_bytes"`
-	FileCount   int                     `json:"file_count"`
-	Files       []AgentSkillFileRefData `json:"files,omitempty"`
+	ID              string                  `json:"id"`
+	Source          string                  `json:"source"`
+	ReplacesBuiltin string                  `json:"replaces_builtin,omitempty"`
+	Name            string                  `json:"name"`
+	Description     string                  `json:"description,omitempty"`
+	Hash            string                  `json:"hash"`
+	SizeBytes       int64                   `json:"size_bytes"`
+	FileCount       int                     `json:"file_count"`
+	Files           []AgentSkillFileRefData `json:"files,omitempty"`
 }
 
 type AgentSkillFileRefData struct {

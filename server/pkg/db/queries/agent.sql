@@ -28,8 +28,8 @@ SELECT * FROM agent
 WHERE id = $1;
 
 -- name: GetAgentForUpdate :one
--- Serializes read-modify-write updates to disabled_runtime_skills so two
--- concurrent per-skill toggles cannot overwrite each other.
+-- Serializes read-modify-write updates to per-agent skill controls so two
+-- concurrent toggles cannot overwrite each other.
 SELECT * FROM agent
 WHERE id = $1
 FOR UPDATE;
@@ -58,14 +58,17 @@ INSERT INTO agent (
     runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id,
     instructions, custom_env, custom_args, mcp_config, model, thinking_level,
     service_tier, conversation_starters,
-    composio_toolkit_allowlist, permission_mode
+    composio_toolkit_allowlist, permission_mode, enabled_builtin_skill_ids,
+    builtin_skill_replacements
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
     $11, $12, $13, $14, $15, $16,
     $17, COALESCE(sqlc.narg('conversation_starters')::jsonb, '[]'::jsonb),
     sqlc.narg('composio_toolkit_allowlist')::text[],
-    COALESCE(sqlc.narg('permission_mode'), 'private')
+    COALESCE(sqlc.narg('permission_mode'), 'private'),
+    sqlc.narg('enabled_builtin_skill_ids')::text[],
+    COALESCE(sqlc.narg('builtin_skill_replacements')::jsonb, '{}'::jsonb)
 )
 RETURNING *;
 
@@ -195,6 +198,23 @@ UPDATE agent
 SET disabled_runtime_skills = $2, updated_at = now()
 WHERE id = $1
 RETURNING *;
+
+-- name: UpdateAgentEnabledBuiltinSkillIDs :one
+UPDATE agent
+SET enabled_builtin_skill_ids = $2, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: UpdateAgentBuiltinSkillReplacements :one
+UPDATE agent
+SET builtin_skill_replacements = $2, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: SetTaskSkillBundleFingerprint :execrows
+UPDATE agent_task_queue
+SET skill_bundle_fingerprint = $2
+WHERE id = $1 AND status IN ('dispatched', 'waiting_local_directory');
 
 -- name: ArchiveAgent :one
 UPDATE agent SET archived_at = now(), archived_by = $2, updated_at = now()
@@ -1161,7 +1181,7 @@ WITH retired_sessions AS (
 ), latest_per_session AS (
     SELECT DISTINCT ON (t.session_id)
         t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error,
-        t.started_at, t.issue_snapshot,
+        t.started_at, t.issue_snapshot, t.skill_bundle_fingerprint,
         COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at) AS terminal_at
     FROM agent_task_queue t
     WHERE t.agent_id = $1 AND t.issue_id = $2
@@ -1181,7 +1201,7 @@ WITH retired_sessions AS (
 -- and retired sessions, so it can legitimately return an OLDER run than the
 -- newest one. Measuring against the newest one would then tell an agent whose
 -- resumed memory predates an edit that the issue is unchanged.
-SELECT session_id, work_dir, runtime_id, status, started_at, issue_snapshot FROM latest_per_session
+SELECT session_id, work_dir, runtime_id, status, started_at, issue_snapshot, skill_bundle_fingerprint FROM latest_per_session
 WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
   AND (
     status IN ('completed', 'cancelled')

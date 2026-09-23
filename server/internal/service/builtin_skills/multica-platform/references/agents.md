@@ -75,7 +75,8 @@ objects (at most 3); pass `'[]'` on update to clear.
 The HTTP body accepts: `name`, `description`, `instructions`,
 `conversation_starters`, `avatar_url`, `runtime_id`, `runtime_config`,
 `custom_env`, `custom_args`, `model`, `thinking_level`, `service_tier`,
-`visibility`, `max_concurrent_tasks`, `mcp_config`, `skill_ids`.
+  `visibility`, `max_concurrent_tasks`, `mcp_config`, `skill_ids`,
+  `enabled_builtin_skill_ids`, `builtin_skill_replacements`.
 
 ## Copying an agent
 
@@ -96,7 +97,8 @@ multica agent copy <source-agent-id> --runtime-id <target> --model <model>  # cr
 - Copied by default, each overridable with the matching flag: `name` (suffixed
   `" (copy)"`), `description`, `instructions`, avatar, `custom_args`,
   `max_concurrent_tasks`, invocation permission (`permission_mode` +
-  allow-list), and assigned workspace skills.
+  allow-list), assigned workspace skills, the exact built-in skill policy, and
+  workspace replacement IDs for built-in slots.
 - A copied `max_concurrent_tasks` is included only when the source value is
   within 1–50. Historical out-of-range values are omitted so the new agent
   receives the server default (`6`); an explicit out-of-range
@@ -336,11 +338,16 @@ multica agent skills add <agent-id> --skill-ids <skill-id> --output json
 multica agent skills list <agent-id> --output json
 ```
 
-At claim time the daemon assembles the agent's skills as workspace-bound skills
-FIRST, then appends the platform built-in skills. Each bound skill contributes
-its content plus its supporting files; built-in skills ship with the server and
-are loaded the same way. Both reach the provider as skill content — which is why
-capability belongs in a bound skill, not pasted into `instructions`.
+At claim time the server assembles assigned workspace skills and enabled
+built-ins. `enabled_builtin_skill_ids: null` inherits the current inventory;
+an explicit list is exact; `[]` disables all built-ins. The Skills tab can
+select a workspace skill as a complete replacement for an enabled built-in.
+Its UUID is stored in `builtin_skill_replacements` under a stable key such as
+`builtin:multica-platform`. The replacement must include every supporting file
+path in the embedded bundle; a platform replacement also needs
+`runtime/issue-workflow.md`. The selected bundle reaches the daemon once, even
+if the workspace skill is also assigned directly. A missing or incomplete
+replacement blocks dispatch rather than restoring the embedded bundle.
 
 ## Side effects needing approval
 

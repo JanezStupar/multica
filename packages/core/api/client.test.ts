@@ -223,6 +223,62 @@ describe("ApiClient pull-request response schema", () => {
   });
 });
 
+describe("ApiClient agent response schema", () => {
+  it("preserves a valid exact built-in policy", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            id: "agent-1",
+            builtin_skills: [
+              {
+                id: "builtin:multica-mentioning",
+                name: "multica-mentioning",
+                description: "Mention collaborators",
+                enabled: false,
+              },
+            ],
+            enabled_builtin_skill_ids: [],
+            builtin_skill_replacements: { "builtin:multica-platform": "skill-1" },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getAgent("agent-1"),
+    ).resolves.toMatchObject({
+      id: "agent-1",
+      builtin_skills: [{ enabled: false }],
+      enabled_builtin_skill_ids: [],
+      builtin_skill_replacements: { "builtin:multica-platform": "skill-1" },
+    });
+  });
+
+  it("falls back safely when builtin_skills is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({ id: "agent-1", builtin_skills: {} }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    const result = await new ApiClient("https://api.example.test").getAgent(
+      "agent-1",
+    );
+    expect(result).toMatchObject({
+      id: "agent-1",
+      skills: [],
+    });
+    expect(result.builtin_skills).toBeUndefined();
+  });
+});
+
 describe("ApiClient Plugin preview response schema", () => {
   it("degrades a malformed preview so a blank scope list is never shown as approval", async () => {
     vi.stubGlobal(

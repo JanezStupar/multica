@@ -606,6 +606,12 @@ export interface Agent {
   service_tier?: string;
   owner_id: string | null;
   skills: AgentSkillSummary[];
+  /** Server-provided built-in skill inventory with per-agent enabled state. */
+  builtin_skills?: AgentSkillSummary[];
+  /** `null`/undefined inherits all built-ins; an array is the exact enabled set. */
+  enabled_builtin_skill_ids?: string[] | null;
+  /** Complete workspace skill replacements keyed by logical built-in ID. */
+  builtin_skill_replacements?: Record<string, string>;
   /** Runtime-local skills this agent must not inherit. Older servers omit it. */
   disabled_runtime_skills?: DisabledRuntimeSkill[];
   created_at: string;
@@ -636,6 +642,11 @@ export interface SetAgentRuntimeSkillEnabledRequest {
   key: string;
   name: string;
   plugin?: string;
+  enabled: boolean;
+}
+
+export interface SetAgentBuiltinSkillEnabledRequest {
+  skill_id: string;
   enabled: boolean;
 }
 
@@ -686,6 +697,10 @@ export interface CreateAgentRequest {
   template?: string;
   /** Workspace skill IDs attached atomically with the agent row. */
   skill_ids?: string[];
+  /** Exact enabled built-in set copied from another agent. Null/omitted
+   *  restores inherit-all; an empty array disables every built-in. */
+  enabled_builtin_skill_ids?: string[] | null;
+  builtin_skill_replacements?: Record<string, string>;
 }
 
 export interface AgentBuilderSession {

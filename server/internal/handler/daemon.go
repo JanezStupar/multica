@@ -2332,6 +2332,31 @@ func claimResponseAgentIdentityMatches(resp AgentTaskResponse) bool {
 	return resp.AgentID != "" && resp.Agent != nil && resp.Agent.ID == resp.AgentID
 }
 
+// platformSkillFingerprint identifies the effective logical platform slot,
+// including the selected bundle's identity and content. It is stored on the
+// task so a later issue turn can compare it with the provider session it would
+// resume. Other workspace skills do not control the issue workflow.
+func platformSkillFingerprint(refs []service.AgentSkillRefData) string {
+	for _, ref := range refs {
+		if ref.ReplacesBuiltin == service.BuiltinSkillID(service.PlatformSkillName) {
+			return "replacement:" + ref.ID + ":" + ref.Hash
+		}
+		if ref.Source == skillbundle.SourceBuiltin && ref.ID == service.BuiltinSkillID(service.PlatformSkillName) {
+			return "builtin:" + ref.Hash
+		}
+	}
+	return "disabled"
+}
+
+func platformSessionChanged(current string, prior pgtype.Text) bool {
+	if prior.Valid {
+		return prior.String != current
+	}
+	// Older task rows predate the fingerprint column. They could not have
+	// selected a replacement, so only a current replacement forces a restart.
+	return strings.HasPrefix(current, "replacement:")
+}
+
 // buildClaimedTaskResponse assembles the full daemon claim payload for a
 // single already-claimed task and computes the exact comment ids embedded in
 // it (deliveredCommentIDs). Shared by the per-runtime handler
@@ -2549,22 +2574,45 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	if agent.SystemKey.String == service.MikaSystemKey {
 		resp.Agent.Instructions = service.ComposeMikaInstructions(agent.Name, agent.Instructions)
 	}
-	if useSkillRefs {
-		_, skillRefs, err := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.SystemKey.String, legacySkillRedirects)
-		if err != nil {
-			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.rejectClaimSkillLoad(task, err)
+	replacements, err := service.DecodeBuiltinSkillReplacements(agent.BuiltinSkillReplacements)
+	if err != nil {
+		return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.rejectClaimSkillLoad(task, err)
+	}
+	if legacySkillRedirects && len(replacements) > 0 {
+		return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+			h.rejectClaimSkillLoad(task, fmt.Errorf("installed daemon does not support platform skill replacement"))
+	}
+	policy := service.AgentBuiltinPolicy{
+		SystemKey: agent.SystemKey.String, LegacyRedirects: legacySkillRedirects,
+		EnabledIDs: agent.EnabledBuiltinSkillIds, WorkspaceID: agent.WorkspaceID,
+		Replacements: replacements,
+	}
+	skills, skillRefs, err := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.SystemKey.String, legacySkillRedirects, policy)
+	if err != nil {
+		return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.rejectClaimSkillLoad(task, err)
+	}
+	platformFingerprint := platformSkillFingerprint(skillRefs)
+	rows, err := h.Queries.SetTaskSkillBundleFingerprint(r.Context(), db.SetTaskSkillBundleFingerprintParams{
+		ID: task.ID, SkillBundleFingerprint: pgtype.Text{String: platformFingerprint, Valid: true},
+	})
+	if err != nil {
+		return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+			h.rejectClaimSkillLoad(task, fmt.Errorf("pin task skill bundle fingerprint: %w", err))
+	}
+	if rows != 1 {
+		return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+			h.rejectClaimSkillLoad(task, fmt.Errorf("pin task skill bundle fingerprint: updated %d tasks", rows))
+	}
+	for _, skill := range skills {
+		if skill.Source == skillbundle.SourceBuiltin || skill.ReplacesBuiltin != "" {
+			builtinSkillCount++
+		} else {
+			agentSkillCount++
 		}
-		agentSkillCount = len(skillRefs)
+	}
+	if useSkillRefs {
 		resp.Agent.SkillRefs = skillRefs
 	} else {
-		skills, err := h.TaskService.LoadAgentSkills(r.Context(), task.AgentID)
-		if err != nil {
-			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.rejectClaimSkillLoad(task, err)
-		}
-		agentSkillCount = len(skills)
-		builtinSkills := h.TaskService.BuiltinSkills(agent.SystemKey.String, legacySkillRedirects)
-		builtinSkillCount = len(builtinSkills)
-		skills = append(skills, builtinSkills...)
 		resp.Agent.Skills = skills
 	}
 	if !claimResponseAgentIdentityMatches(resp) {
@@ -2667,6 +2715,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// claim actually hands back — see resumeAnchor there.
 		var commentDeltaScope *commentCountScope
 		var resumeAnchor *resumedRunAnchor
+		var priorPlatformFingerprint pgtype.Text
 
 		// Squad-leader briefing injection: keyed off the task being a
 		// leader-task (is_leader_task) carrying a squad_id — NOT off the
@@ -2955,6 +3004,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				if !service.ResumeUnsafeFailure(src.FailureReason.String, src.Error.String) &&
 					src.SessionID.Valid && src.RuntimeID == task.RuntimeID {
 					resp.PriorSessionID = src.SessionID.String
+					priorPlatformFingerprint = src.SkillBundleFingerprint
 					// The deltas date from the run we actually resume, which on
 					// this path is the operator-chosen source — routinely NOT
 					// the newest run on the issue. nil unless that run proved it
@@ -2990,6 +3040,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}); err == nil && prior.SessionID.Valid {
 				if prior.RuntimeID == task.RuntimeID {
 					resp.PriorSessionID = prior.SessionID.String
+					priorPlatformFingerprint = prior.SkillBundleFingerprint
 					// Same rule as the rerun path: date the deltas from the run
 					// this session belongs to. GetLastTaskSession skips poisoned
 					// and retired sessions, so `prior` can be an older run than
@@ -3019,6 +3070,12 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// parent's workdir, never its session. A force_fresh task with no
 			// retry lineage still resumes nothing.
 			applyFreshSessionRetryWorkdir(*task, &resp, requestHasClientCapability(r, protocol.DaemonCapabilityCheckoutKeepsWorkV1))
+		}
+		if resp.PriorSessionID != "" && platformSessionChanged(platformFingerprint, priorPlatformFingerprint) {
+			slog.Info("claim: selected platform bundle changed; starting fresh provider session", "task_id", uuidToString(task.ID))
+			resp.PriorSessionID = ""
+			resp.PriorSessionResumeUnavailable = true
+			resumeAnchor = nil
 		}
 
 		// Both deltas, now that the resume source is known (MUL-7344).
@@ -3958,7 +4015,20 @@ func (h *Handler) ResolveTaskSkillBundles(w http.ResponseWriter, r *http.Request
 	// so serving these out of the agent's full bundle set meant reading and
 	// hashing every skill the agent has, once per request, to return one of
 	// them — quadratic in skill count across a cold dispatch.
-	allowed, err := h.TaskService.LoadRequestedAgentSkillBundles(r.Context(), task.AgentID, wanted)
+	agent, err := h.Queries.GetAgent(r.Context(), task.AgentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load task agent")
+		return
+	}
+	replacements, err := service.DecodeBuiltinSkillReplacements(agent.BuiltinSkillReplacements)
+	if err != nil {
+		writeError(w, http.StatusConflict, "invalid built-in skill policy")
+		return
+	}
+	allowed, err := h.TaskService.LoadRequestedAgentSkillBundles(r.Context(), task.AgentID, wanted, service.AgentBuiltinPolicy{
+		SystemKey: agent.SystemKey.String, LegacyRedirects: !requestHasClientCapability(r, protocol.DaemonCapabilityPlatformSkillV1),
+		EnabledIDs: agent.EnabledBuiltinSkillIds, WorkspaceID: agent.WorkspaceID, Replacements: replacements,
+	})
 	if err != nil {
 		// 5xx, not a partial answer: the daemon's resolve retry can recover a
 		// transient read, and a bundle assembled from a failed read would pass
@@ -3976,8 +4046,8 @@ func (h *Handler) ResolveTaskSkillBundles(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusNotFound, "skill bundle not found")
 			return
 		}
-		if ref.Source == skillbundle.SourcePlugin && bundle.Hash != ref.Hash {
-			writeError(w, http.StatusConflict, "pinned plugin skill bundle hash mismatch")
+		if (ref.Source == skillbundle.SourcePlugin || bundle.ReplacesBuiltin != "") && bundle.Hash != ref.Hash {
+			writeError(w, http.StatusConflict, "pinned skill bundle hash mismatch")
 			return
 		}
 		resolved = append(resolved, bundle)

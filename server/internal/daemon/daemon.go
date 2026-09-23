@@ -7011,6 +7011,7 @@ func (d *Daemon) ensureTaskSkillBundles(ctx context.Context, task *Task) error {
 		if !ok {
 			return fmt.Errorf("skill bundle missing after resolve: skill_id=%s source=%s hash=%s", ref.ID, ref.Source, ref.Hash)
 		}
+		bundle.ReplacesBuiltin = ref.ReplacesBuiltin
 		skills = append(skills, bundle)
 	}
 	task.Agent.Skills = skills
@@ -7042,7 +7043,7 @@ func (d *Daemon) resolveSkillBundle(ctx context.Context, task *Task, ref SkillRe
 	}
 	bundleRef := skillRefFromBundle(bundle)
 	validationRef := bundleRef
-	if ref.Source == skillbundle.SourcePlugin {
+	if ref.Source == skillbundle.SourcePlugin || ref.ReplacesBuiltin != "" {
 		validationRef = ref
 	}
 	if !validateSkillBundle(validationRef, bundle) {
@@ -10163,9 +10164,12 @@ func convertSkillsForEnv(skills []SkillData) []execenv.SkillContextForEnv {
 	result := make([]execenv.SkillContextForEnv, len(skills))
 	for i, s := range skills {
 		result[i] = execenv.SkillContextForEnv{
-			Name:        s.Name,
-			Description: s.Description,
-			Content:     s.Content,
+			ID:              s.ID,
+			Source:          s.Source,
+			ReplacesBuiltin: s.ReplacesBuiltin,
+			Name:            s.Name,
+			Description:     s.Description,
+			Content:         s.Content,
 		}
 		for _, f := range s.Files {
 			result[i].Files = append(result[i].Files, execenv.SkillFileContextForEnv{
