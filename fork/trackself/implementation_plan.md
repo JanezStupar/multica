@@ -107,6 +107,10 @@ preserving useful coordination, independent review, authority and native host
 routing. Patch applicability, KB lint and 57 workspace agent-definition tests
 pass in isolated copies. Active consumer files and bindings remain unchanged.
 
+The committed implementation is published as `v0.5.1-janez.1`; exact source,
+registry digests, build validation and deployment boundaries are in the
+[release handoff](release.md). Publication does not activate the workflow.
+
 ## Remaining proof and activation
 
 1. Preserve the [runtime proof record](runtime-proof.md) and tested source
