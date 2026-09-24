@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY issue_workflow_delivery_ordinal_idx ON issue_workflow_delivery(acceptance_id, ordinal);

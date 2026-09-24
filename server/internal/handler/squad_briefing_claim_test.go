@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // claimAgentInstructionsForTest claims the next queued task for runtimeID and
@@ -149,6 +152,56 @@ func TestClaim_LeaderTaskFromCommentMention_InjectsBriefing(t *testing.T) {
 	// injected briefing must arrive with the flag set.
 	if !isLeader {
 		t.Fatalf("claim injected the briefing but reported is_leader_task=false: %s", raw)
+	}
+}
+
+func TestClaim_PinnedWorkflowLeaderKeepsSquadContextWithoutBuiltinProtocol(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	fx := newSquadBriefingClaimFixture(t, ctx, "Pinned briefing")
+	if _, err := testPool.Exec(ctx, `UPDATE squad SET instructions = $2 WHERE id = $1`, fx.SquadID, "Use the team's verification checklist."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET assignee_type = 'squad', assignee_id = $2 WHERE id = $1`, fx.IssueID, fx.SquadID); err != nil {
+		t.Fatal(err)
+	}
+	helper := createHandlerTestAgent(t, "Pinned Briefing Helper", []byte("[]"))
+	addAgentMember(t, util.MustParseUUID(fx.SquadID), helper, "reviewer")
+	sourceID := insertCompleteWorkflowSkill(t, "---\nname: selected-workflow\n---\n\nFollow this issue's selected workflow")
+	enrollWorkflowPolicy(t, fx.IssueID, sourceID).Want(http.StatusCreated)
+	want := enqueueClaimTask(t, ctx, fx, true, true)
+
+	claimed := claimWorkflowTask(t, fx.RuntimeID, protocol.DaemonCapabilityPlatformSkillV1)
+	if claimed.ID != want || !claimed.IsLeaderTask {
+		t.Fatalf("pinned claim lost leader role: task=%s, leader=%t", claimed.ID, claimed.IsLeaderTask)
+	}
+	instr := claimed.Agent.Instructions
+	for _, expected := range []string{
+		"## Squad Context",
+		"This issue is assigned to your squad.",
+		"selected ticket workflow",
+		"## Squad Roster",
+		"Pinned Briefing Helper",
+		"## Squad Instructions (Pinned briefing squad)",
+		"Use the team's verification checklist.",
+	} {
+		if !strings.Contains(instr, expected) {
+			t.Errorf("pinned leader lost %q:\n%s", expected, instr)
+		}
+	}
+	for _, oldPolicy := range []string{
+		"## Squad Operating Protocol",
+		"**coordinate**, NOT to do the work yourself",
+		"On the first assignment turn",
+		"Leave `done` to a human reviewer",
+		"ALWAYS call `multica squad activity`",
+		"record `no_action` and exit silently",
+	} {
+		if strings.Contains(instr, oldPolicy) {
+			t.Errorf("pinned leader received compiled squad policy %q:\n%s", oldPolicy, instr)
+		}
 	}
 }
 

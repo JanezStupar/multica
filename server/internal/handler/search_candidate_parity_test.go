@@ -291,7 +291,7 @@ func runSearchForParity(t *testing.T, label, query string, args []any) []searchP
 	var result []searchParityRow
 	for rows.Next() {
 		var sr searchResult
-		if err := rows.Scan(
+		dest := []any{
 			&sr.issue.ID,
 			&sr.issue.WorkspaceID,
 			&sr.issue.Title,
@@ -314,9 +314,12 @@ func runSearchForParity(t *testing.T, label, query string, args []any) []searchP
 			&sr.issue.Number,
 			&sr.issue.ProjectID,
 			&sr.issue.Revision,
-			&sr.matchSource,
-			&sr.matchedCommentContent,
-		); err != nil {
+		}
+		if label == "candidate" {
+			dest = append(dest, &sr.issue.WorkflowFrozen, &sr.policyPresent)
+		}
+		dest = append(dest, &sr.matchSource, &sr.matchedCommentContent)
+		if err := rows.Scan(dest...); err != nil {
 			t.Fatalf("scan %s row: %v", label, err)
 		}
 		result = append(result, searchParityRow{

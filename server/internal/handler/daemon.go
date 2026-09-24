@@ -2562,6 +2562,61 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		RuntimeConfig:         runtimeConfig,
 		DisabledRuntimeSkills: disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
 	}
+	// A corrupted task can point at an issue in another workspace while its
+	// agent and runtime remain local. Check the issue's actual workspace before
+	// the agent-workspace-scoped policy lookup: that lookup would otherwise fail
+	// with no rows and leave the misrouted task dispatched for stale reclaim.
+	if task.IssueID.Valid {
+		issue, issueErr := h.Queries.GetIssue(r.Context(), task.IssueID)
+		if issueErr != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+				h.rejectClaimSourceLoad(r.Context(), task, issueErr, "issue", uuidToString(task.IssueID))
+		}
+		if failure := h.rejectClaimOnWorkspaceMismatch(r.Context(), task, uuidToString(issue.WorkspaceID), runtimeID, runtimeWorkspaceID, false); failure != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
+		}
+	}
+	var issueWorkflowPolicy *service.IssueWorkflowPolicy
+	var issueWorkflowProfile *service.IssueWorkflowProfile
+	if task.IssueID.Valid {
+		raw, err := h.Queries.GetIssueWorkflowPolicy(r.Context(), db.GetIssueWorkflowPolicyParams{
+			ID: task.IssueID, WorkspaceID: agent.WorkspaceID,
+		})
+		if err != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+				h.rejectClaimSkillLoad(task, fmt.Errorf("load issue workflow policy: %w", err))
+		}
+		issueWorkflowPolicy, err = h.TaskService.DecodeIssueWorkflowPolicy(raw)
+		if err != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+				h.failClaimedTaskBeforeLaunch(r.Context(), task, "The issue's pinned workflow policy is invalid.", taskfailure.ReasonSkillBundleUnavailable,
+					"invalid_issue_workflow_policy", http.StatusConflict, "invalid issue workflow policy")
+		}
+		if issueWorkflowPolicy != nil {
+			var profileID pgtype.UUID
+			issueWorkflowProfile, profileID, err = h.bindClaimIssueWorkflowProfile(r.Context(), *task, runtime)
+			if err == nil {
+				err = validateClaimIssueWorkflowProfile(issueWorkflowProfile, runtime, agent)
+			}
+			if err != nil {
+				slog.Error("task claim: issue workflow profile unavailable", "task_id", uuidToString(task.ID), "error", err)
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+					h.failClaimedTaskBeforeLaunch(r.Context(), task, "The ticket's selected execution profile is unavailable or changed. Explicit profile reselection is required.", taskfailure.ReasonInvalidTaskIdentity,
+						"invalid_issue_workflow_profile", http.StatusConflict, "invalid issue workflow profile")
+			}
+			resp.Agent.Name = issueWorkflowProfile.AgentName
+			resp.Agent.Instructions = issueWorkflowProfile.AgentInstructions
+			if issueWorkflowProfile.SupplementalInstructions != "" {
+				resp.Agent.Instructions += "\n\nTicket-scoped supplemental instructions for this agent (do not grant review, acceptance, or delivery authority):\n" + issueWorkflowProfile.SupplementalInstructions
+			}
+			resp.Agent.Model = issueWorkflowProfile.Model
+			resp.Agent.ThinkingLevel = issueWorkflowProfile.ThinkingLevel
+			resp.Agent.ServiceTier = issueWorkflowProfile.ServiceTier
+			resp.WorkspaceContext = issueWorkflowProfile.WorkspaceContext
+			resp.WorkflowProfileID = uuidToString(profileID)
+			resp.WorkflowPolicyVersion = issueWorkflowProfile.PolicyVersion
+		}
+	}
 	// System agents carry a product-owned instruction layer that ships with
 	// this binary instead of being copied into their row at creation. That
 	// is what makes it hot-updatable: editing the embedded file and
@@ -2571,25 +2626,37 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	//
 	// Composing here covers every task kind, because this is the single
 	// place a claimed task's agent payload is assembled.
-	if agent.SystemKey.String == service.MikaSystemKey {
+	// An explicitly pinned issue uses its own workflow bundle, so the
+	// binary's hot-updated Mika workflow must not compete with it.
+	if agent.SystemKey.String == service.MikaSystemKey && issueWorkflowPolicy == nil {
 		resp.Agent.Instructions = service.ComposeMikaInstructions(agent.Name, agent.Instructions)
 	}
-	replacements, err := service.DecodeBuiltinSkillReplacements(agent.BuiltinSkillReplacements)
-	if err != nil {
-		return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.rejectClaimSkillLoad(task, err)
-	}
-	if legacySkillRedirects && len(replacements) > 0 {
+	if issueWorkflowPolicy != nil && legacySkillRedirects {
 		return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
-			h.rejectClaimSkillLoad(task, fmt.Errorf("installed daemon does not support platform skill replacement"))
+			h.rejectClaimSkillLoad(task, fmt.Errorf("installed daemon does not support pinned platform policy"))
 	}
-	policy := service.AgentBuiltinPolicy{
-		SystemKey: agent.SystemKey.String, LegacyRedirects: legacySkillRedirects,
-		EnabledIDs: agent.EnabledBuiltinSkillIds, WorkspaceID: agent.WorkspaceID,
-		Replacements: replacements,
-	}
-	skills, skillRefs, err := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.SystemKey.String, legacySkillRedirects, policy)
-	if err != nil {
-		return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.rejectClaimSkillLoad(task, err)
+	var skills []service.AgentSkillData
+	var skillRefs []service.AgentSkillRefData
+	if issueWorkflowProfile != nil {
+		skills, skillRefs = profileSkillRefs(issueWorkflowProfile.Skills)
+	} else {
+		replacements, decodeErr := service.DecodeBuiltinSkillReplacements(agent.BuiltinSkillReplacements)
+		if decodeErr != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.rejectClaimSkillLoad(task, decodeErr)
+		}
+		if legacySkillRedirects && len(replacements) > 0 {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+				h.rejectClaimSkillLoad(task, fmt.Errorf("installed daemon does not support platform skill replacement"))
+		}
+		policy := service.AgentBuiltinPolicy{
+			SystemKey: agent.SystemKey.String, LegacyRedirects: legacySkillRedirects,
+			EnabledIDs: agent.EnabledBuiltinSkillIds, WorkspaceID: agent.WorkspaceID,
+			Replacements: replacements,
+		}
+		skills, skillRefs, err = h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.SystemKey.String, legacySkillRedirects, policy)
+		if err != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.rejectClaimSkillLoad(task, err)
+		}
 	}
 	platformFingerprint := platformSkillFingerprint(skillRefs)
 	rows, err := h.Queries.SetTaskSkillBundleFingerprint(r.Context(), db.SetTaskSkillBundleFingerprintParams{
@@ -2716,6 +2783,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		var commentDeltaScope *commentCountScope
 		var resumeAnchor *resumedRunAnchor
 		var priorPlatformFingerprint pgtype.Text
+		var priorWorkflowProfileID pgtype.UUID
 
 		// Squad-leader briefing injection: keyed off the task being a
 		// leader-task (is_leader_task) carrying a squad_id — NOT off the
@@ -2771,7 +2839,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					ownsIssueStatus := issue.AssigneeType.Valid &&
 						issue.AssigneeType.String == "squad" &&
 						uuidToString(issue.AssigneeID) == uuidToString(squad.ID)
-					briefing := buildSquadLeaderBriefing(r.Context(), h.Queries, squad, ownsIssueStatus)
+					briefing := buildSquadLeaderBriefing(r.Context(), h.Queries, squad, ownsIssueStatus, issueWorkflowPolicy == nil)
 					if strings.TrimSpace(resp.Agent.Instructions) == "" {
 						resp.Agent.Instructions = briefing
 					} else {
@@ -2974,7 +3042,31 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 
 		// Resolve the prior agent session / workdir to resume.
-		if task.RerunOfTaskID.Valid {
+		resumeSourceID, workflowHandoff, resumeErr := handoffResumeSource(*task)
+		if resumeErr != nil {
+			return resp, nil, nil, 0, 0, h.failClaimedTaskBeforeLaunch(r.Context(), task,
+				"The handoff's context selection is invalid.", taskfailure.ReasonInvalidTaskIdentity,
+				"handoff_context_invalid", http.StatusConflict, "invalid handoff context")
+		}
+		var recoveryEnvelope struct {
+			Recovery json.RawMessage `json:"workflow_recovery"`
+		}
+		_ = json.Unmarshal(task.Context, &recoveryEnvelope)
+		if len(recoveryEnvelope.Recovery) != 0 && string(recoveryEnvelope.Recovery) != "null" {
+			source, recoveryErr := h.TaskService.ValidateWorkflowRecoverySource(r.Context(), *task)
+			if recoveryErr != nil {
+				return resp, nil, nil, 0, 0, h.failClaimedTaskBeforeLaunch(r.Context(), task,
+					"The workflow recovery no longer matches the current handoff or authority.", taskfailure.ReasonInvalidTaskIdentity,
+					"workflow_recovery_invalid", http.StatusConflict, "workflow recovery is unavailable")
+			}
+			resumeSourceID, workflowHandoff = source.ID, true
+			// A recovery retry continues its own investigation, still under the
+			// validated original recovery authority and exact task lineage.
+			if task.RetryOfTaskID.Valid {
+				resumeSourceID = task.RetryOfTaskID
+			}
+		}
+		if resumeSourceID.Valid {
 			// Manual retry: resume precisely from the source task the user
 			// clicked, NOT the most-recent (agent, issue) row — a parallel task
 			// on the same issue must never hijack the resume (MUL-4869). The
@@ -2997,7 +3089,12 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// directory. PriorWorkDir is offered regardless of runtime (a shared
 			// mount may still resolve it); only the per-cwd session is
 			// runtime-gated.
-			if src, err := h.Queries.GetAgentTask(r.Context(), task.RerunOfTaskID); err == nil && rerunSourceMatchesTaskScope(*task, src) {
+			if src, err := h.Queries.GetAgentTask(r.Context(), resumeSourceID); err == nil && rerunSourceMatchesTaskScope(*task, src) {
+				if workflowHandoff && src.Status != "completed" && src.Status != "failed" && src.Status != "cancelled" {
+					return resp, nil, nil, 0, 0, h.failClaimedTaskBeforeLaunch(r.Context(), task,
+						"The retained handoff context is still active.", taskfailure.ReasonInvalidTaskIdentity,
+						"handoff_context_active", http.StatusConflict, "handoff context is active")
+				}
 				if src.WorkDir.Valid {
 					resp.PriorWorkDir = src.WorkDir.String
 				}
@@ -3005,6 +3102,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					src.SessionID.Valid && src.RuntimeID == task.RuntimeID {
 					resp.PriorSessionID = src.SessionID.String
 					priorPlatformFingerprint = src.SkillBundleFingerprint
+					priorWorkflowProfileID = src.WorkflowProfileID
 					// The deltas date from the run we actually resume, which on
 					// this path is the operator-chosen source — routinely NOT
 					// the newest run on the issue. nil unless that run proved it
@@ -3017,7 +3115,15 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				if src.SessionRolloutMissing {
 					resp.PriorSessionResumeUnavailable = true
 				}
+				if workflowHandoff && resp.PriorSessionID == "" {
+					resp.PriorSessionResumeUnavailable = true
+				}
 			} else if err == nil {
+				if workflowHandoff {
+					return resp, nil, nil, 0, 0, h.failClaimedTaskBeforeLaunch(r.Context(), task,
+						"The retained context does not belong to this agent and issue.", taskfailure.ReasonInvalidTaskIdentity,
+						"handoff_context_scope", http.StatusConflict, "invalid handoff context scope")
+				}
 				slog.Warn("daemon claim: rerun source belongs to another agent or scope; starting fresh",
 					"task_id", uuidToString(task.ID),
 					"task_agent_id", uuidToString(task.AgentID),
@@ -3026,6 +3132,11 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					"source_agent_id", uuidToString(src.AgentID),
 					"source_issue_id", uuidToString(src.IssueID),
 				)
+				resp.PriorSessionResumeUnavailable = true
+			} else if workflowHandoff {
+				if !errors.Is(err, pgx.ErrNoRows) {
+					return resp, nil, nil, 0, 0, h.rejectClaimSourceLoad(r.Context(), task, err, "handoff context", uuidToString(resumeSourceID))
+				}
 				resp.PriorSessionResumeUnavailable = true
 			}
 		} else if !task.ForceFreshSession {
@@ -3041,6 +3152,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				if prior.RuntimeID == task.RuntimeID {
 					resp.PriorSessionID = prior.SessionID.String
 					priorPlatformFingerprint = prior.SkillBundleFingerprint
+					priorWorkflowProfileID = prior.WorkflowProfileID
 					// Same rule as the rerun path: date the deltas from the run
 					// this session belongs to. GetLastTaskSession skips poisoned
 					// and retired sessions, so `prior` can be an older run than
@@ -3071,8 +3183,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// retry lineage still resumes nothing.
 			applyFreshSessionRetryWorkdir(*task, &resp, requestHasClientCapability(r, protocol.DaemonCapabilityCheckoutKeepsWorkV1))
 		}
-		if resp.PriorSessionID != "" && platformSessionChanged(platformFingerprint, priorPlatformFingerprint) {
-			slog.Info("claim: selected platform bundle changed; starting fresh provider session", "task_id", uuidToString(task.ID))
+		if resp.PriorSessionID != "" &&
+			(platformSessionChanged(platformFingerprint, priorPlatformFingerprint) ||
+				(resp.WorkflowProfileID != "" && resp.WorkflowProfileID != uuidToString(priorWorkflowProfileID))) {
+			slog.Info("claim: selected workflow profile or platform bundle changed; starting fresh provider session", "task_id", uuidToString(task.ID))
 			resp.PriorSessionID = ""
 			resp.PriorSessionResumeUnavailable = true
 			resumeAnchor = nil
@@ -3575,7 +3689,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 						// status to own on this turn. Once the leader opens the
 						// issue with the squad as assignee, the issue-bound
 						// claim path above grants ownership.
-						briefing := buildSquadLeaderBriefing(r.Context(), h.Queries, squad, false)
+						briefing := buildSquadLeaderBriefing(r.Context(), h.Queries, squad, false, true)
 						if strings.TrimSpace(resp.Agent.Instructions) == "" {
 							resp.Agent.Instructions = briefing
 						} else {
@@ -3617,7 +3731,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		if issueNumber > 0 {
 			resp.IssueIdentifier = service.IssueIdentifier(ws.IssuePrefix, issueNumber)
 		}
-		if ws.Context.Valid {
+		if issueWorkflowProfile != nil {
+			resp.WorkspaceContext = issueWorkflowProfile.WorkspaceContext
+		} else if ws.Context.Valid {
 			resp.WorkspaceContext = ws.Context.String
 		}
 	} else {
@@ -4015,28 +4131,58 @@ func (h *Handler) ResolveTaskSkillBundles(w http.ResponseWriter, r *http.Request
 	// so serving these out of the agent's full bundle set meant reading and
 	// hashing every skill the agent has, once per request, to return one of
 	// them — quadratic in skill count across a cold dispatch.
-	agent, err := h.Queries.GetAgent(r.Context(), task.AgentID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load task agent")
-		return
-	}
-	replacements, err := service.DecodeBuiltinSkillReplacements(agent.BuiltinSkillReplacements)
-	if err != nil {
-		writeError(w, http.StatusConflict, "invalid built-in skill policy")
-		return
-	}
-	allowed, err := h.TaskService.LoadRequestedAgentSkillBundles(r.Context(), task.AgentID, wanted, service.AgentBuiltinPolicy{
-		SystemKey: agent.SystemKey.String, LegacyRedirects: !requestHasClientCapability(r, protocol.DaemonCapabilityPlatformSkillV1),
-		EnabledIDs: agent.EnabledBuiltinSkillIds, WorkspaceID: agent.WorkspaceID, Replacements: replacements,
-	})
-	if err != nil {
-		// 5xx, not a partial answer: the daemon's resolve retry can recover a
-		// transient read, and a bundle assembled from a failed read would pass
-		// its client-side validation and be cached as if it were complete.
-		slog.Error("resolve skill bundles: load agent skills failed",
-			"task_id", uuidToString(task.ID), "agent_id", uuidToString(task.AgentID), "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to load skill bundles")
-		return
+	var allowed map[string]service.AgentSkillData
+	if task.WorkflowProfileID.Valid || task.WorkflowPolicyVersion.Valid {
+		profile, profileErr := h.TaskService.LoadIssueWorkflowProfileForTask(r.Context(), runtime.WorkspaceID, task)
+		if profileErr != nil {
+			writeError(w, http.StatusConflict, "task workflow profile is missing or invalid")
+			return
+		}
+		if profile.ExpectedProvider != runtime.Provider {
+			writeError(w, http.StatusConflict, "runtime provider no longer matches task workflow profile")
+			return
+		}
+		allowed = profileSkillMap(profile.Skills)
+	} else {
+		agent, agentErr := h.Queries.GetAgent(r.Context(), task.AgentID)
+		if agentErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load task agent")
+			return
+		}
+		replacements, decodeErr := service.DecodeBuiltinSkillReplacements(agent.BuiltinSkillReplacements)
+		if decodeErr != nil {
+			writeError(w, http.StatusConflict, "invalid built-in skill policy")
+			return
+		}
+		policy := service.AgentBuiltinPolicy{
+			SystemKey: agent.SystemKey.String, LegacyRedirects: !requestHasClientCapability(r, protocol.DaemonCapabilityPlatformSkillV1),
+			EnabledIDs: agent.EnabledBuiltinSkillIds, WorkspaceID: agent.WorkspaceID, Replacements: replacements,
+		}
+		if task.IssueID.Valid {
+			raw, policyErr := h.Queries.GetIssueWorkflowPolicy(r.Context(), db.GetIssueWorkflowPolicyParams{ID: task.IssueID, WorkspaceID: runtime.WorkspaceID})
+			if policyErr != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load issue workflow policy")
+				return
+			}
+			pinned, policyErr := h.TaskService.DecodeIssueWorkflowPolicy(raw)
+			if policyErr != nil {
+				writeError(w, http.StatusInternalServerError, "invalid issue workflow policy")
+				return
+			}
+			if pinned != nil {
+				writeError(w, http.StatusConflict, "enrolled task has no workflow profile")
+				return
+			}
+		}
+		var err error
+		allowed, err = h.TaskService.LoadRequestedAgentSkillBundles(r.Context(), task.AgentID, wanted, policy)
+		if err != nil {
+			// A partial live bundle set would produce valid but incomplete hashes.
+			slog.Error("resolve skill bundles: load agent skills failed",
+				"task_id", uuidToString(task.ID), "agent_id", uuidToString(task.AgentID), "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to load skill bundles")
+			return
+		}
 	}
 
 	resolved := make([]service.AgentSkillData, 0, len(req.Skills))

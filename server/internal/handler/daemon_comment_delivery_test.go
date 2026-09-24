@@ -487,7 +487,7 @@ func TestDeleteComment_CancelsAndRequeuesWhenDeletedInputIsCoalesced(t *testing.
 	assertRepairedCommentBatch(t, fixture, fixture.commentID[2], fixture.commentID[1:2])
 }
 
-func TestDeleteComment_FailureRestoresCancelledCompleteBatch(t *testing.T) {
+func TestDeleteComment_FailureLeavesOriginalBatchUntouched(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -514,10 +514,10 @@ func TestDeleteComment_FailureRestoresCancelledCompleteBatch(t *testing.T) {
 	if existing != 1 {
 		t.Fatalf("failed delete unexpectedly removed trigger")
 	}
-	assertRepairedCommentBatch(t, fixture, fixture.commentID[2], fixture.commentID[:2])
+	assertOriginalCommentBatchUntouched(t, fixture)
 }
 
-func TestDeleteComment_ConcurrentNoOpIsReportedAndRestoresCancelledBatch(t *testing.T) {
+func TestDeleteComment_ConcurrentNoOpLeavesOriginalBatchUntouched(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -537,7 +537,32 @@ func TestDeleteComment_ConcurrentNoOpIsReportedAndRestoresCancelledBatch(t *test
 		t.Fatalf("DeleteComment no-op: got %d: %s", w.Code, w.Body.String())
 	}
 
-	assertRepairedCommentBatch(t, fixture, fixture.commentID[2], fixture.commentID[:2])
+	assertOriginalCommentBatchUntouched(t, fixture)
+}
+
+func assertOriginalCommentBatchUntouched(t *testing.T, fixture commentDeliveryFixture) {
+	t.Helper()
+	var status, trigger string
+	var coalesced []string
+	if err := testPool.QueryRow(context.Background(), `SELECT status,trigger_comment_id::text,coalesced_comment_ids::text[]
+		FROM agent_task_queue WHERE id=$1`, fixture.taskID).Scan(&status, &trigger, &coalesced); err != nil {
+		t.Fatal(err)
+	}
+	gotCoalesced := append([]string{}, coalesced...)
+	wantCoalesced := append([]string{}, fixture.commentID[:2]...)
+	slices.Sort(gotCoalesced)
+	slices.Sort(wantCoalesced)
+	if status != "queued" || trigger != fixture.commentID[2] || !slices.Equal(gotCoalesced, wantCoalesced) {
+		t.Fatalf("failed deletion changed original batch: status=%s trigger=%s coalesced=%v", status, trigger, coalesced)
+	}
+	var taskCount int
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2`,
+		fixture.issueID, fixture.agentID).Scan(&taskCount); err != nil {
+		t.Fatal(err)
+	}
+	if taskCount != 1 {
+		t.Fatalf("failed deletion created %d tasks, want original only", taskCount)
+	}
 }
 
 func assertRepairedCommentBatch(t *testing.T, fixture commentDeliveryFixture, wantTrigger string, wantCoalesced []string) {

@@ -11,15 +11,30 @@ const selection = vi.hoisted(() => ({
   clear: () => {},
 }));
 
+const batchUpdateMutate = vi.hoisted(() => vi.fn());
+const navigationPush = vi.hoisted(() => vi.fn());
+const toastError = vi.hoisted(() => vi.fn());
+
 vi.mock("@multica/core/issues/stores/selection-store", () => ({
   useIssueSelectionStore: (selector: (s: typeof selection) => unknown) =>
     selector(selection),
 }));
 
 vi.mock("@multica/core/issues/mutations", () => ({
-  useBatchUpdateIssues: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useBatchUpdateIssues: () => ({ mutateAsync: batchUpdateMutate, isPending: false }),
   useBatchDeleteIssues: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
+
+vi.mock("@multica/core/issue-statuses/hooks", () => ({
+  useIssueStatuses: () => ({ categoryOf: (status: string) => status === "done" ? "done" : "unstarted" }),
+}));
+
+vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
+vi.mock("@multica/core/paths", () => ({
+  useWorkspacePaths: () => ({ issueDetail: (identifier: string) => `/workspace/issues/${identifier}` }),
+}));
+vi.mock("../../navigation", () => ({ useNavigation: () => ({ push: navigationPush }) }));
+vi.mock("sonner", () => ({ toast: { error: toastError, success: vi.fn() } }));
 
 vi.mock("../../i18n", () => ({
   useT: () => ({ t: () => "label" }),
@@ -28,8 +43,10 @@ vi.mock("../../i18n", () => ({
 // Render each picker as a probe that surfaces the value the toolbar passed in,
 // so the test asserts the wiring (real `commonIssueFields` runs underneath).
 vi.mock("./pickers", () => ({
-  StatusPicker: ({ status }: { status: string | null }) => (
-    <div data-testid="status-picker" data-status={status ?? "__none__"} />
+  StatusPicker: ({ status, onUpdate }: { status: string | null; onUpdate?: (updates: { status: string }) => void }) => (
+    <div data-testid="status-picker" data-status={status ?? "__none__"}>
+      <button type="button" onClick={() => onUpdate?.({ status: "done" })}>done</button>
+    </div>
   ),
   PriorityPicker: ({ priority }: { priority: string | null }) => (
     <div data-testid="priority-picker" data-priority={priority ?? "__none__"} />
@@ -82,6 +99,9 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
 
 beforeEach(() => {
   selection.selectedIds = new Set();
+  batchUpdateMutate.mockReset();
+  navigationPush.mockReset();
+  toastError.mockReset();
 });
 
 describe("BatchActionToolbar picker wiring", () => {
@@ -134,6 +154,22 @@ describe("BatchActionToolbar picker wiring", () => {
   it("renders nothing when nothing is selected", () => {
     render(<BatchActionToolbar issues={[makeIssue({ id: "a" })]} />);
     expect(screen.queryByTestId("status-picker")).toBeNull();
+  });
+
+  it("does not batch-mark workflow-managed issues done and offers the acceptance panel", () => {
+    const issue = makeIssue({ workflow_policy_present: true });
+    selection.selectedIds = new Set([issue.id]);
+    render(<BatchActionToolbar issues={[issue]} />);
+
+    screen.getByRole("button", { name: "done" }).click();
+
+    expect(batchUpdateMutate).not.toHaveBeenCalled();
+    expect(toastError).toHaveBeenCalledWith("label", {
+      action: { label: "label", onClick: expect.any(Function) },
+    });
+    const toastOptions = toastError.mock.calls[0]![1] as { action: { onClick: () => void } };
+    toastOptions.action.onClick();
+    expect(navigationPush).toHaveBeenCalledWith("/workspace/issues/MUL-1?workflow=accept");
   });
 
   it("removes the toolbar after the final selected issue is cleared", async () => {

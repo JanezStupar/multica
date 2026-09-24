@@ -533,13 +533,34 @@ DELETE FROM lark_installation WHERE lark_installation.workspace_id = $1;
 DELETE FROM comment WHERE comment.workspace_id = $1;
 
 -- name: DeleteWorkspaceIssueRoots :exec
-WITH deleted_wakeup_receipts AS (
+-- Delivery and rejection both serialize on the issue row. Acquire those locks
+-- before sweeping the no-FK workflow ledger, even for direct query callers.
+WITH locked_issues AS MATERIALIZED (
+    SELECT id FROM issue WHERE workspace_id=$1 ORDER BY id FOR UPDATE
+),
+deleted_wakeup_receipts AS (
  DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE workspace_id=$1)
 ), deleted_wakeups AS (
  DELETE FROM issue_wakeup WHERE workspace_id=$1
+), deleted_workflow_profiles AS (
+ DELETE FROM issue_workflow_profile WHERE workspace_id=$1
+), deleted_workflow_candidates AS (
+ DELETE FROM issue_workflow_candidate WHERE workspace_id=$1 AND (SELECT count(*) FROM locked_issues)>=0
+), deleted_workflow_reviews AS (
+ DELETE FROM issue_workflow_review WHERE workspace_id=$1 AND (SELECT count(*) FROM locked_issues)>=0
+), deleted_workflow_exceptions AS (
+ DELETE FROM issue_workflow_exception WHERE workspace_id=$1 AND (SELECT count(*) FROM locked_issues)>=0
+), deleted_workflow_acceptances AS (
+ DELETE FROM issue_workflow_acceptance WHERE workspace_id=$1 AND (SELECT count(*) FROM locked_issues)>=0
+), deleted_workflow_rejections AS (
+ DELETE FROM issue_workflow_rejection WHERE workspace_id=$1 AND (SELECT count(*) FROM locked_issues)>=0
+), deleted_workflow_deliveries AS (
+ DELETE FROM issue_workflow_delivery WHERE workspace_id=$1 AND (SELECT count(*) FROM locked_issues)>=0
+), deleted_workflow_delivery_attempts AS (
+ DELETE FROM issue_workflow_delivery_attempt WHERE workspace_id=$1 AND (SELECT count(*) FROM locked_issues)>=0
 ),
 deleted_issues AS (
-    DELETE FROM issue WHERE issue.workspace_id = $1
+    DELETE FROM issue WHERE issue.workspace_id = $1 AND issue.id IN (SELECT id FROM locked_issues)
 ),
 deleted_labels AS (
     DELETE FROM issue_label WHERE issue_label.workspace_id = $1

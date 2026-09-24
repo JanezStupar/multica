@@ -136,10 +136,30 @@ it("preserves actor filters and accepts older responses without them", async () 
   };
   for (const fields of [{}, { filter_actor_type: "member", filter_actor_id: "user", filter_actor_name: "Jiayuan" }, { filter_actor_type: "agent", filter_actor_id: null, filter_actor_name: null }]) {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify([{ ...rule, ...fields }]))));
-    await expect(client.listIssueWakeups("issue")).resolves.toEqual([{ ...rule, ...fields }]);
+    await expect(client.listIssueWakeups("issue")).resolves.toEqual([{ ...rule, ...fields, force_fresh_session: false }]);
   }
   for (const fields of [{ filter_actor_type: 42 }, { filter_actor_type: "robot" }, { filter_actor_id: 42 }, { filter_actor_name: 42 }]) {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify([{ ...rule, ...fields }]))));
+    await expect(client.listIssueWakeups("issue")).rejects.toThrow("Could not load wakeups");
+  }
+});
+
+it("preserves fresh-session selection in wakeup responses and accepts older servers", async () => {
+  const rule = {
+    id: "wake", issue_id: "issue", agent_id: "agent", instruction: "review",
+    kind: "event", mode: "continuous", event_types: ["comment.created"],
+    filter_agent_id: null, filter_task_id: null, interval_seconds: null,
+    cron_expression: null, timezone: "UTC", next_fire_at: null, enabled: true,
+    disabled_at: null, last_task_id: null, last_error: null,
+  };
+  for (const fields of [{}, { force_fresh_session: true }, { force_fresh_session: false }] as { force_fresh_session?: boolean }[]) {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify([{ ...rule, ...fields }]))));
+    await expect(client.listIssueWakeups("issue")).resolves.toMatchObject([
+      { ...fields, force_fresh_session: fields.force_fresh_session ?? false },
+    ]);
+  }
+  for (const value of ["true", 1, null]) {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify([{ ...rule, force_fresh_session: value }]))));
     await expect(client.listIssueWakeups("issue")).rejects.toThrow("Could not load wakeups");
   }
 });

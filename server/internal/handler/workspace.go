@@ -170,7 +170,7 @@ func (h *Handler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 
 	resp := make([]WorkspaceResponse, len(workspaces))
 	for i, ws := range workspaces {
-		resp[i] = h.workspaceToResponse(ws)
+		resp[i] = h.workspaceToResponse(db.Workspace(ws))
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -1158,7 +1158,13 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	}{
 		{
 			name: "set teardown mode",
-			run:  func() error { return qtx.SetWorkspaceTeardownMode(ctx) },
+			run: func() error {
+				if err := qtx.SetWorkspaceTeardownMode(ctx); err != nil {
+					return err
+				}
+				_, err := tx.Exec(ctx, `SELECT set_config('multica.workflow_teardown_workspace_id',$1::text,true)`, uuidToString(requester.WorkspaceID))
+				return err
+			},
 		},
 		{
 			// Fences task enqueue / reassignment for the rest of the

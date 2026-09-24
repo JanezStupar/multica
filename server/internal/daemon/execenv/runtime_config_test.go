@@ -637,6 +637,42 @@ func TestInstructionPrecedenceOnlyAppliesToIssueWorkflow(t *testing.T) {
 	}
 }
 
+func TestTaskCLISelectionAppearsInEveryRuntimeBrief(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		ctx  TaskContextForEnv
+	}{
+		{"issue", TaskContextForEnv{IssueID: "issue-1"}},
+		{"chat", TaskContextForEnv{ChatSessionID: "chat-1"}},
+		{"quick-create", TaskContextForEnv{QuickCreatePrompt: "create an issue"}},
+		{"autopilot", TaskContextForEnv{AutopilotRunID: "run-1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := tc.ctx
+			ctx.MulticaCLIPath = "/candidate CLI/multica"
+			out := buildMetaSkillContent("codex", ctx)
+			for _, want := range []string{
+				"## Task Multica CLI",
+				`"/candidate CLI/multica"`,
+				`"$MULTICA_CLI_PATH" issue get`,
+				`& $env:MULTICA_CLI_PATH issue get`,
+				`"%MULTICA_CLI_PATH%" issue get`,
+				"Every `multica ...` example",
+				"Do not install or update another Multica CLI",
+			} {
+				if !strings.Contains(out, want) {
+					t.Errorf("brief missing %q", want)
+				}
+			}
+		})
+	}
+	if out := buildMetaSkillContent("codex", TaskContextForEnv{IssueID: "issue-1"}); strings.Contains(out, "## Task Multica CLI") {
+		t.Fatal("brief claimed task CLI selection without a resolved path")
+	}
+}
+
 func TestChatOutputDoesNotRequireIssueComment(t *testing.T) {
 	t.Parallel()
 

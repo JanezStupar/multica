@@ -38,6 +38,7 @@ func newIssueWakeupCommand() *cobra.Command {
 			c.Long = "Create or replace the complete configuration. Events default to once; every/cron use continuous. Updating explicitly re-enables the configuration. Runs use normal comment delivery."
 			c.Long += " For task events, use --task-id for one run or --filter-agent-id for its agent. For comment/issue/reaction/attachment changes, use --filter-actor-type member|agent with --filter-actor-id. To wait for a person to comment, use --event comment.created --filter-actor-type member --filter-actor-id USER_ID. Actor filters identify who made the change, not the original author of an edited comment. Without a source filter, all matching events on this issue can wake the target."
 			c.Flags().String("agent-id", "", "Agent to wake (defaults to authenticated agent)")
+			c.Flags().Bool("fresh-session", false, "Start a fresh provider context for each wakeup run instead of resuming this agent's issue session")
 			c.Flags().String("instruction", "", "Instruction for the next run")
 			c.Flags().String("instruction-file", "", "Read instruction from a UTF-8 file")
 			c.Flags().String("kind", "event", "event, at, every or cron")
@@ -96,6 +97,8 @@ func runIssueWakeup(cmd *cobra.Command, args []string, action string) error {
 		result = row
 	} else {
 		body := map[string]any{}
+		fresh, _ := cmd.Flags().GetBool("fresh-session")
+		body["force_fresh_session"] = fresh
 		for flag, key := range map[string]string{"agent-id": "agent_id", "kind": "kind", "mode": "mode", "filter-agent-id": "filter_agent_id", "filter-actor-type": "filter_actor_type", "filter-actor-id": "filter_actor_id", "task-id": "filter_task_id", "parent": "parent_comment_id", "at": "at", "cron": "cron_expression", "timezone": "timezone"} {
 			v, _ := cmd.Flags().GetString(flag)
 			if v != "" {

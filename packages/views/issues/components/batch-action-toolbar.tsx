@@ -28,6 +28,10 @@ import {
 } from "@multica/ui/lib/motion";
 import { useIssueSurfaceActionsOptional } from "../surface/actions-context";
 import { useIssueSurfaceSelection } from "../surface/selection-context";
+import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
+import { useWorkspaceId } from "@multica/core/hooks";
+import { useWorkspacePaths } from "@multica/core/paths";
+import { useNavigation } from "../../navigation";
 
 export function BatchActionToolbar({
   issues,
@@ -64,6 +68,10 @@ export function BatchActionToolbar({
     [issues, selectedIds],
   );
   const count = selectedIssues.length;
+  const wsId = useWorkspaceId();
+  const paths = useWorkspacePaths();
+  const navigation = useNavigation();
+  const { categoryOf } = useIssueStatuses(wsId);
 
   // Reflect the real shared value of the selected issues in each picker; fall
   // back to an empty (no-checkmark) state when the selection is mixed, instead
@@ -121,6 +129,18 @@ export function BatchActionToolbar({
   // run fan-out.
   const handleBatchStatus = (updates: Partial<UpdateIssueRequest>) => {
     if (!updates.status) return;
+    const enrolled = selectedIssues.find(
+      (issue) => issue.workflow_policy_present === true || issue.workflow_frozen === true,
+    );
+    if (enrolled && categoryOf(updates.status) === "done") {
+      toast.error(t(($) => $.batch.workflow_done_requires_acceptance), {
+        action: {
+          label: t(($) => $.batch.workflow_open, { identifier: enrolled.identifier }),
+          onClick: () => navigation.push(`${paths.issueDetail(enrolled.identifier)}?workflow=accept`),
+        },
+      });
+      return;
+    }
     void handleBatchUpdate(updates);
   };
 

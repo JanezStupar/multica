@@ -1,0 +1,185 @@
+--- a/decisions/0017-progressive-workflow-automation.md
++++ b/decisions/0017-progressive-workflow-automation.md
+@@ -20,9 +20,19 @@
+ history or turning each provider run into a separate engineering objective.
+ 
+ ## Decision
+-- Keep Primary, Implementor, and Review Controller as top-level sessions.
+-  Subordinate implementation workers, researchers, and read-only acceptance
+-  reviewers remain project-scoped agent profiles.
++
++This decision retains progressive authorization for automatic work while making
++the issue topology an integration-owned choice. Automatic execution does not by
++itself require a parent/child stage graph. A project that selects staged
++children must declare that pattern and its lifecycle in its active, versioned
++integration instructions.
++
++- Preserve Primary authority, implementation ownership, and independent
++  evaluation as distinct responsibilities. They are not a required hierarchy
++  of separate agent identities or top-level sessions. An integration chooses
++  context and profile boundaries for continuity, capability, parallelism, and
++  any required fresh independent review. Optional implementation workers,
++  researchers, and acceptance reviewers remain project-scoped profiles.
+ - Declare active tools and automation in both human-readable `AGENTS.md` and
+   machine-readable `project-workflow.toml`. They must agree.
+ - Use the declared operational system's native identities, task lifecycle,
+@@ -32,9 +42,11 @@
+ - Support three progressive automation levels:
+   - `ticket-only`: create and update tickets; people launch sessions manually;
+   - `launch-on-command`: each explicit trigger authorizes one routine role run;
+-  - `automatic`: starting one approved bounded parent objective authorizes its
+-    declared child stages, routine implementation, review/fix, fresh acceptance
+-    passes, orchestrator reconciliation, validation, and local commit flow.
++  - `automatic`: one approved bounded objective may progress through the
++    routine actions explicitly authorized by the project's active integration,
++    without a new human trigger for every role run. This level alone does not
++    prescribe issue topology, roles, status transitions, review policy, or
++    delivery actions.
+ - Treat the selected automation level as durable project authorization for the
+   declared ticket, repositories, development target, and lower levels. Agents
+   do not repeatedly request permission for routine in-scope actions already
+@@ -47,45 +59,47 @@
+   the owning artifacts, operational history, and actual repository state. If
+   no Primary is available, automatic operation stops at `Needs Primary`.
+ - Keep the durable product objective under Human Primary's product,
+-  architecture, scope, and final-completion authority. For a bounded automatic
+-  objective, assign the parent operationally to the declared native
+-  orchestrator so terminal child stages wake the coordinator that can evaluate
+-  evidence and promote the next stage. Operational assignment does not transfer
+-  Human Primary authority. The parent is a continuity and reconciliation
+-  surface, not an Implementor task. Each materially distinct implementation
+-  slice uses one child objective with its own observable terminal condition,
+-  scope, focused validation, boundaries, owning references, and parent binding.
++  architecture, scope, and completion authority. Keep related implementation,
++  review/fix, and acceptance work on its owning issue while the outcome remains
++  coherent. Create a separate issue when it represents an independently
++  trackable outcome, genuine parallel work, a distinct owner or environment, or
++  a dependency that benefits from separate coordination. An operational
++  parent/child graph is an integration choice; operational assignment does not
++  transfer Human Primary authority.
+ - Treat provider runs as execution attempts, not milestones. Retry, recovery,
+-  interruption, and ordinary same-role continuation remain on the same
+-  slice child while its outcome stays coherent. A materially different slice
+-  uses a new child and fresh role context when the operational system
+-  provides an issue-scoped session boundary.
+-- The automatic parent owns ordered child stages: independently completable
+-  implementation slices, one reusable integration-review/fix child, and one
+-  fresh acceptance-verdict child per acceptance pass. The parent orchestrator
+-  reconciles completed slices into one coherent surface before promoting
+-  review. Review inspects the actual combined repositories, not only slice
+-  reports. A slice receives its own review only when it is independently risky,
+-  externally consumable, or difficult to reverse.
+-- Every automatic specialist child explicitly delegates only its own terminal
+-  status transition. An implementation child is complete after its criteria
+-  and focused validation pass with no separate slice-local review remaining.
+-  The reusable integration-review child is complete only when the combined
+-  surface is clean. An acceptance child is complete after it posts one valid
+-  `accepted`, `rejected`, or `blocked` verdict. The executing role posts its
+-  result, marks only that assigned child `done`, and reads it back. This does
+-  not transfer parent reconciliation, assignment, sibling or later-stage
+-  mutation, or broader Human Primary authority.
+-- Native child-stage completion is the automatic continuation signal. A finite
+-  task ending, a comment, or reassignment does not return control to a former
+-  owner. The woken parent orchestrator reads the completed child and task
+-  evidence before promoting the next stage or applying a verdict.
+-- Routine acceptance rejection reopens and reassigns the same Review Controller
+-  child so provider-session continuity can be verified. After the repaired
+-  surface is clean, create a new acceptance child so each pass has a fresh
+-  read-only issue and provider context. Proven Review Controller session loss
+-  or material Implementor rework ends the cycle and requires a new owning
+-  child from the actual surface.
++  interruption, and ordinary same-role continuation remain on the same issue
++  while its outcome stays coherent. A separate issue is appropriate when the
++  work has become a materially different outcome or needs a durable ownership
++  or coordination boundary; it is not required merely because a run ended.
++- An integration may explicitly select ordered parent/child stages when its
++  operational system provides a reliable continuation path and the work
++  benefits from that coordination. Its versioned instructions own the stage
++  graph, role assignments, wakeups, and reconciliation. A staged pattern may
++  use independently completable implementation issues, an integrated review
++  issue, and a distinct fresh acceptance context per verdict. None of those
++  separate issues is a universal requirement. Review evaluates the actual
++  candidate, not only implementation reports; focused per-slice review is
++  reserved for work that is independently risky, externally consumable, or
++  difficult to reverse.
++- Delegate only the actions and transitions explicitly granted to a role.
++  Where a project selects staged children, a child may receive narrow authority
++  to reconcile and complete only its own outcome. That does not transfer parent
++  reconciliation, assignment, sibling or later-stage mutation, or broader
++  Human Primary authority. Integrations must define their exact status and
++  read-back behavior.
++- Every automatic integration must define a durable continuation path and
++  safe recovery from ambiguous responses. A finite task ending, comment, or
++  reassignment does not by itself transfer control to a former owner. In a
++  declared staged-child pattern, child completion may be its continuation
++  signal; the coordinator reads back the child and task evidence before any
++  authorized next transition.
++- Routine in-scope review findings return to the retained review/fix context
++  while its provider-session continuity remains usable. Each required final
++  independent review uses a fresh, read-only reviewer context that evaluates
++  the exact changed candidate without a suggested verdict. Proven continuity
++  loss or material rework requires a new review/fix cycle. Separate issues may
++  represent these roles when the integration benefits from durable ownership,
++  but separate issue records do not themselves prove reviewer independence.
+ - Maintain one standalone canonical Codex project template. Copies packaged by
+   optional workspace tools are derived mechanically from it.
+ 
+@@ -96,8 +110,8 @@
+     automatic progression;
+   - native operational identity and task history remain visible instead of
+     being projected through a parallel controller;
+-  - native child-stage completion gives every automatic transition a durable
+-    return path to the operational parent orchestrator;
++  - integrations can select a durable continuation path that fits their native
++    operational system without imposing one issue graph on every project;
+   - product continuity remains stable while each implementation context stays
+     bounded to one coherent slice and review covers the integrated result;
+   - focused slice validation catches local defects without multiplying routine
+@@ -108,9 +122,10 @@
+   - projects depend on the declared operational system's execution semantics;
+   - native integrations still require project-owned workspace and authority
+     mapping;
+-  - the parent orchestrator must create, promote, and reconcile staged children
+-    and verify task and provider-session identity after every wake;
+-  - each acceptance pass creates a separate verdict child;
++  - projects that opt into staged children must maintain the additional graph,
++    delegated transitions, and read-back checks they declare;
++  - independent review requires a fresh evaluation context for each verdict,
++    whether or not the integration uses a separate issue for that context;
+   - defects that cross slice boundaries may be found later than they would be
+     under review-after-every-slice;
+   - external and privileged operations still require a separate approval path.
+@@ -121,14 +136,16 @@
+ - Require a project-owned orchestration layer for every operational system —
+   rejected because it can duplicate native task, identity, retry, and
+   observability behavior without adding project value.
+-- Model Primary, Implementor, and Review Controller as recursive subagents —
+-  rejected because they own separate long-lived or fresh top-level contexts.
++- Require fixed identities and a fixed hierarchy for Primary, implementation,
++  and review responsibilities — rejected because responsibility and independent
++  judgment do not require a permanent one-role-per-agent topology.
+ - Send every review finding back to Implementor — rejected because Review
+   Controller already has the context and authority to fix routine findings.
+ - Infer authority from installed software or credentials — rejected because
+   installation is not project intent.
+-- Keep every milestone and run on one product issue — rejected because stale
+-  execution history grows without a useful context boundary.
++- Keep every milestone and run on one product issue — not adopted as a
++  universal rule; preserve one issue while its outcome remains coherent and
++  split work only for an independent outcome or useful coordination boundary.
+ - Create one issue per provider run — rejected because a run is an execution
+   attempt rather than a coherent engineering objective.
+ - Review and independently accept every slice by default — rejected because it
+@@ -151,6 +168,12 @@
+ 
+ ## Pilot amendment history
+ 
++- 2026-09-24: Scoped the staged parent/child graph to integrations that
++  explicitly select and declare it. Automatic authorization no longer implies
++  one child per implementation slice, a reusable review child, or an
++  acceptance child per verdict. Preserve the historical pilot details below as
++  evidence for projects that still use that pattern; they are not a default for
++  unrelated integrations.
+ - 2026-08-14: Under the owner's continuing pilot override, changed the default
+   from review and acceptance per implementation milestone to focused validation
+   per slice followed by one integrated review/fix and acceptance issue.

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS issue_workflow_exception_issue_history_idx;

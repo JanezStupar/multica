@@ -1666,6 +1666,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Group(func(r chi.Router) {
 					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
 					r.Get("/", h.GetWorkspace)
+					r.Get("/workflow-default", h.GetWorkspaceWorkflowDefault)
 					r.Get("/members", h.ListMembersWithUser)
 					r.Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
@@ -1702,6 +1703,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Put("/", h.UpdateWorkspace)
 					r.Patch("/", h.UpdateWorkspace)
+					r.With(handler.RequireHumanActor).Post("/workflow-cutover", h.CutoverWorkspaceWorkflowDefault)
+					r.With(handler.RequireHumanActor).Put("/workflow-default", h.UpdateWorkspaceWorkflowDefault)
 					r.Post("/members", h.CreateInvitation)
 					r.Route("/members/{memberId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateMember)
@@ -1975,7 +1978,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/batch-update", h.BatchUpdateIssues)
 				r.Post("/batch-delete", h.BatchDeleteIssues)
 				r.Route("/{id}", func(r chi.Router) {
+					r.Use(h.RejectFrozenIssueMachineMutation)
 					r.Get("/", h.GetIssue)
+					r.Get("/workflow-policy", h.GetIssueWorkflowPolicy)
+					r.Get("/workflow", h.GetIssueWorkflow)
+					r.Post("/workflow/reviews", h.RegisterIssueWorkflowReview)
+					r.Post("/workflow/acceptances", h.AcceptIssueWorkflow)
+					r.Post("/workflow/rejections", h.RejectIssueWorkflow)
+					r.Post("/workflow/exceptions", h.GrantIssueWorkflowException)
+					r.Post("/workflow/exceptions/{exceptionID}/revoke", h.RevokeIssueWorkflowException)
+					r.With(handler.RequireHumanActor).Post("/workflow/delivery/{deliveryID}/retry", h.RetryIssueWorkflowDelivery)
+					r.With(handler.RequireHumanActor).Post("/workflow-policy", h.EnrollIssueWorkflowPolicy)
+					r.With(handler.RequireHumanActor).Post("/workflow-migrate", h.MigrateIssueWorkflow)
+					r.With(handler.RequireHumanActor).Post("/workflow-profile/reselect", h.ReselectIssueWorkflowProfile)
 					r.Put("/", h.UpdateIssue)
 					r.Post("/move", h.MoveIssue)
 					r.Delete("/", h.DeleteIssue)
@@ -1988,6 +2003,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/unsubscribe", h.UnsubscribeFromIssue)
 					r.Post("/unsubscribe/subtree", h.UnsubscribeFromIssueSubtree)
 					r.Get("/wakeups", h.ListIssueWakeups)
+					r.Get("/handoffs", h.ListIssueHandoffs)
+					r.Post("/handoffs", h.CreateIssueHandoff)
 					r.Post("/wakeups", h.CreateIssueWakeup)
 					r.Put("/wakeups/{wakeupID}", h.CreateIssueWakeup)
 					r.Post("/wakeups/{wakeupID}/disable", h.DisableIssueWakeup)
@@ -2098,7 +2115,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			})
 
 			// Squad leader evaluation (writes to activity_log)
-			r.Post("/api/issues/{id}/squad-evaluated", h.RecordSquadLeaderEvaluation)
+			r.With(h.RejectFrozenIssueMachineMutation).Post("/api/issues/{id}/squad-evaluated", h.RecordSquadLeaderEvaluation)
 
 			// Autopilots
 			r.Route("/api/autopilots", func(r chi.Router) {
@@ -2163,18 +2180,18 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/comments/{commentId}", func(r chi.Router) {
 				r.With(handler.RequireHumanActor).Get("/sub-issue-preview", h.PreviewCommentSubIssue)
 				r.With(handler.RequireHumanActor).Post("/sub-issues", h.CreateCommentSubIssue)
-				r.Put("/", h.UpdateComment)
-				r.Delete("/", h.DeleteComment)
+				r.With(h.RejectFrozenCommentMachineMutation).Put("/", h.UpdateComment)
+				r.With(h.RejectFrozenCommentMachineMutation).Delete("/", h.DeleteComment)
 				// Same handler under a path servers from before #8296 do not
 				// route. Clients that promise "replies are kept" call this one,
 				// so a request that reaches an older server — mid-rollout, after
 				// a rollback, or self-hosted — fails instead of deleting the
 				// replies with the comment.
-				r.Delete("/keep-replies", h.DeleteComment)
-				r.Post("/resolve", h.ResolveComment)
-				r.Delete("/resolve", h.UnresolveComment)
-				r.Post("/reactions", h.AddReaction)
-				r.Delete("/reactions", h.RemoveReaction)
+				r.With(h.RejectFrozenCommentMachineMutation).Delete("/keep-replies", h.DeleteComment)
+				r.With(h.RejectFrozenCommentMachineMutation).Post("/resolve", h.ResolveComment)
+				r.With(h.RejectFrozenCommentMachineMutation).Delete("/resolve", h.UnresolveComment)
+				r.With(h.RejectFrozenCommentMachineMutation).Post("/reactions", h.AddReaction)
+				r.With(h.RejectFrozenCommentMachineMutation).Delete("/reactions", h.RemoveReaction)
 			})
 
 			// Agents

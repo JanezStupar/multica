@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY issue_workflow_review_candidate_idx ON issue_workflow_review(candidate_id, submitted_at DESC);

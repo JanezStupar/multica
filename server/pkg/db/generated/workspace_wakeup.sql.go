@@ -14,7 +14,7 @@ import (
 const listWorkspaceWakeups = `-- name: ListWorkspaceWakeups :one
 WITH base AS MATERIALIZED (
  SELECT w.id,w.issue_id,i.title AS issue_title,ws.issue_prefix||'-'||i.number AS issue_identifier,
-  w.agent_id,a.name AS agent_name,w.kind,w.mode,w.event_types,w.filter_actor_type,
+  w.agent_id,a.name AS agent_name,w.kind,w.mode,w.force_fresh_session,w.event_types,w.filter_actor_type,
  (CASE WHEN actor_agent.id IS NOT NULL OR actor_member.user_id IS NOT NULL THEN w.filter_actor_id END)::uuid AS filter_actor_id,
  COALESCE(actor_agent.name,actor_user.name,'')::text AS filter_actor_name,
   CASE WHEN source.id IS NOT NULL THEN w.filter_agent_id END AS filter_agent_id,
@@ -41,18 +41,18 @@ LEFT JOIN "user" actor_user ON actor_user.id=actor_member.user_id
  ) r ON true
  WHERE w.workspace_id= $4
 ), classified AS (
- SELECT id, issue_id, issue_title, issue_identifier, agent_id, agent_name, kind, mode, event_types, filter_actor_type, filter_actor_id, filter_actor_name, filter_agent_id, filter_agent_name, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, revision, disabled_at, last_task_id, last_error, created_at, issue_closed, can_manage, active_runs,CASE WHEN (enabled AND NOT issue_closed) OR active_runs>0 THEN 'active'
+ SELECT id, issue_id, issue_title, issue_identifier, agent_id, agent_name, kind, mode, force_fresh_session, event_types, filter_actor_type, filter_actor_id, filter_actor_name, filter_agent_id, filter_agent_name, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, revision, disabled_at, last_task_id, last_error, created_at, issue_closed, can_manage, active_runs,CASE WHEN (enabled AND NOT issue_closed) OR active_runs>0 THEN 'active'
   WHEN NOT issue_closed AND disabled_at IS NOT NULL THEN 'disabled' ELSE 'ended' END AS scope
  FROM base
 ), filtered AS (
- SELECT id, issue_id, issue_title, issue_identifier, agent_id, agent_name, kind, mode, event_types, filter_actor_type, filter_actor_id, filter_actor_name, filter_agent_id, filter_agent_name, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, revision, disabled_at, last_task_id, last_error, created_at, issue_closed, can_manage, active_runs, scope FROM classified WHERE ($5::text='all' OR scope= $5)
+ SELECT id, issue_id, issue_title, issue_identifier, agent_id, agent_name, kind, mode, force_fresh_session, event_types, filter_actor_type, filter_actor_id, filter_actor_name, filter_agent_id, filter_agent_name, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, revision, disabled_at, last_task_id, last_error, created_at, issue_closed, can_manage, active_runs, scope FROM classified WHERE ($5::text='all' OR scope= $5)
   AND ($6::text='all' OR ($6='event' AND kind='event') OR ($6='at' AND kind='at') OR ($6='recurring' AND kind IN ('every','cron')))
   AND ($7::text='' OR agent_id::text= $7)
   AND ($8::text='' OR strpos(lower(issue_title||' '||issue_identifier||' '||agent_name),lower($8))>0)
 ), page AS (
- SELECT id, issue_id, issue_title, issue_identifier, agent_id, agent_name, kind, mode, event_types, filter_actor_type, filter_actor_id, filter_actor_name, filter_agent_id, filter_agent_name, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, revision, disabled_at, last_task_id, last_error, created_at, issue_closed, can_manage, active_runs, scope FROM filtered ORDER BY created_at DESC,id DESC LIMIT $10::int OFFSET $9::int
+ SELECT id, issue_id, issue_title, issue_identifier, agent_id, agent_name, kind, mode, force_fresh_session, event_types, filter_actor_type, filter_actor_id, filter_actor_name, filter_agent_id, filter_agent_name, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, revision, disabled_at, last_task_id, last_error, created_at, issue_closed, can_manage, active_runs, scope FROM filtered ORDER BY created_at DESC,id DESC LIMIT $10::int OFFSET $9::int
 ), details AS (
- SELECT p.id, p.issue_id, p.issue_title, p.issue_identifier, p.agent_id, p.agent_name, p.kind, p.mode, p.event_types, p.filter_actor_type, p.filter_actor_id, p.filter_actor_name, p.filter_agent_id, p.filter_agent_name, p.filter_task_id, p.interval_seconds, p.cron_expression, p.timezone, p.next_fire_at, p.enabled, p.revision, p.disabled_at, p.last_task_id, p.last_error, p.created_at, p.issue_closed, p.can_manage, p.active_runs, p.scope,r.status AS last_task_status,
+ SELECT p.id, p.issue_id, p.issue_title, p.issue_identifier, p.agent_id, p.agent_name, p.kind, p.mode, p.force_fresh_session, p.event_types, p.filter_actor_type, p.filter_actor_id, p.filter_actor_name, p.filter_agent_id, p.filter_agent_name, p.filter_task_id, p.interval_seconds, p.cron_expression, p.timezone, p.next_fire_at, p.enabled, p.revision, p.disabled_at, p.last_task_id, p.last_error, p.created_at, p.issue_closed, p.can_manage, p.active_runs, p.scope,r.status AS last_task_status,
   CASE WHEN r.id IS NOT NULL THEN jsonb_build_object(
    'id',r.id,'agent_id',r.agent_id,'runtime_id',r.runtime_id,'issue_id',r.issue_id,'wakeup_id',p.id,
    'status',r.status,'priority',r.priority,'created_at',r.created_at,'started_at',r.started_at,

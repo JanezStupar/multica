@@ -76,6 +76,30 @@ func wakeSetStatus(t *testing.T, f principalFixture, issue pgtype.UUID, status s
 	return cancelled
 }
 
+func TestIssueWakeupTickPreservesFrozenIssueReceiptWithoutExecution(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	w := wakeCreate(t, f, s, issue, WakeupInput{
+		AgentID: agent, Kind: "event", EventTypes: []string{"comment.created"}, Instruction: "Review the pending comment",
+	})
+	f.Comment(t, util.UUIDToString(issue), "Pending before freeze")
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id=$1 AND processed_at IS NULL`, w.ID); got == 0 {
+		t.Fatal("test did not create a pending wakeup receipt")
+	}
+	f.Exec(t, `UPDATE issue SET workflow_frozen=true WHERE id=$1`, issue)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, issue); got != 0 {
+		t.Fatalf("frozen issue dispatched %d tasks", got)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id=$1 AND processed_at IS NULL`, w.ID); got == 0 {
+		t.Fatal("freeze consumed pending wakeup evidence")
+	}
+	if got := f.Count(t, `SELECT count(*) FROM issue_wakeup WHERE id=$1 AND disabled_at IS NULL`, w.ID); got != 1 {
+		t.Fatal("freeze disabled the stored subscription")
+	}
+}
+
 func TestIssueWakeupEventAtomicOnceAndIndependentInputs(t *testing.T) {
 	f, s, issue, agent := wakeFixture(t)
 	ctx := context.Background()

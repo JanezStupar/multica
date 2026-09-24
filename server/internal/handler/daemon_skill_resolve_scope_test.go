@@ -198,8 +198,8 @@ func TestResolveTaskSkillBundles_LoadsOnlyTheRequestedSkill(t *testing.T) {
 }
 
 // TestResolveTaskSkillBundles_BuiltinRefTouchesNoWorkspaceQuery pins the other
-// half: built-ins live in the binary, so resolving one must not reach the
-// database at all.
+// half: an enabled built-in lives in the binary, so resolving it needs no
+// workspace skill or skill-file query.
 func TestResolveTaskSkillBundles_BuiltinRefTouchesNoWorkspaceQuery(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -209,8 +209,14 @@ func TestResolveTaskSkillBundles_BuiltinRefTouchesNoWorkspaceQuery(t *testing.T)
 	spy := &skillQuerySpy{inner: testPool}
 	runtimeID, taskID, _ := resolveScopeFixture(t, ctx, "resolvebuiltin", "resolvebuiltin-alpha")
 
-	// The unscoped set: resolution deliberately serves any built-in by id.
-	builtins := testHandler.TaskService.AllBuiltinSkills()
+	var systemKey pgtype.Text
+	var enabledIDs []string
+	if err := testPool.QueryRow(ctx, `SELECT a.system_key,a.enabled_builtin_skill_ids
+		FROM agent a JOIN agent_task_queue task ON task.agent_id=a.id WHERE task.id=$1`, taskID).
+		Scan(&systemKey, &enabledIDs); err != nil {
+		t.Fatal(err)
+	}
+	builtins := testHandler.TaskService.EnabledBuiltinSkills(systemKey.String, true, enabledIDs)
 	if len(builtins) == 0 {
 		t.Skip("no builtin skills embedded in this build")
 	}

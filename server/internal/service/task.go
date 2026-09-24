@@ -3467,6 +3467,8 @@ func (s *TaskService) ClaimTask(ctx context.Context, agentID pgtype.UUID) (*db.A
 	return s.claimTask(ctx, agentID, pgtype.UUID{})
 }
 
+var errWorkflowClaimBusy = errors.New("workflow issue is busy")
+
 // claimTask is the runtime-scoped claim primitive used by daemon poll paths.
 // The exported ClaimTask wrapper omits runtimeID and therefore resolves the
 // agent's currently bound runtime. Scoping the SQL claim itself prevents an
@@ -3531,6 +3533,14 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		})
 		claimAgentMs = time.Since(t0).Milliseconds()
 		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+				// The frozen-status trigger takes an issue NOWAIT lock before
+				// our post-claim issue lock. Its contention is the same clean
+				// provisional-claim retry, not a task failure.
+				outcome = "workflow_busy"
+				return errWorkflowClaimBusy
+			}
 			if errors.Is(err, pgx.ErrNoRows) {
 				slog.Debug("task claim: no tasks available", "agent_id", util.UUIDToString(agentID))
 				outcome = "no_tasks"
@@ -3538,6 +3548,33 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			}
 			outcome = "error_claim"
 			return fmt.Errorf("claim task: %w", err)
+		}
+
+		// A workflow handoff serializes the issue across agents. The queue
+		// predicate is only a filter: different agents can select rows against
+		// the same snapshot. Lock the issue, then recheck in a new statement.
+		// NOWAIT makes issue-first mutations and simultaneous claims retry
+		// without a lock-order inversion; rollback removes the tentative claim.
+		if task.IssueID.Valid {
+			_, lockErr := qtx.LockWorkflowClaimIssue(ctx, task.IssueID)
+			var pgErr *pgconn.PgError
+			if errors.As(lockErr, &pgErr) && pgErr.Code == "55P03" {
+				outcome = "workflow_busy"
+				return errWorkflowClaimBusy
+			}
+			if lockErr != nil && !errors.Is(lockErr, pgx.ErrNoRows) {
+				return fmt.Errorf("lock workflow issue: %w", lockErr)
+			}
+			if lockErr == nil {
+				allowed, checkErr := qtx.CheckWorkflowTaskClaimable(ctx, db.CheckWorkflowTaskClaimableParams{TaskID: task.ID, IssueID: task.IssueID})
+				if checkErr != nil {
+					return fmt.Errorf("check workflow claim: %w", checkErr)
+				}
+				if !allowed {
+					outcome = "workflow_busy"
+					return errWorkflowClaimBusy
+				}
+			}
 		}
 
 		// An idle task-owned direct-chat row may already be visible as the
@@ -3565,6 +3602,9 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		claimed = &claimedTask
 		return nil
 	})
+	if errors.Is(err, errWorkflowClaimBusy) {
+		return nil, nil
+	}
 	if err != nil {
 		if outcome == "unknown" {
 			outcome = "error_transaction"
@@ -4166,9 +4206,35 @@ func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, sta
 // StartTask transitions a dispatched task to running.
 // Issue status is NOT changed here — the agent manages it via the CLI.
 func (s *TaskService) StartTask(ctx context.Context, taskID pgtype.UUID) (*db.AgentTaskQueue, error) {
-	task, err := s.Queries.StartAgentTask(ctx, taskID)
+	if s.TxStarter == nil {
+		return nil, fmt.Errorf("start task: transaction unavailable")
+	}
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin task start: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.Queries.WithTx(tx)
+	var locked pgtype.UUID
+	if err = tx.QueryRow(ctx, "SELECT id FROM agent_task_queue WHERE id=$1 FOR UPDATE", taskID).Scan(&locked); err != nil {
+		return nil, fmt.Errorf("lock task start: %w", err)
+	}
+	prior, err := qtx.GetAgentTask(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("load task start: %w", err)
+	}
+	if prior.Status != "dispatched" && prior.Status != "waiting_local_directory" {
+		return nil, fmt.Errorf("start task: %w", pgx.ErrNoRows)
+	}
+	if err = s.checkWorkflowStart(ctx, tx, qtx, prior); err != nil {
+		return nil, fmt.Errorf("start task: %w", err)
+	}
+	task, err := qtx.StartAgentTask(ctx, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("start task: %w", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit task start: %w", err)
 	}
 	s.taskStarted(ctx, task)
 	return &task, nil
@@ -4193,6 +4259,9 @@ func (s *TaskService) StartTaskForClaim(ctx context.Context, claim db.LockAgentT
 	}
 	replay := task.Status == "running"
 	if !replay {
+		if err = s.checkWorkflowStart(ctx, tx, qtx, task); err != nil {
+			return nil, fmt.Errorf("start claimed task: %w", err)
+		}
 		task, err = qtx.StartAgentTask(ctx, task.ID)
 		if err != nil {
 			return nil, fmt.Errorf("start claimed task: %w", err)
@@ -4519,7 +4588,7 @@ func (s *TaskService) CompleteTaskWithTransition(ctx context.Context, taskID pgt
 						// Redact first, then bound: a runaway raw-stream Output (GH #5455)
 						// must never reach the issue thread, even as a clipped excerpt.
 						content := truncateFallbackCommentBody(redact.Text(body), maxSynthesizedFallbackCommentRunes)
-						s.createAgentComment(ctx, task.IssueID, task.AgentID, content, "comment", task.TriggerCommentID, task.ID)
+						s.createTaskCompletionFallbackComment(ctx, task.IssueID, task.AgentID, content, task.TriggerCommentID, task.ID)
 					}
 				}
 			}
@@ -5981,9 +6050,9 @@ func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Quer
 
 // HandleFailedTasks runs the post-failure side effects for a batch of
 // freshly-failed tasks: optional auto-retry, task:failed event broadcast,
-// agent status reconciliation, and (when an issue has no remaining active
-// task and isn't being retried) resetting the issue back to todo so the
-// daemon can pick it up again.
+// agent status reconciliation, and (for legacy issues with no remaining
+// active task and no retry) resetting in_progress back to todo. An enrolled
+// issue retains its work phase across execution failure.
 //
 // All callers that surface a task as failed — sweepers, FailTask,
 // recover-orphans — funnel through here so the same UI-consistency
@@ -6041,7 +6110,10 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 				// projects a nonterminal custom key onto a built-in, so this is
 				// a key comparison on purpose. (MUL-6243, MUL-7240)
 				effectiveStatus := issuestatus.Effective(ctx, s.Queries, issue.WorkspaceID, issue.Status)
-				if effectiveStatus == "in_progress" && !processedIssues[issueKey] && !retriedIssues[issueKey] {
+				// Enrolled issues use status as a work phase, so a failed
+				// execution cannot move the issue back to todo.
+				if effectiveStatus == "in_progress" && len(issue.WorkflowPolicy) == 0 && !issue.WorkflowFrozen &&
+					!processedIssues[issueKey] && !retriedIssues[issueKey] {
 					processedIssues[issueKey] = true
 					hasActive, checkErr := s.Queries.HasActiveTaskForIssue(ctx, t.IssueID)
 					if checkErr != nil {
@@ -6050,18 +6122,17 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 							"error", checkErr,
 						)
 					} else if !hasActive {
-						updatedIssue, updateErr := s.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+						updatedIssue, updateErr := s.Queries.ResetFailedLegacyIssueToTodo(ctx, db.ResetFailedLegacyIssueToTodoParams{
 							SourceTaskID: t.ID,
 							ID:           t.IssueID,
-							Status:       "todo",
 							WorkspaceID:  issue.WorkspaceID,
 						})
-						if updateErr != nil {
+						if updateErr != nil && !errors.Is(updateErr, pgx.ErrNoRows) {
 							slog.Warn("handle failed tasks: reset stuck issue failed",
 								"issue_id", issueKey,
 								"error", updateErr,
 							)
-						} else {
+						} else if updateErr == nil {
 							// This direct reset bypasses the HTTP UpdateIssue
 							// handler that normally emits issue:updated, so emit
 							// it here too. Without it the board / status-filter
@@ -6160,6 +6231,7 @@ type delegatedFailureRecoveryTarget struct {
 	issue   db.Issue
 	agent   db.Agent
 	comment db.Comment
+	handoff *db.IssueWakeup
 }
 
 // IsDelegatedFailureRecoveryComment identifies the durable platform signal
@@ -6218,7 +6290,7 @@ func loadDelegatedFailureRecoveryTarget(ctx context.Context, q *db.Queries, fail
 		}
 		return nil, fmt.Errorf("load source task: %w", err)
 	}
-	if source.AutopilotRunID.Valid || !source.IssueID.Valid || source.AgentID == failed.AgentID {
+	if source.AutopilotRunID.Valid || !source.IssueID.Valid {
 		return nil, nil
 	}
 	issue, err := q.GetIssue(ctx, source.IssueID)
@@ -6227,6 +6299,18 @@ func loadDelegatedFailureRecoveryTarget(ctx context.Context, q *db.Queries, fail
 			return nil, nil
 		}
 		return nil, fmt.Errorf("load source issue: %w", err)
+	}
+	if issue.WorkflowFrozen {
+		return nil, nil
+	}
+	if issue.WorkflowMigratedAt.Valid {
+		failedAt := failed.CompletedAt
+		if !failedAt.Valid {
+			failedAt = failed.CreatedAt
+		}
+		if failedAt.Time.Before(issue.WorkflowMigratedAt.Time) {
+			return nil, nil
+		}
 	}
 	agent, err := q.GetAgent(ctx, source.AgentID)
 	if err != nil {
@@ -6238,13 +6322,26 @@ func loadDelegatedFailureRecoveryTarget(ctx context.Context, q *db.Queries, fail
 	if agent.ArchivedAt.Valid || !agent.RuntimeID.Valid || agent.WorkspaceID != issue.WorkspaceID {
 		return nil, nil
 	}
-	return &delegatedFailureRecoveryTarget{failed: failed, source: source, issue: issue, agent: agent}, nil
+	handoff, err := nativeHandoffRecovery(ctx, q, failed, source, issue)
+	if err != nil {
+		return nil, err
+	}
+	if source.AgentID == failed.AgentID && handoff == nil {
+		// Ordinary self-delegation never wakes itself. A validated native
+		// handoff is different: it has a terminal recipient and an exact
+		// outgoing coordinator source, even if both roles use one agent.
+		return nil, nil
+	}
+	return &delegatedFailureRecoveryTarget{failed: failed, source: source, issue: issue, agent: agent, handoff: handoff}, nil
 }
 
 // canDispatchDelegatedFailureRecovery matches the lifecycle predicate in
 // ListPendingDelegatedFailureRecoveries. It must not gate signal creation:
 // catalog failures are retryable only after the outbox comment is committed.
 func canDispatchDelegatedFailureRecovery(ctx context.Context, q *db.Queries, issue db.Issue) (bool, error) {
+	if issue.WorkflowFrozen {
+		return false, nil
+	}
 	// A coordinator waiting in Triage is the entry's proposed owner, not its
 	// owner, so a worker failure must not wake it (MUL-7189 §2.3).
 	if issue.TriageState.Valid {
@@ -6266,9 +6363,31 @@ func (s *TaskService) ensureDelegatedFailureRecoveryComment(ctx context.Context,
 	var target *delegatedFailureRecoveryTarget
 	created := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		candidate, err := qtx.GetAgentTask(ctx, failedID)
+		if err != nil {
+			return fmt.Errorf("load failed task: %w", err)
+		}
+		if !candidate.IssueID.Valid {
+			return nil
+		}
+		// Keep lock order issue -> task, as in cutover. The issue lock makes
+		// a frozen transition visible before creating any recovery signal.
+		lockedIssue, err := qtx.LockWakeupIssue(ctx, candidate.IssueID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return fmt.Errorf("lock delegated failure issue: %w", err)
+		}
+		if lockedIssue.WorkflowFrozen {
+			return nil
+		}
 		failed, err := qtx.GetAgentTaskForDelegatedFailureUpdate(ctx, failedID)
 		if err != nil {
 			return fmt.Errorf("lock failed task: %w", err)
+		}
+		if failed.IssueID != lockedIssue.ID {
+			return nil
 		}
 		target, err = loadDelegatedFailureRecoveryTarget(ctx, qtx, failed)
 		if err != nil || target == nil {
@@ -6531,6 +6650,23 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		return delegatedFailureRecoveryCovered, err
 	}
 	target.issue = issue
+	if target.handoff != nil {
+		latest, e := nativeHandoffRecovery(ctx, s.Queries, target.failed, target.source, issue)
+		if e != nil {
+			return delegatedFailureRecoveryCovered, e
+		}
+		if latest == nil || latest.ID != target.handoff.ID || !workflowRecoveryOwnerMatches(issue, target.failed, *latest) {
+			return delegatedFailureRecoveryCovered, nil
+		}
+		if e = (&IssueWakeupService{Tasks: s}).authorize(ctx, s.Queries, issue.WorkspaceID, latest.CreatedBy, target.agent); e != nil {
+			if errors.Is(e, ErrWakeupForbidden) {
+				return delegatedFailureRecoveryCovered, nil
+			}
+			return delegatedFailureRecoveryCovered, e
+		}
+		target.handoff = latest
+		return s.dispatchNativeHandoffRecovery(ctx, target, excludeTaskID)
+	}
 	const maxAttempts = 3
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		covered, err := s.Queries.HasTaskCoveringDelegatedFailureComment(ctx, db.HasTaskCoveringDelegatedFailureCommentParams{
@@ -6561,19 +6697,21 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			return delegatedFailureRecoveryCovered, nil
 		}
 
-		if merged, err := s.Queries.MergeDelegatedFailureCommentIntoPendingTask(ctx, db.MergeDelegatedFailureCommentIntoPendingTaskParams{
-			CommentID:      target.comment.ID,
-			TriggerSummary: s.buildCommentTriggerSummary(ctx, target.issue.WorkspaceID, target.comment.ID),
-			IssueID:        target.issue.ID,
-			AgentID:        target.agent.ID,
-		}); err == nil {
-			slog.Info("delegated failure recovery merged into pending coordinator task",
-				"failed_task_id", util.UUIDToString(target.failed.ID),
-				"coordinator_task_id", util.UUIDToString(merged.ID),
-			)
-			return delegatedFailureRecoveryReplayed, nil
-		} else if !errors.Is(err, pgx.ErrNoRows) {
-			return delegatedFailureRecoveryCovered, fmt.Errorf("merge recovery into pending task: %w", err)
+		if target.handoff == nil {
+			if merged, err := s.Queries.MergeDelegatedFailureCommentIntoPendingTask(ctx, db.MergeDelegatedFailureCommentIntoPendingTaskParams{
+				CommentID:      target.comment.ID,
+				TriggerSummary: s.buildCommentTriggerSummary(ctx, target.issue.WorkspaceID, target.comment.ID),
+				IssueID:        target.issue.ID,
+				AgentID:        target.agent.ID,
+			}); err == nil {
+				slog.Info("delegated failure recovery merged into pending coordinator task",
+					"failed_task_id", util.UUIDToString(target.failed.ID),
+					"coordinator_task_id", util.UUIDToString(merged.ID),
+				)
+				return delegatedFailureRecoveryReplayed, nil
+			} else if !errors.Is(err, pgx.ErrNoRows) {
+				return delegatedFailureRecoveryCovered, fmt.Errorf("merge recovery into pending task: %w", err)
+			}
 		}
 
 		originator, accountable := delegatedFailureRecoveryAttribution(target)
@@ -6584,6 +6722,14 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		ruleVersionID := target.failed.RuleVersionID
 		if !ruleVersionID.Valid {
 			ruleVersionID = target.source.RuleVersionID
+		}
+		var recoveryContext []byte
+		headSHA := headShaText(s.ResolveIssueReviewSHA(ctx, target.issue.ID))
+		if target.handoff != nil {
+			recoveryContext = workflowRecoveryPayload(*target.handoff, target.failed.ID, target.source.ID)
+			// The coordinator is recovering a failed run, not reviewing the
+			// failed recipient's candidate as an independent reviewer.
+			headSHA = pgtype.Text{}
 		}
 		overlay := s.buildRuntimeMCPOverlay(ctx, originator, target.agent)
 		task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
@@ -6605,7 +6751,8 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			RuleVersionID:        ruleVersionID,
 			TriggerEvidenceKind:  pgtype.Text{String: string(attribution.EvidenceDelegatedFailure), Valid: true},
 			TriggerEvidenceRefID: target.failed.ID,
-			HeadSha:              headShaText(s.ResolveIssueReviewSHA(ctx, target.issue.ID)),
+			HeadSha:              headSHA,
+			WorkflowRecovery:     recoveryContext,
 		})
 		if err == nil {
 			slog.Info("delegated failure recovery task enqueued",
@@ -6620,6 +6767,12 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		}
 		if !isDuplicatePendingTaskErr(err) {
 			return delegatedFailureRecoveryCovered, fmt.Errorf("create recovery task: %w", err)
+		}
+		if target.handoff != nil {
+			// Never turn a pre-existing generic coordinator task into a
+			// privileged handoff recovery merely by merging its comment. The
+			// durable outbox retries after that pending slot changes state.
+			return delegatedFailureRecoveryCovered, nil
 		}
 
 		// A dispatched task still owns the unique queued/dispatched slot, but
@@ -6641,6 +6794,123 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		}
 	}
 	return delegatedFailureRecoveryCovered, fmt.Errorf("delegate failure recovery could not acquire coordinator task slot")
+}
+
+// dispatchNativeHandoffRecovery replaces a queued generic slot only while the
+// issue lock protects the latest handoff and owner snapshot. The original task
+// stays cancelled with its trigger metadata; the recovery task gets only the
+// server-authored failure signal and exact outgoing source pointer.
+func (s *TaskService) dispatchNativeHandoffRecovery(ctx context.Context, target *delegatedFailureRecoveryTarget, excludeTaskID pgtype.UUID) (delegatedFailureRecoveryDispatchOutcome, error) {
+	if s.TxStarter == nil {
+		return delegatedFailureRecoveryCovered, fmt.Errorf("native handoff recovery requires a transaction")
+	}
+	var queued db.AgentTaskQueue
+	var superseded []db.AgentTaskQueue
+	exhausted := false
+	err := s.runInTx(ctx, func(q *db.Queries) error {
+		issue, err := q.LockWakeupIssue(ctx, target.issue.ID)
+		if err != nil {
+			return err
+		}
+		allowed, err := canDispatchDelegatedFailureRecovery(ctx, q, issue)
+		if err != nil || !allowed {
+			return err
+		}
+		latest, err := nativeHandoffRecovery(ctx, q, target.failed, target.source, issue)
+		if err != nil {
+			return err
+		}
+		if latest == nil || latest.ID != target.handoff.ID || !workflowRecoveryOwnerMatches(issue, target.failed, *latest) {
+			return nil
+		}
+		if err = (&IssueWakeupService{Tasks: s}).authorize(ctx, q, issue.WorkspaceID, latest.CreatedBy, target.agent); err != nil {
+			if errors.Is(err, ErrWakeupForbidden) {
+				return nil
+			}
+			return err
+		}
+		covered, err := q.HasTaskCoveringDelegatedFailureComment(ctx, db.HasTaskCoveringDelegatedFailureCommentParams{
+			IssueID: issue.ID, AgentID: target.agent.ID, CommentID: target.comment.ID, ExcludeTaskID: excludeTaskID,
+		})
+		if err != nil || covered {
+			return err
+		}
+		count, err := q.CountDelegatedFailureRecoveryTasks(ctx, target.failed.ID)
+		if err != nil {
+			return err
+		}
+		if count >= delegatedFailureRecoveryMaxTaskAttempts {
+			exhausted = true
+			return nil
+		}
+		// A dispatched payload may already have left the server. Wait for its
+		// terminal reconciliation instead of silently changing what it means.
+		active, err := q.HasActiveWorkflowWriterExcept(ctx, db.HasActiveWorkflowWriterExceptParams{
+			IssueID: issue.ID, ExceptTaskID: target.failed.ID,
+		})
+		if err != nil {
+			return err
+		}
+		if active {
+			return nil
+		}
+		superseded, err = q.SupersedeUnstartedGenericTaskForWorkflow(ctx, db.SupersedeUnstartedGenericTaskForWorkflowParams{
+			IssueID: issue.ID, AgentID: target.agent.ID, ReplacementRef: util.UUIDToString(target.comment.ID),
+		})
+		if err != nil {
+			return err
+		}
+		originator, accountable := delegatedFailureRecoveryAttribution(target)
+		origin := attribution.SourceDelegation
+		if !originator.Valid && !accountable.Valid {
+			origin = attribution.SourceUnattributed
+		}
+		ruleVersionID := target.failed.RuleVersionID
+		if !ruleVersionID.Valid {
+			ruleVersionID = target.source.RuleVersionID
+		}
+		overlay := s.buildRuntimeMCPOverlay(ctx, originator, target.agent)
+		queued, err = q.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+			ID: dbid.NewV7(), AgentID: target.agent.ID, RuntimeID: target.agent.RuntimeID,
+			IssueID: issue.ID, Priority: priorityToInt(issue.Priority),
+			TriggerCommentID:  target.comment.ID,
+			TriggerSummary:    s.buildCommentTriggerSummary(ctx, issue.WorkspaceID, target.comment.ID),
+			ForceFreshSession: pgtype.Bool{Bool: true, Valid: true},
+			IsLeaderTask:      pgtype.Bool{Bool: target.source.IsLeaderTask, Valid: target.source.IsLeaderTask},
+			SquadID:           target.source.SquadID, OriginatorUserID: originator, AccountableUserID: accountable,
+			RuntimeMcpOverlay: overlay.Overlay, RuntimeConnectedApps: overlay.ConnectedApps,
+			OriginatorSource:    pgtype.Text{String: string(origin), Valid: true},
+			DelegatedFromTaskID: target.failed.ID, RuleVersionID: ruleVersionID,
+			TriggerEvidenceKind:  pgtype.Text{String: string(attribution.EvidenceDelegatedFailure), Valid: true},
+			TriggerEvidenceRefID: target.failed.ID,
+			WorkflowRecovery:     workflowRecoveryPayload(*latest, target.failed.ID, target.source.ID),
+		})
+		return err
+	})
+	if err != nil {
+		if isDuplicatePendingTaskErr(err) {
+			return delegatedFailureRecoveryCovered, nil
+		}
+		return delegatedFailureRecoveryCovered, fmt.Errorf("dispatch native handoff recovery: %w", err)
+	}
+	if exhausted {
+		wasExhausted, err := s.exhaustDelegatedFailureRecovery(ctx, target)
+		if err != nil {
+			return delegatedFailureRecoveryCovered, err
+		}
+		if wasExhausted {
+			return delegatedFailureRecoveryExhausted, nil
+		}
+	}
+	if !queued.ID.Valid {
+		return delegatedFailureRecoveryCovered, nil
+	}
+	for _, old := range superseded {
+		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, old)
+	}
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, queued)
+	s.NotifyTaskEnqueued(ctx, queued)
+	return delegatedFailureRecoveryReplayed, nil
 }
 
 // recoverDelegatedTaskFailure is the shared post-terminal hook for FailTask and
@@ -7457,6 +7727,14 @@ func commentEventFields(c db.Comment) map[string]any {
 }
 
 func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID pgtype.UUID, content, commentType string, parentID, sourceTaskID pgtype.UUID) {
+	s.createAgentCommentWithFallback(ctx, issueID, agentID, content, commentType, parentID, sourceTaskID, pgtype.UUID{})
+}
+
+func (s *TaskService) createTaskCompletionFallbackComment(ctx context.Context, issueID, agentID pgtype.UUID, content string, parentID, sourceTaskID pgtype.UUID) {
+	s.createAgentCommentWithFallback(ctx, issueID, agentID, content, "comment", parentID, sourceTaskID, sourceTaskID)
+}
+
+func (s *TaskService) createAgentCommentWithFallback(ctx context.Context, issueID, agentID pgtype.UUID, content, commentType string, parentID, sourceTaskID, completionFallbackSourceTaskID pgtype.UUID) {
 	if content == "" {
 		return
 	}
@@ -7478,15 +7756,16 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 		}
 	}
 	created, err := s.Queries.CreateComment(ctx, db.CreateCommentParams{
-		ID:           dbid.NewV7(),
-		IssueID:      issueID,
-		WorkspaceID:  issue.WorkspaceID,
-		AuthorType:   "agent",
-		AuthorID:     agentID,
-		Content:      content,
-		Type:         commentType,
-		ParentID:     parentID,
-		SourceTaskID: sourceTaskID,
+		ID:                             dbid.NewV7(),
+		IssueID:                        issueID,
+		WorkspaceID:                    issue.WorkspaceID,
+		AuthorType:                     "agent",
+		AuthorID:                       agentID,
+		Content:                        content,
+		Type:                           commentType,
+		ParentID:                       parentID,
+		SourceTaskID:                   sourceTaskID,
+		CompletionFallbackSourceTaskID: completionFallbackSourceTaskID,
 	})
 	if err != nil {
 		return
@@ -7608,13 +7887,15 @@ func IssueToMapResolved(ctx context.Context, q issuestatus.Querier, issue db.Iss
 
 func IssueToMap(issue db.Issue, issuePrefix string) map[string]any {
 	return map[string]any{
-		"id":           util.UUIDToString(issue.ID),
-		"workspace_id": util.UUIDToString(issue.WorkspaceID),
-		"number":       issue.Number,
-		"identifier":   IssueIdentifier(issuePrefix, issue.Number),
-		"title":        issue.Title,
-		"description":  util.TextToPtr(issue.Description),
-		"status":       issue.Status,
+		"id":                      util.UUIDToString(issue.ID),
+		"workspace_id":            util.UUIDToString(issue.WorkspaceID),
+		"number":                  issue.Number,
+		"identifier":              IssueIdentifier(issuePrefix, issue.Number),
+		"title":                   issue.Title,
+		"description":             util.TextToPtr(issue.Description),
+		"status":                  issue.Status,
+		"workflow_frozen":         issue.WorkflowFrozen,
+		"workflow_policy_present": len(issue.WorkflowPolicy) > 0,
 		// Mirrors handler.IssueResponse.StatusCategory. Built-ins map to a
 		// public lifecycle category without a catalog lookup; custom statuses
 		// are filled by IssueToMapResolved. (MUL-6243)

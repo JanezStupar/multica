@@ -90,6 +90,23 @@ import type {
   WebhookDelivery,
   WorkspaceMcpServer,
 } from "../types";
+import type {
+  AcceptIssueWorkflowRequest,
+  IssueWorkflow,
+  IssueWorkflowRejectionKind,
+  RejectIssueWorkflowRequest,
+  RevokeIssueWorkflowExceptionRequest,
+  RetryIssueWorkflowDeliveryRequest,
+} from "../types/issue-workflow";
+
+export type {
+  AcceptIssueWorkflowRequest,
+  IssueWorkflow,
+  IssueWorkflowRejectionKind,
+  RejectIssueWorkflowRequest,
+  RevokeIssueWorkflowExceptionRequest,
+  RetryIssueWorkflowDeliveryRequest,
+} from "../types/issue-workflow";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
 
@@ -1288,6 +1305,11 @@ export const IssueSchema = z.object({
   // Older backends predate `stage`; default to null so a missing field parses
   // cleanly into the non-optional Issue.stage (number | null).
   stage: z.number().nullable().default(null),
+  // Workflow cutover state is emitted by current detail/child projections but
+  // absent on older servers and list projections. Keep older clients usable;
+  // callers may only enable migration controls when this is explicitly true.
+  workflow_frozen: z.boolean().optional().catch(false).default(false),
+  workflow_policy_present: z.boolean().optional().catch(false).default(false),
   start_date: z.string().nullable(),
   due_date: z.string().nullable(),
   metadata: IssueMetadataSchema,
@@ -1914,6 +1936,11 @@ const TaskUsageSchema = z.object({
 
 export const AgentTaskSchema = z.object({
   wakeup_id: z.string().optional().catch(undefined),
+  // Workflow profile and policy identity are additive execution-history
+  // metadata. Older backends omit them and malformed values must not erase a
+  // task row or be mistaken for a usable version.
+  workflow_profile_id: z.string().optional().catch(undefined),
+  workflow_policy_version: z.string().optional().catch(undefined),
   cancelled_by_comment_change: z.boolean().optional().catch(undefined),
   cancelled_by: TaskCancellationActorSchema.optional().catch(undefined),
   id: z.string(),
@@ -3593,7 +3620,286 @@ export const EMPTY_JOIN_SHARE_LINK_RESPONSE: {
   workspace_slug: "",
 };
 
+// An enrolled issue's workflow bundle is immutable. A malformed response must
+// never be treated as an empty/default policy by an installed client.
+export const IssueWorkflowPolicySchema = z.object({
+  format_version: z.literal(1),
+  scope: z.literal("issue_workflow_bundle"),
+  coverage: z.object({
+    workflow_bundle_pinned: z.literal(true),
+    agent_instructions_pinned: z.literal(false),
+    model_settings_pinned: z.literal(false),
+  }).loose(),
+  version: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  source_skill_id: z.uuid(),
+  bundle: z.object({
+    id: z.uuid(),
+    source: z.literal("workspace"),
+    replaces_builtin: z.literal("builtin:multica-platform"),
+    name: z.string(),
+    description: z.string().optional(),
+    hash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    size_bytes: z.number().int().nonnegative(),
+    content: z.string(),
+    files: z.array(z.object({
+      path: z.string(), content: z.string(),
+      sha256: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+      size_bytes: z.number().int().nonnegative().optional().default(0),
+    }).loose()),
+  }).loose(),
+}).loose().refine((policy) =>
+  policy.version === policy.bundle.hash && policy.source_skill_id === policy.bundle.id,
+  "workflow policy identity mismatch",
+);
+export type IssueWorkflowPolicy = z.infer<typeof IssueWorkflowPolicySchema>;
+
+export const WorkspaceWorkflowDefaultSchema = z.object({
+  policy: IssueWorkflowPolicySchema.nullable(),
+  cutover_at: z.string().nullable(),
+}).loose();
+export type WorkspaceWorkflowDefault = z.infer<typeof WorkspaceWorkflowDefaultSchema>;
+
+export const WorkspaceWorkflowCutoverResultSchema = z.object({
+  policy: IssueWorkflowPolicySchema,
+  // The first cutover reports how many pre-existing issues were frozen. An
+  // exact replay reports the original cutover timestamp instead.
+  frozen_issues: z.number().int().nonnegative().optional().catch(undefined),
+  cutover_at: z.string().nullable().optional().catch(undefined),
+}).loose();
+export type WorkspaceWorkflowCutoverResult = z.infer<typeof WorkspaceWorkflowCutoverResultSchema>;
+
+export const WorkflowSkillSelectionRequestSchema = z.object({
+  skill_id: z.uuid(),
+}).strict();
+export type WorkflowSkillSelectionRequest = z.infer<typeof WorkflowSkillSelectionRequestSchema>;
+
+export const IssueWorkflowMigrationRequestSchema = z.object({
+  skill_id: z.uuid(),
+  reason: z.string().trim().min(1),
+  reconciliation: z.string().trim().min(1),
+  reopen_to: z.string().trim().min(1).optional(),
+}).strict();
+export type IssueWorkflowMigrationRequest = z.infer<typeof IssueWorkflowMigrationRequestSchema>;
+
+const IssueWorkflowPullRequestSchema = z.object({
+  repository_url: z.string(),
+  pr_url: z.string(),
+  branch: z.string(),
+  commit_sha: z.string(),
+  draft: z.boolean(),
+}).loose();
+const IssueWorkflowCandidateSchema = z.object({
+  id: z.string(),
+  digest: z.string(),
+  scope_digest: z.string(),
+  writer_task_id: z.string(),
+  prs: z.array(IssueWorkflowPullRequestSchema),
+  created_at: z.string(),
+}).loose();
+const IssueWorkflowReviewSchema = z.object({
+  id: z.string(),
+  verdict: z.string(),
+  reviewer_task_id: z.string(),
+  pr_review_urls: z.array(z.string()),
+  submitted_at: z.string(),
+}).loose();
+const IssueWorkflowAcceptanceSchema = z.object({
+  id: z.string(),
+  candidate_id: z.string(),
+  state: z.string(),
+  mode: z.string(),
+  classification_reason: z.string().optional(),
+  requested_at: z.string(),
+  accepted_at: z.string().nullable(),
+  blocker: z.string().optional(),
+}).loose();
+const IssueWorkflowDeliverySchema = z.object({
+  id: z.string(),
+  ordinal: z.number().int().nonnegative(),
+  pr_url: z.string(),
+  expected_head_sha: z.string(),
+  action: z.string(),
+  merge_method: z.string().optional(),
+  status: z.string(),
+  attempt_count: z.number().int().nonnegative(),
+  next_attempt_at: z.string(),
+  last_error_class: z.string().optional(),
+  readiness_done_at: z.string().nullable(),
+  merged_at: z.string().nullable(),
+  retryable: z.boolean().optional().default(false),
+}).loose();
+const IssueWorkflowRetainedContextOptionSchema = z.object({
+  task_id: z.string(),
+  agent_id: z.string(),
+  agent_name: z.string(),
+  kind: z.string(),
+}).loose();
+const IssueWorkflowAvailableActionsSchema = z.object({
+  accept_human: z.boolean().catch(false).default(false),
+  reject: z.boolean().catch(false).default(false),
+  request_trivial_acceptance: z.boolean().catch(false).default(false),
+  waive_review: z.boolean().catch(false).default(false),
+}).loose();
+const IssueWorkflowDeliveryPreviewSchema = z.object({
+  action: z.string(),
+  merge_method: z.string().optional(),
+  requires_order: z.boolean(),
+}).loose();
+const IssueWorkflowExceptionSchema = z.object({
+  id: z.string(),
+  candidate_id: z.string(),
+  scope: z.string(),
+  grant_details: z.record(z.string(), z.unknown()),
+  actor_type: z.string(),
+  actor_id: z.string(),
+  reason: z.string(),
+  consequences: z.string(),
+  base_policy_version: z.string(),
+  created_at: z.string(),
+  revoked_at: z.string().nullable(),
+  revocation_reason: z.string().optional(),
+  revocation_consequences: z.string().optional(),
+  revoked_by_type: z.string().optional(),
+  revoked_by_id: z.string().optional(),
+}).loose();
+
+export const IssueWorkflowSchema: z.ZodType<IssueWorkflow> = z.object({
+  issue_id: z.string(),
+  issue_revision: z.number().int().positive(),
+  policy_version: z.string(),
+  frozen: z.boolean().catch(false).default(false),
+  candidate: IssueWorkflowCandidateSchema.nullable(),
+  reviews: z.array(IssueWorkflowReviewSchema),
+  acceptance: IssueWorkflowAcceptanceSchema.nullable(),
+  acceptance_blockers: z.array(z.string()).default([]),
+  delivery_preview: IssueWorkflowDeliveryPreviewSchema.nullable().optional().default(null),
+  delivery: z.array(IssueWorkflowDeliverySchema),
+  exceptions: z.array(IssueWorkflowExceptionSchema).default([]),
+  retained_context_options: z.array(IssueWorkflowRetainedContextOptionSchema).default([]),
+  available_actions: IssueWorkflowAvailableActionsSchema,
+}).loose();
+
+export const AcceptIssueWorkflowRequestSchema: z.ZodType<AcceptIssueWorkflowRequest> = z.object({
+  candidate_id: z.uuid(),
+  expected_revision: z.number().int().positive(),
+  classification_reason: z.string().trim().min(1).optional(),
+  merge_order_pr_urls: z.array(z.string().url()).optional(),
+}).strict();
+
+export const IssueWorkflowRejectionKindSchema: z.ZodType<IssueWorkflowRejectionKind> = z.enum([
+  "in_scope_defect", "scope_change",
+]);
+export const RejectIssueWorkflowRequestSchema: z.ZodType<RejectIssueWorkflowRequest> = z.object({
+  candidate_id: z.uuid(),
+  expected_revision: z.number().int().positive(),
+  kind: IssueWorkflowRejectionKindSchema,
+  reason: z.string().trim().min(1),
+  resume_task_id: z.uuid().optional(),
+}).strict();
+
+export const RevokeIssueWorkflowExceptionRequestSchema: z.ZodType<RevokeIssueWorkflowExceptionRequest> = z.object({
+  expected_revision: z.number().int().positive(),
+  reason: z.string().trim().min(1),
+  consequences: z.string().trim().min(1),
+}).strict();
+
+export const RetryIssueWorkflowDeliveryRequestSchema: z.ZodType<RetryIssueWorkflowDeliveryRequest> = z.object({
+  candidate_id: z.uuid(),
+  expected_revision: z.number().int().positive(),
+  reason: z.string().trim().min(1).max(500).optional(),
+}).strict();
+
+const IssueHandoffHTTPURLSchema = z.string().url().max(2048).refine((raw) => {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+  return (parsed.protocol === "http:" || parsed.protocol === "https:") && !parsed.username && !parsed.password;
+}, "expected an HTTP(S) URL without credentials");
+
+const IssueHandoffCandidateSchema = z.object({
+  repository_url: IssueHandoffHTTPURLSchema,
+  pr_url: IssueHandoffHTTPURLSchema,
+  branch: z.string().min(1).max(500).refine((value) => value.trim() === value && Array.from(value).every((char) => char.charCodeAt(0) >= 0x20 && char.charCodeAt(0) !== 0x7f)),
+  commit_sha: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i),
+  draft: z.literal(true),
+});
+
+const IssueHandoffPayloadSchema = z.object({
+  request_key: z.uuid(),
+  outgoing_task_id: z.uuid(),
+  // Legacy agent_id-only requests remain accepted. New callers should use
+  // assignee_type + assignee_id so a handoff can target a human member.
+  agent_id: z.uuid().optional(),
+  assignee_type: z.enum(["agent", "member"]).optional(),
+  assignee_id: z.uuid().optional(),
+  status: z.enum(["in_progress", "in_review"]),
+  context_mode: z.enum(["fresh", "resume"]),
+  resume_task_id: z.uuid().optional(),
+  candidates: z.array(IssueHandoffCandidateSchema).max(20),
+  evidence_urls: z.array(IssueHandoffHTTPURLSchema).max(32),
+  instruction: z.string(),
+});
+
+function refineIssueHandoffContext(handoff: z.infer<typeof IssueHandoffPayloadSchema>, ctx: z.RefinementCtx) {
+  if (handoff.context_mode === "resume" && !handoff.resume_task_id) {
+    ctx.addIssue({ code: "custom", path: ["resume_task_id"], message: "resume context requires an exact resume_task_id" });
+  }
+  if (handoff.context_mode === "fresh" && handoff.resume_task_id) {
+    ctx.addIssue({ code: "custom", path: ["resume_task_id"], message: "fresh context cannot include resume_task_id" });
+  }
+}
+
+export const IssueHandoffRequestSchema = IssueHandoffPayloadSchema.superRefine((handoff, ctx) => {
+  refineIssueHandoffContext(handoff, ctx);
+  if (!handoff.assignee_type && !handoff.assignee_id && handoff.agent_id) {
+    // Legacy agent_id is the recipient for older CLI/API clients.
+  } else if (!handoff.assignee_type || !handoff.assignee_id) {
+    ctx.addIssue({ code: "custom", path: ["assignee_id"], message: "provide assignee_type and assignee_id, or legacy agent_id" });
+  } else if (handoff.assignee_type === "agent" && handoff.agent_id && handoff.agent_id !== handoff.assignee_id) {
+    ctx.addIssue({ code: "custom", path: ["agent_id"], message: "agent_id and assignee_id must identify the same agent" });
+  } else if (handoff.assignee_type === "member") {
+    if (handoff.agent_id) {
+      ctx.addIssue({ code: "custom", path: ["agent_id"], message: "agent_id is only valid for an agent recipient" });
+    }
+    if (handoff.status !== "in_review" || handoff.context_mode !== "fresh") {
+      ctx.addIssue({ code: "custom", path: ["status"], message: "member handoff requires in_review and fresh context" });
+    }
+  }
+  const prUrls = new Set<string>();
+  handoff.candidates.forEach((candidate, index) => {
+    if (prUrls.has(candidate.pr_url)) {
+      ctx.addIssue({ code: "custom", path: ["candidates", index, "pr_url"], message: "each PR may appear only once" });
+    }
+    prUrls.add(candidate.pr_url);
+  });
+});
+export type IssueHandoffRequest = z.infer<typeof IssueHandoffRequestSchema>;
+
+// Stored handoff details are historical evidence, not an authorization input.
+// Preserve future status/context strings instead of coercing them to a mode
+// understood by this client. Additional snapshots can be read by newer peers.
+const IssueHandoffDetailsSchema = z.object({
+  request_key: z.uuid(),
+  outgoing_task_id: z.uuid(),
+  agent_id: z.string().optional(),
+  assignee_type: z.string().optional(),
+  assignee_id: z.string().optional(),
+  status: z.string(),
+  context_mode: z.string(),
+  resume_task_id: z.uuid().optional(),
+  candidates: z.array(IssueHandoffCandidateSchema).max(20),
+  evidence_urls: z.array(z.string().url()),
+  instruction: z.string(),
+  expected_status: z.string().optional(),
+  expected_assignee_type: z.string().nullable().optional(),
+  expected_assignee_id: z.string().nullable().optional(),
+}).loose();
+
 export const IssueWakeupSchema = z.object({
+  force_fresh_session: z.boolean().optional().default(false),
   id: z.string(), issue_id: z.string(), agent_id: z.string(), agent_name: z.string().default(""),
   instruction: z.string(), kind: z.enum(["event", "at", "every", "cron"]), mode: z.enum(["once", "continuous"]),
   event_types: z.array(z.string()), filter_agent_id: z.string().nullable(), filter_task_id: z.string().nullable(),
@@ -3605,7 +3911,16 @@ export const IssueWakeupSchema = z.object({
   filter_actor_name: z.string().nullable().optional(),
   revision: z.number().int().positive().optional(),
   filter_agent_name: z.string().nullable().optional(), last_task_status: z.string().nullable().optional(),
+  request_key: z.uuid().nullable().optional(),
+  handoff_completed_at: z.string().nullable().optional(),
+  handoff: IssueHandoffDetailsSchema.nullable().optional(),
 });
+
+export const IssueHandoffSchema = IssueWakeupSchema.extend({
+  request_key: z.uuid(),
+  handoff: IssueHandoffDetailsSchema,
+});
+export type IssueHandoff = z.infer<typeof IssueHandoffSchema>;
 
 export const IssueWakeupSummaryRowSchema = IssueWakeupSchema.pick({
   id: true, issue_id: true, agent_id: true, agent_name: true, kind: true, mode: true,

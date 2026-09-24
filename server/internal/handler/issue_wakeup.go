@@ -148,7 +148,15 @@ func (h *Handler) ListIssueWakeups(w http.ResponseWriter, r *http.Request) {
 	if rows == nil {
 		rows = []db.ListIssueWakeupsRow{}
 	}
-	writeJSON(w, 200, rows)
+	visible := make([]issueHandoffRowResponse, 0, len(rows))
+	for _, row := range rows {
+		_, recipientVisible := allowed[uuidToString(row.AgentID)]
+		if len(row.Handoff) != 0 && string(row.Handoff) != "null" && (!recipientVisible || !row.FilterTaskID.Valid) {
+			continue
+		}
+		visible = append(visible, issueHandoffRowResponse{ListIssueWakeupsRow: row, Handoff: json.RawMessage(row.Handoff)})
+	}
+	writeJSON(w, 200, visible)
 }
 
 func (h *Handler) ListWorkspaceWakeupSummaries(w http.ResponseWriter, r *http.Request) {
@@ -247,7 +255,7 @@ func (h *Handler) DisableIssueWakeup(w http.ResponseWriter, r *http.Request) {
 		wakeupError(w, err)
 		return
 	}
-	writeJSON(w, 200, result)
+	writeJSON(w, 200, issueHandoffResponse{IssueWakeup: result, Handoff: json.RawMessage(result.Handoff)})
 }
 
 func (h *Handler) wakeupSourceTaskID(r *http.Request) pgtype.UUID {

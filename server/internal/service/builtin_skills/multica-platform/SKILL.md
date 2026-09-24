@@ -12,6 +12,11 @@ comment, what status to write. This skill owns the platform contracts behind
 it — what a command actually does, what the server validates, and which writes
 have consequences you cannot take back.
 
+Inside a managed task, the runtime brief's `MULTICA_CLI_PATH` selects the
+absolute Multica executable. Use that quoted path for every `multica` example
+in this skill and its references, even when the shell finds a different bare
+`multica`. Do not install or update a global CLI to run a task command.
+
 Read the invariants below, then open the reference(s) your task actually needs
 — usually one, sometimes a few. Do not read them all.
 

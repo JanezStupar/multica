@@ -197,6 +197,19 @@ describe("IssueSchema (via ListIssuesResponseSchema)", () => {
     expect(parsed.issues[0]?.id).toBe(baseIssue.id);
     expect(parsed.issues[0]?.status_name).toBeUndefined();
   });
+  it("defaults absent or malformed workflow projection flags to false for compatible projections", () => {
+    for (const workflow_frozen of [undefined, "yes", 1, null]) {
+      const issue = { ...baseIssue, workflow_frozen, workflow_policy_present: workflow_frozen };
+      const parsed = ListIssuesResponseSchema.parse({ issues: [issue], total: 1 });
+      expect(parsed.issues[0]?.workflow_frozen).toBe(false);
+      expect(parsed.issues[0]?.workflow_policy_present).toBe(false);
+    }
+    const frozen = ListIssuesResponseSchema.parse({
+      issues: [{ ...baseIssue, workflow_frozen: true, workflow_policy_present: true }], total: 1,
+    });
+    expect(frozen.issues[0]?.workflow_frozen).toBe(true);
+    expect(frozen.issues[0]?.workflow_policy_present).toBe(true);
+  });
   it("keeps the issue while independently dropping a malformed source context", () => {
     const parsed = ListIssuesResponseSchema.parse({
       issues: [{ ...baseIssue, source_context: { snapshot: "bad" } }],
@@ -672,6 +685,48 @@ describe("AgentTaskListSchema", () => {
     const parsed = AgentTaskListSchema.parse([task]);
     expect(parsed[0]?.coalesced_comment_ids).toBeUndefined();
     expect(parsed[0]?.delivered_comment_ids).toBeUndefined();
+  });
+
+  it("preserves optional workflow profile and policy identity", () => {
+    const parsed = AgentTaskListSchema.parse([
+      {
+        ...task,
+        workflow_profile_id: "profile-1",
+        workflow_policy_version: "sha256:policy-version",
+      },
+      { ...task, id: "legacy" },
+    ]);
+
+    expect(parsed[0]).toMatchObject({
+      workflow_profile_id: "profile-1",
+      workflow_policy_version: "sha256:policy-version",
+    });
+    expect(parsed[1]?.workflow_profile_id).toBeUndefined();
+    expect(parsed[1]?.workflow_policy_version).toBeUndefined();
+  });
+
+  it("degrades malformed workflow identity without dropping task rows", () => {
+    const parsed = AgentTaskListSchema.parse([
+      {
+        ...task,
+        workflow_profile_id: 3,
+        workflow_policy_version: { value: "sha256:bad" },
+      },
+      {
+        ...task,
+        id: "valid",
+        workflow_profile_id: "profile-2",
+        workflow_policy_version: "sha256:valid",
+      },
+    ]);
+
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0]?.workflow_profile_id).toBeUndefined();
+    expect(parsed[0]?.workflow_policy_version).toBeUndefined();
+    expect(parsed[1]).toMatchObject({
+      workflow_profile_id: "profile-2",
+      workflow_policy_version: "sha256:valid",
+    });
   });
 
   it("degrades malformed optional coverage without dropping task rows", () => {

@@ -225,13 +225,34 @@ const createComment = `-- name: CreateComment :one
 WITH touched_issue AS (
     UPDATE issue SET
         updated_at = now(),
-        revision = revision + 1,
+        -- A completion fallback is display-only bookkeeping after the exact
+        -- requester task has succeeded. Preserve its pending acceptance CAS
+        -- only when no other issue write advanced the revision meanwhile.
+        -- Every ordinary/manual comment still advances revision.
+        revision = revision + CASE WHEN
+            $1::uuid IS NOT NULL
+            AND $1::uuid = $2::uuid
+            AND $3::text = 'agent'
+            AND issue.status = 'in_review'
+            AND issue.assignee_type = 'agent'
+            AND issue.assignee_id = $4::uuid
+            AND EXISTS (
+                SELECT 1 FROM issue_workflow_acceptance a
+                JOIN agent_task_queue t ON t.id = a.source_task_id AND t.issue_id = a.issue_id
+                WHERE a.issue_id = issue.id AND a.workspace_id = issue.workspace_id
+                  AND a.candidate_id = issue.workflow_candidate_id
+                  AND a.source_task_id = $1::uuid
+                  AND a.actor_type = 'agent' AND a.actor_id = $4::uuid
+                  AND a.mode = 'trivial' AND a.state = 'requested' AND a.revoked_at IS NULL
+                  AND a.authority_snapshot->'request'->>'expected_revision' = issue.revision::text
+                  AND t.status = 'completed'
+            ) THEN 0 ELSE 1 END,
         last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now())
-    WHERE issue.id = $1 AND issue.workspace_id = $2
+    WHERE issue.id = $5 AND issue.workspace_id = $6
     RETURNING issue.id, issue.workspace_id, issue.revision
 ), inserted_comment AS (
     INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id, source_task_id, quick_action_id, via_plugin_id, id)
-    SELECT ti.id, ti.workspace_id, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11::uuid, gen_random_uuid())
+    SELECT ti.id, ti.workspace_id, $3, $4, $7, $8, $9, $2, $10, $11, COALESCE($12::uuid, gen_random_uuid())
     FROM touched_issue ti
     RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at
 )
@@ -241,17 +262,18 @@ JOIN touched_issue ON touched_issue.id = inserted_comment.issue_id
 `
 
 type CreateCommentParams struct {
-	IssueID       pgtype.UUID `json:"issue_id"`
-	WorkspaceID   pgtype.UUID `json:"workspace_id"`
-	AuthorType    string      `json:"author_type"`
-	AuthorID      pgtype.UUID `json:"author_id"`
-	Content       string      `json:"content"`
-	Type          string      `json:"type"`
-	ParentID      pgtype.UUID `json:"parent_id"`
-	SourceTaskID  pgtype.UUID `json:"source_task_id"`
-	QuickActionID pgtype.UUID `json:"quick_action_id"`
-	ViaPluginID   pgtype.UUID `json:"via_plugin_id"`
-	ID            pgtype.UUID `json:"id"`
+	CompletionFallbackSourceTaskID pgtype.UUID `json:"completion_fallback_source_task_id"`
+	SourceTaskID                   pgtype.UUID `json:"source_task_id"`
+	AuthorType                     string      `json:"author_type"`
+	AuthorID                       pgtype.UUID `json:"author_id"`
+	IssueID                        pgtype.UUID `json:"issue_id"`
+	WorkspaceID                    pgtype.UUID `json:"workspace_id"`
+	Content                        string      `json:"content"`
+	Type                           string      `json:"type"`
+	ParentID                       pgtype.UUID `json:"parent_id"`
+	QuickActionID                  pgtype.UUID `json:"quick_action_id"`
+	ViaPluginID                    pgtype.UUID `json:"via_plugin_id"`
+	ID                             pgtype.UUID `json:"id"`
 }
 
 type CreateCommentRow struct {
@@ -295,14 +317,15 @@ type CreateCommentRow struct {
 // the daemon GC TTL both read updated_at, so this consistency is load-bearing.
 func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (CreateCommentRow, error) {
 	row := q.db.QueryRow(ctx, createComment,
-		arg.IssueID,
-		arg.WorkspaceID,
+		arg.CompletionFallbackSourceTaskID,
+		arg.SourceTaskID,
 		arg.AuthorType,
 		arg.AuthorID,
+		arg.IssueID,
+		arg.WorkspaceID,
 		arg.Content,
 		arg.Type,
 		arg.ParentID,
-		arg.SourceTaskID,
 		arg.QuickActionID,
 		arg.ViaPluginID,
 		arg.ID,

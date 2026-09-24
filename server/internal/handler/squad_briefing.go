@@ -175,9 +175,8 @@ func squadOperatingProtocolFor(ownsIssueStatus bool) string {
 	return squadOperatingProtocolHeader + "\n" + status + "\n\n" + squadOperatingProtocolHardRules
 }
 
-// buildSquadLeaderBriefing composes the full system briefing appended to a
-// squad leader's Instructions when it claims a task on a squad-assigned
-// issue. The returned string contains three sections:
+// buildSquadLeaderBriefing composes the briefing appended to a squad leader's
+// Instructions. The built-in workflow uses three sections:
 //
 //  1. Squad Operating Protocol (constant, system-level rules).
 //  2. Squad Roster (data — leader self-row + members with literal
@@ -189,13 +188,29 @@ func squadOperatingProtocolFor(ownsIssueStatus bool) string {
 // assigned to this very squad. The briefing is injected on every leader path,
 // including ones where the squad is a guest on someone else's issue, so this
 // flag is what keeps status authority from leaking along with the roster.
+// When builtinWorkflowApplies is false, a pinned issue workflow governs
+// behavior. Keep the leader role and ownership facts, roster, and configured
+// squad instructions, but omit the built-in operating protocol entirely.
 //
 // Archived agent members are skipped — there's no point asking the leader
 // to delegate to a retired agent. Members whose underlying record can't be
 // loaded (deleted user/agent races, FK weirdness) are also skipped silently.
-func buildSquadLeaderBriefing(ctx context.Context, q *db.Queries, squad db.Squad, ownsIssueStatus bool) string {
+func buildSquadLeaderBriefing(ctx context.Context, q *db.Queries, squad db.Squad, ownsIssueStatus, builtinWorkflowApplies bool) string {
 	var sb strings.Builder
-	sb.WriteString(squadOperatingProtocolFor(ownsIssueStatus))
+	if builtinWorkflowApplies {
+		sb.WriteString(squadOperatingProtocolFor(ownsIssueStatus))
+	} else {
+		sb.WriteString("## Squad Context\n\n")
+		sb.WriteString("You are the leader of squad ")
+		sb.WriteString(squad.Name)
+		sb.WriteString(" for this task. ")
+		if ownsIssueStatus {
+			sb.WriteString("This issue is assigned to your squad. ")
+		} else {
+			sb.WriteString("This issue is assigned elsewhere; your squad is assisting. ")
+		}
+		sb.WriteString("Follow this issue's selected ticket workflow for execution, delegation, activity reporting, and status changes.")
+	}
 	sb.WriteString("\n\n")
 	sb.WriteString(buildSquadRoster(ctx, q, squad))
 

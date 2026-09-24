@@ -440,7 +440,28 @@ WHERE c.id = (SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1);
 WITH touched_issue AS (
     UPDATE issue SET
         updated_at = now(),
-        revision = revision + 1,
+        -- A completion fallback is display-only bookkeeping after the exact
+        -- requester task has succeeded. Preserve its pending acceptance CAS
+        -- only when no other issue write advanced the revision meanwhile.
+        -- Every ordinary/manual comment still advances revision.
+        revision = revision + CASE WHEN
+            sqlc.narg('completion_fallback_source_task_id')::uuid IS NOT NULL
+            AND sqlc.narg('completion_fallback_source_task_id')::uuid = sqlc.narg('source_task_id')::uuid
+            AND sqlc.arg('author_type')::text = 'agent'
+            AND issue.status = 'in_review'
+            AND issue.assignee_type = 'agent'
+            AND issue.assignee_id = sqlc.arg('author_id')::uuid
+            AND EXISTS (
+                SELECT 1 FROM issue_workflow_acceptance a
+                JOIN agent_task_queue t ON t.id = a.source_task_id AND t.issue_id = a.issue_id
+                WHERE a.issue_id = issue.id AND a.workspace_id = issue.workspace_id
+                  AND a.candidate_id = issue.workflow_candidate_id
+                  AND a.source_task_id = sqlc.narg('completion_fallback_source_task_id')::uuid
+                  AND a.actor_type = 'agent' AND a.actor_id = sqlc.arg('author_id')::uuid
+                  AND a.mode = 'trivial' AND a.state = 'requested' AND a.revoked_at IS NULL
+                  AND a.authority_snapshot->'request'->>'expected_revision' = issue.revision::text
+                  AND t.status = 'completed'
+            ) THEN 0 ELSE 1 END,
         last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now())
     WHERE issue.id = sqlc.arg(issue_id) AND issue.workspace_id = sqlc.arg(workspace_id)
     RETURNING issue.id, issue.workspace_id, issue.revision

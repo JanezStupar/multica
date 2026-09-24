@@ -190,6 +190,10 @@ export interface Issue {
   parent_issue_id: string | null;
   project_id: string | null;
   position: number;
+  /** True when this pre-cutover issue is frozen pending explicit migration. */
+  workflow_frozen?: boolean;
+  /** Whether this issue has an explicitly enrolled workflow policy. */
+  workflow_policy_present?: boolean;
   // Ordered barrier group among sibling sub-issues (null = unstaged). The
   // parent assignee is notified/woken only when every sub-issue in a stage
   // finishes; see server/internal/handler/issue_child_done.go.

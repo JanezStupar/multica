@@ -16,6 +16,31 @@ export { parseWithFallback, setSchemaLogger } from "./schema";
 export type { ParseOptions } from "./schema";
 export { DuplicateIssueErrorBodySchema } from "./schemas";
 export type { DuplicateIssueErrorBody } from "./schemas";
+export {
+  IssueWorkflowMigrationRequestSchema,
+  IssueWorkflowPolicySchema,
+  IssueWorkflowSchema,
+  AcceptIssueWorkflowRequestSchema,
+  RejectIssueWorkflowRequestSchema,
+  RevokeIssueWorkflowExceptionRequestSchema,
+  RetryIssueWorkflowDeliveryRequestSchema,
+  IssueWorkflowRejectionKindSchema,
+  WorkspaceWorkflowDefaultSchema,
+  WorkspaceWorkflowCutoverResultSchema,
+  WorkflowSkillSelectionRequestSchema,
+} from "./schemas";
+export type {
+  IssueWorkflowMigrationRequest,
+  IssueWorkflowPolicy,
+  IssueWorkflow,
+  AcceptIssueWorkflowRequest,
+  RejectIssueWorkflowRequest,
+  RevokeIssueWorkflowExceptionRequest,
+  RetryIssueWorkflowDeliveryRequest,
+  WorkspaceWorkflowDefault,
+  WorkspaceWorkflowCutoverResult,
+  WorkflowSkillSelectionRequest,
+} from "./schemas";
 export { WSClient } from "./ws-client";
 
 import type { ApiClient as ApiClientType } from "./client";

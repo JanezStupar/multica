@@ -1,6 +1,33 @@
 import type { IssueWakeup, IssueWakeupSummaryRow } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters } from "../types/issue-wakeup";
-import { WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema } from "./schemas";
+import {
+  IssueHandoffRequestSchema,
+  IssueHandoffSchema,
+  IssueWakeupSchema,
+  IssueWakeupSummaryRowSchema,
+  IssueWorkflowPolicySchema,
+  IssueWorkflowSchema,
+  AcceptIssueWorkflowRequestSchema,
+  RejectIssueWorkflowRequestSchema,
+  RevokeIssueWorkflowExceptionRequestSchema,
+  RetryIssueWorkflowDeliveryRequestSchema,
+  WorkspaceWorkflowDefaultSchema,
+  WorkspaceWorkflowCutoverResultSchema,
+  IssueWorkflowMigrationRequestSchema,
+  WorkflowSkillSelectionRequestSchema,
+  WorkspaceWakeupPageSchema,
+  type IssueHandoff,
+  type IssueHandoffRequest,
+  type IssueWorkflowPolicy,
+  type IssueWorkflow,
+  type AcceptIssueWorkflowRequest,
+  type RejectIssueWorkflowRequest,
+  type RevokeIssueWorkflowExceptionRequest,
+  type RetryIssueWorkflowDeliveryRequest,
+  type WorkspaceWorkflowDefault,
+  type WorkspaceWorkflowCutoverResult,
+  type IssueWorkflowMigrationRequest,
+} from "./schemas";
 import type { InboxFilters } from "../inbox/filter-store";
 import type { ArchivedInboxPage, ArchivedInboxFacets } from "../types/inbox";
 import { configStore } from "../config";
@@ -1267,6 +1294,162 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/wakeups`);
     const parsed = parseWithFallback<IssueWakeup[] | null>(raw, IssueWakeupSchema.array(), null, { endpoint: "GET /api/issues/:id/wakeups" });
     if (!parsed) throw new Error("Could not load wakeups");
+    return parsed;
+  }
+
+  async createIssueHandoff(issueId: string, input: IssueHandoffRequest): Promise<IssueHandoff> {
+    const request = IssueHandoffRequestSchema.parse(input);
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/handoffs`, {
+      method: "POST", body: JSON.stringify(request),
+    });
+    const parsed = parseWithFallback<IssueHandoff | null>(raw, IssueHandoffSchema, null, {
+      endpoint: "POST /api/issues/:id/handoffs",
+    });
+    if (!parsed) throw new Error("Could not create issue handoff");
+    return parsed;
+  }
+
+  async listIssueHandoffs(issueId: string): Promise<IssueHandoff[]> {
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/handoffs`);
+    const parsed = parseWithFallback<IssueHandoff[] | null>(raw, IssueHandoffSchema.array(), null, {
+      endpoint: "GET /api/issues/:id/handoffs",
+    });
+    if (!parsed) throw new Error("Could not load issue handoffs");
+    return parsed;
+  }
+
+  async cancelIssueHandoff(issueId: string, handoffId: string): Promise<IssueHandoff> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${encodeURIComponent(issueId)}/wakeups/${encodeURIComponent(handoffId)}/disable`,
+      { method: "POST" },
+    );
+    const parsed = parseWithFallback<IssueHandoff | null>(raw, IssueHandoffSchema, null, {
+      endpoint: "POST /api/issues/:id/wakeups/:handoffId/disable",
+    });
+    if (!parsed) throw new Error("Could not cancel issue handoff");
+    return parsed;
+  }
+
+  async getIssueWorkflowPolicy(issueId: string): Promise<IssueWorkflowPolicy> {
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/workflow-policy`);
+    const parsed = parseWithFallback<IssueWorkflowPolicy | null>(raw, IssueWorkflowPolicySchema, null, {
+      endpoint: "GET /api/issues/:id/workflow-policy",
+    });
+    if (!parsed) throw new Error("Could not load issue workflow policy");
+    return parsed;
+  }
+
+  async enrollIssueWorkflowPolicy(issueId: string, skillId: string): Promise<IssueWorkflowPolicy> {
+    const request = WorkflowSkillSelectionRequestSchema.parse({ skill_id: skillId });
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/workflow-policy`, {
+      method: "POST", body: JSON.stringify(request),
+    });
+    const parsed = parseWithFallback<IssueWorkflowPolicy | null>(raw, IssueWorkflowPolicySchema, null, {
+      endpoint: "POST /api/issues/:id/workflow-policy",
+    });
+    if (!parsed) throw new Error("Could not enroll issue workflow policy");
+    return parsed;
+  }
+
+  async getWorkspaceWorkflowDefault(workspaceId: string): Promise<WorkspaceWorkflowDefault> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/workflow-default`);
+    const parsed = parseWithFallback<WorkspaceWorkflowDefault | null>(raw, WorkspaceWorkflowDefaultSchema, null, {
+      endpoint: "GET /api/workspaces/:id/workflow-default",
+    });
+    if (!parsed) throw new Error("Could not load workspace workflow default");
+    return parsed;
+  }
+
+  async cutoverWorkspaceWorkflow(workspaceId: string, skillId: string): Promise<WorkspaceWorkflowCutoverResult> {
+    const request = WorkflowSkillSelectionRequestSchema.parse({ skill_id: skillId });
+    const raw = await this.fetch<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/workflow-cutover`, {
+      method: "POST", body: JSON.stringify(request),
+    });
+    const parsed = parseWithFallback<WorkspaceWorkflowCutoverResult | null>(raw, WorkspaceWorkflowCutoverResultSchema, null, {
+      endpoint: "POST /api/workspaces/:id/workflow-cutover",
+    });
+    if (!parsed) throw new Error("Could not cut over workspace workflow");
+    return parsed;
+  }
+
+  async setWorkspaceWorkflowDefault(workspaceId: string, skillId: string): Promise<IssueWorkflowPolicy> {
+    const request = WorkflowSkillSelectionRequestSchema.parse({ skill_id: skillId });
+    const raw = await this.fetch<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/workflow-default`, {
+      method: "PUT", body: JSON.stringify(request),
+    });
+    const parsed = parseWithFallback<IssueWorkflowPolicy | null>(raw, IssueWorkflowPolicySchema, null, {
+      endpoint: "PUT /api/workspaces/:id/workflow-default",
+    });
+    if (!parsed) throw new Error("Could not update workspace workflow default");
+    return parsed;
+  }
+
+  async migrateIssueWorkflow(issueId: string, input: IssueWorkflowMigrationRequest): Promise<IssueWorkflowPolicy> {
+    const request = IssueWorkflowMigrationRequestSchema.parse(input);
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/workflow-migrate`, {
+      method: "POST", body: JSON.stringify(request),
+    });
+    const parsed = parseWithFallback<IssueWorkflowPolicy | null>(raw, IssueWorkflowPolicySchema, null, {
+      endpoint: "POST /api/issues/:id/workflow-migrate",
+    });
+    if (!parsed) throw new Error("Could not migrate issue workflow");
+    return parsed;
+  }
+
+  async getIssueWorkflow(issueId: string): Promise<IssueWorkflow> {
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/workflow`);
+    const parsed = parseWithFallback<IssueWorkflow | null>(raw, IssueWorkflowSchema, null, {
+      endpoint: "GET /api/issues/:id/workflow",
+    });
+    if (!parsed) throw new Error("Could not load issue workflow");
+    return parsed;
+  }
+
+  async acceptIssueWorkflow(issueId: string, input: AcceptIssueWorkflowRequest): Promise<IssueWorkflow> {
+    const request = AcceptIssueWorkflowRequestSchema.parse(input);
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/workflow/acceptances`, {
+      method: "POST", body: JSON.stringify(request),
+    });
+    const parsed = parseWithFallback<IssueWorkflow | null>(raw, IssueWorkflowSchema, null, {
+      endpoint: "POST /api/issues/:id/workflow/acceptances",
+    });
+    if (!parsed) throw new Error("Could not accept issue workflow candidate");
+    return parsed;
+  }
+
+  async rejectIssueWorkflow(issueId: string, input: RejectIssueWorkflowRequest): Promise<IssueWorkflow> {
+    const request = RejectIssueWorkflowRequestSchema.parse(input);
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/workflow/rejections`, {
+      method: "POST", body: JSON.stringify(request),
+    });
+    const parsed = parseWithFallback<IssueWorkflow | null>(raw, IssueWorkflowSchema, null, {
+      endpoint: "POST /api/issues/:id/workflow/rejections",
+    });
+    if (!parsed) throw new Error("Could not reject issue workflow candidate");
+    return parsed;
+  }
+
+  async revokeIssueWorkflowException(issueId: string, exceptionId: string, input: RevokeIssueWorkflowExceptionRequest): Promise<IssueWorkflow> {
+    const request = RevokeIssueWorkflowExceptionRequestSchema.parse(input);
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/workflow/exceptions/${encodeURIComponent(exceptionId)}/revoke`, {
+      method: "POST", body: JSON.stringify(request),
+    });
+    const parsed = parseWithFallback<IssueWorkflow | null>(raw, IssueWorkflowSchema, null, {
+      endpoint: "POST /api/issues/:id/workflow/exceptions/:exceptionId/revoke",
+    });
+    if (!parsed) throw new Error("Could not revoke issue workflow exception");
+    return parsed;
+  }
+
+  async retryIssueWorkflowDelivery(issueId: string, deliveryId: string, input: RetryIssueWorkflowDeliveryRequest): Promise<IssueWorkflow> {
+    const request = RetryIssueWorkflowDeliveryRequestSchema.parse(input);
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/workflow/delivery/${encodeURIComponent(deliveryId)}/retry`, {
+      method: "POST", body: JSON.stringify(request),
+    });
+    const parsed = parseWithFallback<IssueWorkflow | null>(raw, IssueWorkflowSchema, null, {
+      endpoint: "POST /api/issues/:id/workflow/delivery/:deliveryId/retry",
+    });
+    if (!parsed) throw new Error("Could not retry issue workflow delivery");
     return parsed;
   }
 

@@ -14,6 +14,10 @@ member watches chat shape the work and the issue carry it.
 Mika's durable instructions still apply. This skill adds only what is specific
 to the first conversation.
 
+For Multica commands in a managed task, use the runtime brief's quoted
+`MULTICA_CLI_PATH` executable. The bare `multica` spelling in examples does
+not authorize updating or installing a global CLI.
+
 ## You have already said hello
 
 The workspace sent your opening on your behalf, before this conversation

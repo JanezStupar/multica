@@ -68,7 +68,9 @@ multica squad activity <issue-id> action|no_action|failed --reason "<why>" --out
 ```
 
 `activity` is a write: it records the leader's evaluation decision on an issue.
-Use it only when acting as the squad leader after evaluating a trigger.
+The unpinned built-in leader protocol uses it after evaluating a trigger. A
+pinned issue workflow may define a different reporting or continuation path;
+follow that policy instead of treating this command as a required step.
 
 Which issue it accepts: **the issue your current turn is running on**. The
 target issue does NOT need to be assigned to your squad — a `@squad` mention on
@@ -79,10 +81,11 @@ the PARENT issue, so record against the parent, not the child you just read;
 passing an unrelated issue id is rejected and the error names the issue you
 should have used.
 
-If the call fails, do not exit silently — the comment prohibition on `no_action`
-only applies once the recording succeeded. Post one short comment with the
-outcome instead, and only when this turn has not already commented: on the
-`action` path your delegation comment is already that record.
+Under the unpinned built-in leader protocol, a successful `no_action` is the
+record and the leader exits without a comment. If recording fails, that default
+protocol leaves one short outcome comment only when the turn has not already
+commented. Enrolled workflows define their own reporting and continuation
+rules; these default instructions do not apply to them.
 
 Issue/comment commands often needed with squads:
 
@@ -140,11 +143,17 @@ the backend adds the new leader as a squad member with role `leader`.
 ## Leader briefing
 
 For squad leader tasks, Multica appends a squad leader briefing to the leader
-agent instructions. The briefing includes:
+agent instructions. On an issue without an enrolled workflow policy, the
+built-in briefing includes:
 
 - Squad Operating Protocol;
 - Squad Roster;
 - Squad Instructions, only when `instructions` is non-empty.
+
+On an enrolled issue, Multica instead supplies factual squad context, the
+roster and configured squad instructions without the built-in operating
+protocol. The selected workflow governs dispatch, reporting, continuation and
+status authority. The routing and command effects below apply either way.
 
 Roster entries include member name, member type, mention markdown, and non-empty
 role. For agent members the roster also lists their assigned skills
@@ -169,19 +178,18 @@ Current behavior:
 - it does not enqueue every squad member;
 - assignment while status is `backlog` does not immediately start work;
 - moving a squad-assigned issue out of `backlog` can trigger the leader;
-- changing assignee cancels existing tasks for the issue before enqueueing the
-  new assignee path;
-- parent issue status is agent-managed (same model as direct agent assignment):
-  the leader's first assignment turn should move the parent to `in_progress`
-  and keep it there while members work; the leader moves the parent to
-  `in_review` only when a later re-trigger confirms the overall goal is met.
-  Completing a leader task (including the first dispatch) does not itself
-  change issue status;
-- that status authority is granted only when the issue's `assignee_type` /
-  `assignee_id` point at THIS squad. The leader briefing is injected on every
-  leader path, including an `@squad` mention on an issue owned by a plain agent
-  — on those paths the protocol instead carries an explicit "do not change this
-  issue's status".
+- changing assignee does not cancel tasks already in flight; a task may be
+  enqueued for the new assignee when current status and trigger rules permit;
+- parent issue status is an explicit mutation, not an automatic result of
+  dispatching members or completing child issues. For issues without an
+  enrolled workflow policy, the generated runtime brief supplies current
+  default status guidance. An enrolled issue follows its selected workflow's
+  phase and assignment rules;
+- the unpinned built-in protocol grants its status instruction only when the
+  issue's `assignee_type` / `assignee_id` point at THIS squad. A selected
+  workflow supplies its own status authority and phase rules. On a guest
+  `@squad` path the enrolled workflow receives factual ownership context; the
+  built-in guest-status prohibition is not injected.
 
 The status names above are fixed built-in keys, not categories.
 
@@ -251,10 +259,14 @@ These actions can trigger agent work or mutate durable state:
 - `description` has no proven runtime prompt effect.
 - `role` is roster context, not automatic scheduling.
 - Backlog assignment does not immediately start work.
-- First leader dispatch is not parent completion — parent stays `in_progress`
-  until the leader later confirms the overall goal and moves it to `in_review`.
-- The server does not auto-flip parent status when child issues finish; it only
-  wakes the leader with an explicit ask (including `in_review` when wrapping up).
-- Getting the leader briefing does NOT imply status authority. A squad
-  `@`-mentioned into an issue assigned to someone else is a guest: roster and
-  delegation rules yes, `multica issue status` no.
+- Dispatching a leader is not parent completion. The server does not infer
+  parent status from dispatch or child completion; status updates are explicit
+  and follow the enrolled workflow, or the generated default when no policy is
+  enrolled.
+- Child completion does not auto-flip parent status. On an unpinned issue, the
+  built-in notification may give its default wrap-up ask; on an enrolled issue,
+  it reports completion and stage facts and points to the selected ticket
+  workflow, which determines the next action and status.
+- Under the unpinned built-in protocol, a squad `@`-mentioned into an issue
+  assigned to someone else is a guest and receives no status instruction. An
+  enrolled issue follows its selected workflow's authority and status rules.

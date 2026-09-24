@@ -783,6 +783,18 @@ The `usage` command returns the aggregated token usage for an issue, summed acro
 
 The `runs` command shows all past and current executions for an issue, including running tasks. Table output uses short task UUID prefixes by default; pass `--full-id` to print canonical task UUIDs. The `run-messages` command accepts full task UUIDs directly; copied short task prefixes must be scoped with `--issue <issue-id>` so the CLI only checks that issue's runs. It shows the detailed message log (tool calls, thinking, text, errors) for a single run. Use `--since` for efficient polling of in-progress runs.
 
+### Selected workflow profiles
+
+For an issue with a pinned workflow, each agent's first claim selects an immutable execution profile. Run history and claim responses identify its `workflow_profile_id` and `workflow_policy_version`. Editing an agent or skill later does not rewrite that profile. To adopt edited behavior for future deliberate work, a workspace owner or administrator who can invoke the agent and use its runtime can explicitly reselect the issue-agent profile after settling outstanding tasks:
+
+```bash
+multica issue workflow-profile reselect <issue-id> --file profile-reselection.json
+```
+
+The JSON file must contain `agent_id`, `expected_profile_id` (the current profile ID shown by `multica issue runs <issue-id> --output json`), a UUID `request_key` for safe retries, and nonempty `reason`, `consequences`, and `reconciliation`. Optional `supplemental_instructions` apply only to this issue and agent until the next reselection; an empty string clears them, while omitting the field retains them. Reselection starts a fresh provider session for later deliberate work. Existing run rows and retries or named reruns keep their source profile. A supplemental instruction cannot grant review, acceptance, or delivery authority; those require the workflow's structured grants. The API endpoint is `POST /api/issues/{id}/workflow-profile/reselect` with the same JSON body.
+
+For a blocked delivery after repairing its provider binding or configuration, use `multica issue workflow delivery-retry <issue-id> <delivery-id> --file retry.json`. The JSON contains the current `candidate_id` and `expected_revision` from `multica issue workflow get <issue-id>`, plus an optional short `reason`. The retry keeps the accepted action, expected PR head, earlier provider progress, and attempt history; a changed candidate or known different PR head requires a new evaluation. The API endpoint is `POST /api/issues/{id}/workflow/delivery/{deliveryID}/retry` and returns the updated workflow state.
+
 ## Projects
 
 Projects group related issues (e.g. a sprint, an epic, a workstream). Every project

@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY issue_workflow_acceptance_issue_idx ON issue_workflow_acceptance(issue_id, requested_at DESC);

@@ -78,6 +78,11 @@ type IssueResponse struct {
 	CreatedAt string  `json:"created_at"`
 	UpdatedAt string  `json:"updated_at"`
 	Revision  int64   `json:"revision"`
+	// Detail and list responses expose the cutover freeze.
+	WorkflowFrozen *bool `json:"workflow_frozen,omitempty"`
+	// Policy presence is a cheap boolean; list and child responses never ship
+	// the archived workflow bundle just to identify enrollment.
+	WorkflowPolicyPresent *bool `json:"workflow_policy_present,omitempty"`
 	// LastActivityAt is the latest semantic issue activity. It stays nullable
 	// while the operator-run historical backfill is incomplete.
 	LastActivityAt *string `json:"last_activity_at"`
@@ -365,6 +370,7 @@ func (h *Handler) fillStatusCategory(ctx context.Context, wsID pgtype.UUID, resp
 
 func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 	identifier := issuePrefix + "-" + strconv.Itoa(int(i.Number))
+	policyPresent := len(i.WorkflowPolicy) > 0
 	// Built-ins map to public categories without a catalog lookup. A custom
 	// status is filled by endpoints that resolve the workspace catalog.
 	statusCategory := ""
@@ -372,31 +378,33 @@ func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 		statusCategory = i.Status
 	}
 	return IssueResponse{
-		ID:             uuidToString(i.ID),
-		WorkspaceID:    uuidToString(i.WorkspaceID),
-		Number:         i.Number,
-		Identifier:     identifier,
-		Title:          i.Title,
-		Description:    textToPtr(i.Description),
-		Status:         i.Status,
-		StatusCategory: statusCategory,
-		Priority:       i.Priority,
-		AssigneeType:   textToPtr(i.AssigneeType),
-		AssigneeID:     uuidToPtr(i.AssigneeID),
-		CreatorType:    i.CreatorType,
-		CreatorID:      uuidToString(i.CreatorID),
-		ParentIssueID:  uuidToPtr(i.ParentIssueID),
-		ProjectID:      uuidToPtr(i.ProjectID),
-		Position:       i.Position,
-		Stage:          int4ToPtr(i.Stage),
-		StartDate:      dateToPtr(i.StartDate),
-		DueDate:        dateToPtr(i.DueDate),
-		CreatedAt:      timestampToString(i.CreatedAt),
-		UpdatedAt:      timestampToString(i.UpdatedAt),
-		Revision:       i.Revision,
-		LastActivityAt: timestampToNanoPtr(i.LastActivityAt),
-		Metadata:       parseIssueMetadata(i.Metadata),
-		Properties:     parseIssueProperties(i.Properties),
+		ID:                    uuidToString(i.ID),
+		WorkspaceID:           uuidToString(i.WorkspaceID),
+		Number:                i.Number,
+		Identifier:            identifier,
+		Title:                 i.Title,
+		Description:           textToPtr(i.Description),
+		Status:                i.Status,
+		StatusCategory:        statusCategory,
+		Priority:              i.Priority,
+		AssigneeType:          textToPtr(i.AssigneeType),
+		AssigneeID:            uuidToPtr(i.AssigneeID),
+		CreatorType:           i.CreatorType,
+		CreatorID:             uuidToString(i.CreatorID),
+		ParentIssueID:         uuidToPtr(i.ParentIssueID),
+		ProjectID:             uuidToPtr(i.ProjectID),
+		Position:              i.Position,
+		Stage:                 int4ToPtr(i.Stage),
+		StartDate:             dateToPtr(i.StartDate),
+		DueDate:               dateToPtr(i.DueDate),
+		CreatedAt:             timestampToString(i.CreatedAt),
+		UpdatedAt:             timestampToString(i.UpdatedAt),
+		Revision:              i.Revision,
+		WorkflowFrozen:        &i.WorkflowFrozen,
+		WorkflowPolicyPresent: &policyPresent,
+		LastActivityAt:        timestampToNanoPtr(i.LastActivityAt),
+		Metadata:              parseIssueMetadata(i.Metadata),
+		Properties:            parseIssueProperties(i.Properties),
 	}
 }
 
@@ -409,31 +417,33 @@ func issueListRowToResponse(i db.ListIssuesRow, issuePrefix string) IssueRespons
 	}
 	identifier := issuePrefix + "-" + strconv.Itoa(int(i.Number))
 	return IssueResponse{
-		ID:             uuidToString(i.ID),
-		WorkspaceID:    uuidToString(i.WorkspaceID),
-		Number:         i.Number,
-		Identifier:     identifier,
-		Title:          i.Title,
-		Description:    textToPtr(i.Description),
-		Status:         i.Status,
-		StatusCategory: statusCategory,
-		Priority:       i.Priority,
-		AssigneeType:   textToPtr(i.AssigneeType),
-		AssigneeID:     uuidToPtr(i.AssigneeID),
-		CreatorType:    i.CreatorType,
-		CreatorID:      uuidToString(i.CreatorID),
-		ParentIssueID:  uuidToPtr(i.ParentIssueID),
-		ProjectID:      uuidToPtr(i.ProjectID),
-		Position:       i.Position,
-		Stage:          int4ToPtr(i.Stage),
-		StartDate:      dateToPtr(i.StartDate),
-		DueDate:        dateToPtr(i.DueDate),
-		CreatedAt:      timestampToString(i.CreatedAt),
-		UpdatedAt:      timestampToString(i.UpdatedAt),
-		Revision:       i.Revision,
-		LastActivityAt: timestampToNanoPtr(i.LastActivityAt),
-		Metadata:       parseIssueMetadata(i.Metadata),
-		Properties:     parseIssueProperties(i.Properties),
+		ID:                    uuidToString(i.ID),
+		WorkspaceID:           uuidToString(i.WorkspaceID),
+		Number:                i.Number,
+		Identifier:            identifier,
+		Title:                 i.Title,
+		Description:           textToPtr(i.Description),
+		Status:                i.Status,
+		StatusCategory:        statusCategory,
+		Priority:              i.Priority,
+		AssigneeType:          textToPtr(i.AssigneeType),
+		AssigneeID:            uuidToPtr(i.AssigneeID),
+		CreatorType:           i.CreatorType,
+		CreatorID:             uuidToString(i.CreatorID),
+		ParentIssueID:         uuidToPtr(i.ParentIssueID),
+		ProjectID:             uuidToPtr(i.ProjectID),
+		Position:              i.Position,
+		Stage:                 int4ToPtr(i.Stage),
+		StartDate:             dateToPtr(i.StartDate),
+		DueDate:               dateToPtr(i.DueDate),
+		CreatedAt:             timestampToString(i.CreatedAt),
+		UpdatedAt:             timestampToString(i.UpdatedAt),
+		Revision:              i.Revision,
+		WorkflowFrozen:        &i.WorkflowFrozen,
+		WorkflowPolicyPresent: &i.WorkflowPolicyPresent,
+		LastActivityAt:        timestampToNanoPtr(i.LastActivityAt),
+		Metadata:              parseIssueMetadata(i.Metadata),
+		Properties:            parseIssueProperties(i.Properties),
 	}
 }
 
@@ -470,6 +480,29 @@ func (h *Handler) labelsByIssue(ctx context.Context, wsUUID pgtype.UUID, issueID
 	return out
 }
 
+// Child projections omit the archived policy JSON. Fetch only its presence in
+// one workspace-scoped query so clients can still offer policy actions.
+func (h *Handler) issuePolicyPresence(ctx context.Context, wsUUID pgtype.UUID, issueIDs []pgtype.UUID) (map[string]bool, error) {
+	out := make(map[string]bool, len(issueIDs))
+	if len(issueIDs) == 0 {
+		return out, nil
+	}
+	rows, err := h.DB.Query(ctx, `SELECT id, workflow_policy IS NOT NULL FROM issue WHERE workspace_id=$1 AND id=ANY($2::uuid[])`, wsUUID, issueIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id pgtype.UUID
+		var present bool
+		if err := rows.Scan(&id, &present); err != nil {
+			return nil, err
+		}
+		out[uuidToString(id)] = present
+	}
+	return out, rows.Err()
+}
+
 func openIssueRowToResponse(i db.ListOpenIssuesRow, issuePrefix string) IssueResponse {
 	// Same pure built-in resolution as issueToResponse. (MUL-6243)
 	statusCategory := ""
@@ -478,31 +511,33 @@ func openIssueRowToResponse(i db.ListOpenIssuesRow, issuePrefix string) IssueRes
 	}
 	identifier := issuePrefix + "-" + strconv.Itoa(int(i.Number))
 	return IssueResponse{
-		ID:             uuidToString(i.ID),
-		WorkspaceID:    uuidToString(i.WorkspaceID),
-		Number:         i.Number,
-		Identifier:     identifier,
-		Title:          i.Title,
-		Description:    textToPtr(i.Description),
-		Status:         i.Status,
-		StatusCategory: statusCategory,
-		Priority:       i.Priority,
-		AssigneeType:   textToPtr(i.AssigneeType),
-		AssigneeID:     uuidToPtr(i.AssigneeID),
-		CreatorType:    i.CreatorType,
-		CreatorID:      uuidToString(i.CreatorID),
-		ParentIssueID:  uuidToPtr(i.ParentIssueID),
-		ProjectID:      uuidToPtr(i.ProjectID),
-		Position:       i.Position,
-		Stage:          int4ToPtr(i.Stage),
-		StartDate:      dateToPtr(i.StartDate),
-		DueDate:        dateToPtr(i.DueDate),
-		CreatedAt:      timestampToString(i.CreatedAt),
-		UpdatedAt:      timestampToString(i.UpdatedAt),
-		Revision:       i.Revision,
-		LastActivityAt: timestampToNanoPtr(i.LastActivityAt),
-		Metadata:       parseIssueMetadata(i.Metadata),
-		Properties:     parseIssueProperties(i.Properties),
+		ID:                    uuidToString(i.ID),
+		WorkspaceID:           uuidToString(i.WorkspaceID),
+		Number:                i.Number,
+		Identifier:            identifier,
+		Title:                 i.Title,
+		Description:           textToPtr(i.Description),
+		Status:                i.Status,
+		StatusCategory:        statusCategory,
+		Priority:              i.Priority,
+		AssigneeType:          textToPtr(i.AssigneeType),
+		AssigneeID:            uuidToPtr(i.AssigneeID),
+		CreatorType:           i.CreatorType,
+		CreatorID:             uuidToString(i.CreatorID),
+		ParentIssueID:         uuidToPtr(i.ParentIssueID),
+		ProjectID:             uuidToPtr(i.ProjectID),
+		Position:              i.Position,
+		Stage:                 int4ToPtr(i.Stage),
+		StartDate:             dateToPtr(i.StartDate),
+		DueDate:               dateToPtr(i.DueDate),
+		CreatedAt:             timestampToString(i.CreatedAt),
+		UpdatedAt:             timestampToString(i.UpdatedAt),
+		Revision:              i.Revision,
+		WorkflowFrozen:        &i.WorkflowFrozen,
+		WorkflowPolicyPresent: &i.WorkflowPolicyPresent,
+		LastActivityAt:        timestampToNanoPtr(i.LastActivityAt),
+		Metadata:              parseIssueMetadata(i.Metadata),
+		Properties:            parseIssueProperties(i.Properties),
 	}
 }
 
@@ -682,6 +717,7 @@ func parseQueryNumber(q string) (int, bool) {
 // searchResult holds a raw row from the dynamic search query.
 type searchResult struct {
 	issue                 db.Issue
+	policyPresent         bool
 	matchSource           string
 	matchedCommentContent string
 }
@@ -985,7 +1021,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
 		i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position,
 		i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id,
-		i.revision,
+		i.revision, i.workflow_frozen, (i.workflow_policy IS NOT NULL),
 		pc.match_source,
 		COALESCE(c.content, '') AS matched_comment_content
 	FROM page_candidates pc
@@ -1081,6 +1117,8 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 				&sr.issue.Number,
 				&sr.issue.ProjectID,
 				&sr.issue.Revision,
+				&sr.issue.WorkflowFrozen,
+				&sr.policyPresent,
 				&sr.matchSource,
 				&sr.matchedCommentContent,
 			); err != nil {
@@ -1117,6 +1155,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 			IssueResponse: issueToResponse(sr.issue, prefix),
 			MatchSource:   sr.matchSource,
 		}
+		sir.WorkflowPolicyPresent = &sr.policyPresent
 		fillSearch(&sir.IssueResponse)
 		// Always populate comment snippet when a matching comment exists
 		if sr.matchedCommentContent != "" {
@@ -1628,7 +1667,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-	   i.revision
+	   i.revision, i.workflow_frozen, (i.workflow_policy IS NOT NULL) AS workflow_policy_present
 FROM issue i
 WHERE %s
 ORDER BY %s
@@ -1669,6 +1708,8 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 			&row.Stage,
 			&row.Properties,
 			&row.Revision,
+			&row.WorkflowFrozen,
+			&row.WorkflowPolicyPresent,
 		); err != nil {
 			slog.Warn("ListIssues scan failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to list issues")
@@ -2228,6 +2269,7 @@ WITH ranked AS (
 		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
 		i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at,
 		i.number, i.project_id, i.metadata, i.stage, i.properties, i.revision,
+		i.workflow_frozen, (i.workflow_policy IS NOT NULL) AS workflow_policy_present,
 		COUNT(*) OVER (PARTITION BY i.assignee_type, i.assignee_id) AS group_total,
 		ROW_NUMBER() OVER (
 			PARTITION BY i.assignee_type, i.assignee_id
@@ -2240,7 +2282,8 @@ SELECT
 	id, workspace_id, title, description, status, priority,
 	assignee_type, assignee_id, creator_type, creator_id,
 	parent_issue_id, position, start_date, due_date, created_at, updated_at, last_activity_at,
-	number, project_id, metadata, stage, properties, revision, group_total
+	number, project_id, metadata, stage, properties, revision,
+	workflow_frozen, workflow_policy_present, group_total
 FROM ranked
 WHERE rn > %s AND rn <= %s + %s
 ORDER BY
@@ -2289,6 +2332,8 @@ ORDER BY
 			&row.Stage,
 			&row.Properties,
 			&row.Revision,
+			&row.WorkflowFrozen,
+			&row.WorkflowPolicyPresent,
 			&row.GroupTotal,
 		); err != nil {
 			slog.Warn("ListGroupedIssues scan failed", "error", err)
@@ -2410,6 +2455,11 @@ func (h *Handler) ListChildIssues(w http.ResponseWriter, r *http.Request) {
 	for i, child := range children {
 		ids[i] = child.ID
 	}
+	policyPresence, err := h.issuePolicyPresence(r.Context(), issue.WorkspaceID, ids)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list child issues")
+		return
+	}
 	labelsMap := h.labelsByIssue(r.Context(), issue.WorkspaceID, ids)
 	// Sub-issue progress is computed from these rows (the CLI's `issue children`
 	// stage counts, among others), so they carry the resolved category — a
@@ -2419,7 +2469,9 @@ func (h *Handler) ListChildIssues(w http.ResponseWriter, r *http.Request) {
 	statusResolver := issuestatus.NewResolver(issue.WorkspaceID)
 	resp := make([]IssueResponse, len(children))
 	for i, child := range children {
-		resp[i] = issueToResponse(child, prefix)
+		resp[i] = issueToResponse(db.Issue(child), prefix)
+		present := policyPresence[resp[i].ID]
+		resp[i].WorkflowPolicyPresent = &present
 		resp[i].StatusCategory = issuestatus.WireCategory(child.Status, statusResolver.Category(r.Context(), h.Queries, child.Status))
 		labels := labelsMap[resp[i].ID]
 		if labels == nil {
@@ -2496,6 +2548,11 @@ func (h *Handler) ListChildrenByParents(w http.ResponseWriter, r *http.Request) 
 	for i, child := range children {
 		ids[i] = child.ID
 	}
+	policyPresence, err := h.issuePolicyPresence(r.Context(), wsUUID, ids)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list child issues")
+		return
+	}
 	labelsMap := h.labelsByIssue(r.Context(), wsUUID, ids)
 	// Sub-issue progress is computed from these rows (the CLI's `issue children`
 	// stage counts, among others), so they carry the resolved category — a
@@ -2505,7 +2562,9 @@ func (h *Handler) ListChildrenByParents(w http.ResponseWriter, r *http.Request) 
 	statusResolver := issuestatus.NewResolver(wsUUID)
 	resp := make([]IssueResponse, len(children))
 	for i, child := range children {
-		resp[i] = issueToResponse(child, prefix)
+		resp[i] = issueToResponse(db.Issue(child), prefix)
+		present := policyPresence[resp[i].ID]
+		resp[i].WorkflowPolicyPresent = &present
 		resp[i].StatusCategory = issuestatus.WireCategory(child.Status, statusResolver.Category(r.Context(), h.Queries, child.Status))
 		labels := labelsMap[resp[i].ID]
 		if labels == nil {
@@ -3602,6 +3661,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if prevIssue.WorkflowFrozen {
+		writeError(w, http.StatusConflict, "issue is frozen until explicit workflow migration")
+		return
+	}
 	userID := requestUserID(r)
 	workspaceID := uuidToString(prevIssue.WorkspaceID)
 
@@ -3836,6 +3899,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		issue, err = h.updateIssueWithStatusGuard(r.Context(), prevIssue.WorkspaceID, statusKeyForGuard, params)
 	}
 	if err != nil {
+		if writeFrozenWorkflowMutationError(w, err) {
+			return
+		}
+		if writeIssueWorkflowAuthorityError(w, err) {
+			return
+		}
 		if writeIssueStatusRaceError(w, err) {
 			return
 		}
@@ -4221,6 +4290,9 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 		}); err != nil {
 			return issueDeleteResult{}, fmt.Errorf("lock issue for delete: %w", err)
 		}
+		if _, err := tx.Exec(ctx, `SELECT set_config('multica.issue_delete_parent_id',$1::text,true)`, uuidToString(issue.ID)); err != nil {
+			return issueDeleteResult{}, fmt.Errorf("mark issue delete parent: %w", err)
+		}
 		detached, err := qtx.DetachDirectChildIssues(ctx, db.DetachDirectChildIssuesParams{
 			WorkspaceID: issue.WorkspaceID, ParentIssueID: issue.ID, ExcludedIssueIds: excludedIssueIDs,
 		})
@@ -4363,6 +4435,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
 	if !ok {
+		return
+	}
+	if h.rejectFrozenIssueBatchMutation(w, r, wsUUID, req.IssueIDs) {
 		return
 	}
 	// Status is validated against this workspace's catalog, so it has to wait
@@ -4586,6 +4661,12 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if writeIssueStatusRaceError(w, err) {
 				return
 			}
+			if writeFrozenWorkflowMutationError(w, err) {
+				return
+			}
+			if writeIssueWorkflowAuthorityError(w, err) {
+				return
+			}
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)
 			continue
 		}
@@ -4690,6 +4771,9 @@ func (h *Handler) BatchDeleteIssues(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
 	if !ok {
+		return
+	}
+	if h.rejectFrozenIssueBatchMachineMutation(w, r, wsUUID, req.IssueIDs) {
 		return
 	}
 	issues := make([]db.Issue, 0, len(req.IssueIDs))

@@ -19,7 +19,7 @@ func TestIssueWakeupAPIAndTrustedOrigin(t *testing.T) {
 	agent := dbfx.Agent(t, "wake api", testRuntimeID)
 	dbfx.Cleanup(t, "DELETE FROM issue_wakeup WHERE issue_id=$1", issue)
 	dbfx.Cleanup(t, "DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN(SELECT id FROM issue_wakeup WHERE issue_id=$1)", issue)
-	body := map[string]any{"agent_id": agent, "kind": "at", "after_seconds": 600, "instruction": "check deployment"}
+	body := map[string]any{"agent_id": agent, "kind": "at", "after_seconds": 600, "instruction": "check deployment", "force_fresh_session": true}
 	req := withURLParam(newRequest("POST", "/api/issues/"+issue+"/wakeups", body), "id", issue)
 	// An untrusted task header must not get stamped as delegation provenance.
 	forged := dbfx.Task(t, agent, testutil.Cols{"runtime_id": testRuntimeID, "issue_id": issue})
@@ -36,6 +36,9 @@ func TestIssueWakeupAPIAndTrustedOrigin(t *testing.T) {
 	if result.SourceTaskID.Valid || uuidToString(result.CreatedBy) != testUserID {
 		t.Fatal("untrusted source identity")
 	}
+	if !result.ForceFreshSession {
+		t.Fatal("create lost fresh-session selection")
+	}
 	update := withURLParams(newRequest("PUT", "/", body), "id", issue, "wakeupID", uuidToString(result.ID))
 	updated := httptest.NewRecorder()
 	testHandler.CreateIssueWakeup(updated, update)
@@ -45,11 +48,24 @@ func TestIssueWakeupAPIAndTrustedOrigin(t *testing.T) {
 	if err := json.Unmarshal(updated.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
+	if !result.ForceFreshSession {
+		t.Fatal("update lost fresh-session selection")
+	}
 	req = withURLParam(newRequest("GET", "/", nil), "id", issue)
 	rec = httptest.NewRecorder()
 	testHandler.ListIssueWakeups(rec, req)
 	if rec.Code != 200 {
 		t.Fatal(rec.Body.String())
+	}
+	var listed []db.ListIssueWakeupsRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil || len(listed) != 1 || !listed[0].ForceFreshSession {
+		t.Fatalf("list lost fresh-session selection: %s, %v", rec.Body.String(), err)
+	}
+	malformed := withURLParam(newRequest("POST", "/", map[string]any{"agent_id": agent, "kind": "at", "after_seconds": 600, "instruction": "check deployment", "force_fresh_session": "true"}), "id", issue)
+	rec = httptest.NewRecorder()
+	testHandler.CreateIssueWakeup(rec, malformed)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed fresh-session selection accepted: %d %s", rec.Code, rec.Body.String())
 	}
 	outsider := dbfx.User(t, "wake outsider", "wake-outside@multica.test")
 	dbfx.Member(t, testWorkspaceID, outsider, "member")

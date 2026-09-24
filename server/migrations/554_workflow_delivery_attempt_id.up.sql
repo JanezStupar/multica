@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY issue_workflow_delivery_attempt_id_idx ON issue_workflow_delivery_attempt(id);

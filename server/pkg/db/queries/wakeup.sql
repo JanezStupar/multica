@@ -1,16 +1,47 @@
 -- name: CreateIssueWakeup :one
-INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,source_task_id,parent_comment_id,instruction,kind,mode,event_types,filter_agent_id,filter_task_id,filter_actor_type,filter_actor_id,interval_seconds,cron_expression,timezone,next_fire_at)
-VALUES(@id,@workspace_id,@issue_id,@agent_id,@created_by,sqlc.narg(source_task_id),sqlc.narg(parent_comment_id),@instruction,@kind,@mode,@event_types,sqlc.narg(filter_agent_id),sqlc.narg(filter_task_id),sqlc.narg(filter_actor_type),sqlc.narg(filter_actor_id),sqlc.narg(interval_seconds),sqlc.narg(cron_expression),@timezone,sqlc.narg(next_fire_at)) RETURNING *;
+INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,source_task_id,parent_comment_id,instruction,kind,mode,event_types,filter_agent_id,filter_task_id,filter_actor_type,filter_actor_id,interval_seconds,cron_expression,timezone,next_fire_at,force_fresh_session)
+VALUES(@id,@workspace_id,@issue_id,@agent_id,@created_by,sqlc.narg(source_task_id),sqlc.narg(parent_comment_id),@instruction,@kind,@mode,@event_types,sqlc.narg(filter_agent_id),sqlc.narg(filter_task_id),sqlc.narg(filter_actor_type),sqlc.narg(filter_actor_id),sqlc.narg(interval_seconds),sqlc.narg(cron_expression),@timezone,sqlc.narg(next_fire_at),@force_fresh_session) RETURNING *;
+-- name: CreateIssueHandoff :one
+INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,source_task_id,instruction,kind,mode,event_types,filter_agent_id,filter_task_id,timezone,force_fresh_session,handoff,request_key)
+VALUES(@id,@workspace_id,@issue_id,@agent_id,@created_by,@outgoing_task_id,@instruction,'event','once',ARRAY['task.completed','task.failed','task.cancelled']::text[],@outgoing_agent_id,@outgoing_task_id,'UTC',true,@handoff,@request_key) RETURNING *;
+-- name: GetIssueHandoffByRequestKey :one
+SELECT * FROM issue_wakeup WHERE issue_id = @issue_id AND request_key = @request_key;
+-- name: LatestIssueHandoff :one
+SELECT * FROM issue_wakeup WHERE issue_id = @issue_id AND handoff IS NOT NULL ORDER BY id DESC LIMIT 1;
+-- name: LatestActiveIssueHandoff :one
+SELECT * FROM issue_wakeup WHERE issue_id = @issue_id AND handoff IS NOT NULL AND disabled_at IS NULL ORDER BY id DESC LIMIT 1;
+
+-- name: SupersedeUnstartedGenericTaskForWorkflow :many
+-- The issue row is locked by the caller. Keep the old task and its original
+-- trigger/provenance intact, while freeing only a generic default-thread slot
+-- for a server-authored handoff or recovery task. A dispatched task may have
+-- already delivered its claim payload, so wait for it to finish.
+UPDATE agent_task_queue
+SET status='cancelled', completed_at=now(), prepare_lease_expires_at=NULL,
+    cancelled_by_type='system', cancelled_by_id=NULL, cancelled_by_name=NULL,
+    context=COALESCE(context,'{}'::jsonb) || jsonb_build_object('workflow_superseded_by', @replacement_ref::text)
+WHERE issue_id=sqlc.arg('issue_id')::uuid AND agent_id=sqlc.arg('agent_id')::uuid
+  AND comment_thread_id IS NULL
+  AND (status='queued' OR (status='deferred' AND context->>'channel_issue_media_pending'='true'))
+  AND COALESCE(context->>'wakeup_id','')=''
+  AND COALESCE(context->>'workflow_handoff','')=''
+  AND COALESCE(context->>'workflow_recovery','')=''
+RETURNING *;
+
+-- name: HasActiveWorkflowWriterExcept :one
+SELECT EXISTS(SELECT 1 FROM agent_task_queue
+ WHERE issue_id=sqlc.arg('issue_id')::uuid AND id<>sqlc.arg('except_task_id')::uuid
+   AND status IN ('dispatched','running','waiting_local_directory'))::boolean;
 -- name: ListIssueWakeups :many
 SELECT w.id,w.workspace_id,w.issue_id,w.agent_id,w.created_by,w.source_task_id,w.parent_comment_id,w.instruction,
- w.kind,w.mode,w.event_types,w.filter_actor_type,
+ w.kind,w.mode,w.force_fresh_session,w.handoff,w.request_key,w.event_types,w.filter_actor_type,
  (CASE WHEN actor_agent.id IS NOT NULL OR actor_member.user_id IS NOT NULL THEN w.filter_actor_id END)::uuid AS filter_actor_id,
  COALESCE(actor_agent.name,actor_user.name,'')::text AS filter_actor_name,
  (CASE WHEN source.id IS NOT NULL THEN w.filter_agent_id END)::uuid AS filter_agent_id,
  (CASE WHEN EXISTS(SELECT 1 FROM agent_task_queue ft JOIN agent fa ON fa.id=ft.agent_id AND fa.workspace_id=w.workspace_id
   WHERE ft.id=w.filter_task_id AND ft.issue_id=w.issue_id AND fa.id=ANY(@agent_ids::uuid[])) THEN w.filter_task_id END)::uuid AS filter_task_id,
  w.interval_seconds,w.cron_expression,w.timezone,w.next_fire_at,w.enabled,w.disabled_at,w.revision,
- w.last_task_id,w.last_error,w.created_at,w.updated_at,a.name AS agent_name,source.name AS filter_agent_name,t.status AS last_task_status
+ w.last_task_id,w.last_error,w.handoff_completed_at,w.created_at,w.updated_at,a.name AS agent_name,source.name AS filter_agent_name,t.status AS last_task_status
 FROM issue_wakeup w JOIN agent a ON a.id=w.agent_id AND a.workspace_id=w.workspace_id
 LEFT JOIN agent actor_agent ON w.filter_actor_type='agent' AND actor_agent.id=w.filter_actor_id AND actor_agent.workspace_id=w.workspace_id AND actor_agent.id=ANY(@agent_ids::uuid[])
 LEFT JOIN member actor_member ON w.filter_actor_type='member' AND actor_member.user_id=w.filter_actor_id AND actor_member.workspace_id=w.workspace_id
@@ -93,6 +124,11 @@ UPDATE issue_wakeup_receipt SET task_id=sqlc.narg(task_id),processed_at=now() WH
 UPDATE issue_wakeup_receipt SET processed_at=now() WHERE wakeup_id= @id AND processed_at IS NULL;
 -- name: AdvanceIssueWakeup :exec
 UPDATE issue_wakeup SET enabled= @enabled,next_fire_at=sqlc.narg(next_fire_at),last_task_id=COALESCE(sqlc.narg(last_task_id),last_task_id),last_error=sqlc.narg(last_error),updated_at=clock_timestamp() WHERE id= @id;
+-- name: CompleteIssueHandoff :one
+UPDATE issue_wakeup SET enabled=false,next_fire_at=NULL,last_task_id=sqlc.narg('recipient_task_id')::uuid,
+    handoff_completed_at=clock_timestamp(),last_error=NULL,updated_at=clock_timestamp()
+WHERE id=sqlc.arg('id')::uuid AND handoff IS NOT NULL AND handoff_completed_at IS NULL
+RETURNING *;
 -- name: FindPendingWakeupTask :one
 SELECT * FROM agent_task_queue WHERE context->>'wakeup_id'= @wakeup_id::text AND status IN ('queued','dispatched') ORDER BY created_at LIMIT 1 FOR UPDATE;
 

@@ -407,7 +407,6 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-
 	q := r.URL.Query()
 
 	var sinceTime pgtype.Timestamptz
@@ -1690,6 +1689,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if issue.WorkflowFrozen {
+		writeError(w, http.StatusConflict, "issue is frozen until explicit workflow migration")
+		return
+	}
 
 	userID, ok := requireUserID(w, r)
 	if !ok {
@@ -1930,6 +1933,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		slog.Warn("create comment failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
+		if writeFrozenWorkflowMutationError(w, err) {
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to create comment: "+err.Error())
 		return
 	}
@@ -3346,6 +3352,9 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "comment not found")
 		return
 	}
+	if h.rejectFrozenCommentMutation(w, r, existing.IssueID, wsUUID) {
+		return
+	}
 
 	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {
@@ -3442,17 +3451,8 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		} else {
 			sourceTaskID = pgtype.UUID{}
 		}
-		// Legacy clients keep the existing cancel-before-update behavior. Strict
-		// revision writes defer cancellation until the conditional UPDATE wins,
-		// so a race that returns 409 cannot mutate the task queue.
-		if !strictContentEdit {
-			cancelled, err = h.TaskService.CancelTasksByTriggerComment(r.Context(), existing.ID)
-			if err != nil {
-				slog.Warn("cancel tasks for edited comment failed", "comment_id", uuidToString(existing.ID), "error", err)
-				writeError(w, http.StatusInternalServerError, "failed to prepare comment edit")
-				return
-			}
-		}
+		// A concurrent workflow cutover may freeze the issue after this read.
+		// The edit and task cancellation must commit or roll back together.
 	}
 
 	updateParams := db.UpdateCommentParams{
@@ -3468,9 +3468,9 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	var comment db.Comment
 	var issueRevision int64
-	transactionalEdit := replaceAttachments || (oldContent != req.Content && strictContentEdit)
+	transactionalEdit := replaceAttachments || oldContent != req.Content
 	if transactionalEdit {
-		// Strict body edits, attachment-set edits, and cancellation of tasks built
+		// Body edits, attachment-set edits, and cancellation of tasks built
 		// from the old body are one database outcome. UpdateComment takes the row
 		// lock before the attachment replacement, so two modern editors cannot
 		// interleave their CAS check and attachment selection. A body + attachment
@@ -3488,7 +3488,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 			comment = updated.Comment()
 			issueRevision = updated.IssueRevision
 		}
-		if err == nil && oldContent != req.Content && strictContentEdit {
+		if err == nil && oldContent != req.Content {
 			cancelled, err = qtx.CancelAgentTasksByTriggerComment(r.Context(), existing.ID)
 			if err == nil {
 				err = service.SettleDeliveredDelegatedFailureRecoveries(r.Context(), qtx, cancelled...)
@@ -3526,10 +3526,8 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		slog.Warn("update comment failed", append(logger.RequestAttrs(r), "error", err, "comment_id", commentId)...)
-		if triggerIssue != nil && !strictContentEdit {
-			// Cancellation committed but the edit did not. Restore the complete
-			// original batch, including the still-valid unchanged comment.
-			h.retriggerCancelledTaskSurvivors(r.Context(), *triggerIssue, cancelled, pgtype.UUID{})
+		if writeFrozenWorkflowMutationError(w, err) {
+			return
 		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			current, reloadErr := h.Queries.GetCommentInWorkspace(r.Context(), db.GetCommentInWorkspaceParams{ID: commentUUID, WorkspaceID: wsUUID})
@@ -3615,6 +3613,9 @@ func (h *Handler) DeleteComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "comment not found")
 		return
 	}
+	if h.rejectFrozenCommentMutation(w, r, comment.IssueID, wsUUID) {
+		return
+	}
 
 	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {
@@ -3647,31 +3648,19 @@ func (h *Handler) DeleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cancel any active task whose planned batch contains this comment so the
-	// agent does not run with the now-deleted content already embedded. Must
-	// run before the delete: a removed row would nullify trigger_comment_id
-	// through ON DELETE SET NULL and orphan those tasks in queued.
-	cancelled, cancelErr := h.TaskService.CancelTasksByTriggerComment(r.Context(), comment.ID)
-	if cancelErr != nil {
-		slog.Warn("cancel tasks for deleted trigger comment failed", append(logger.RequestAttrs(r), "error", cancelErr, "comment_id", commentId)...)
-	}
-
-	deleted, err := h.deleteComment(r.Context(), comment.ID, comment.WorkspaceID)
+	deleted, err := h.deleteCommentWithTaskCancellation(r.Context(), comment.ID, comment.WorkspaceID)
 	if err != nil {
 		slog.Warn("delete comment failed", append(logger.RequestAttrs(r), "error", err, "comment_id", commentId)...)
-		// Cancellation already committed but deletion did not. If the parent
-		// issue still exists, rebuild the complete cancelled batch (including
-		// this trigger) before reporting the storage error or concurrent no-op.
-		if hasIssue {
-			h.retriggerCancelledTaskSurvivors(r.Context(), issue, cancelled, pgtype.UUID{})
-		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "comment not found")
+		} else if writeFrozenWorkflowMutationError(w, err) {
+			return
 		} else {
 			writeError(w, http.StatusInternalServerError, "failed to delete comment")
 		}
 		return
 	}
+	h.TaskService.BroadcastCancelledTasks(r.Context(), workspaceID, deleted.CancelledTasks)
 
 	h.deleteS3Objects(r.Context(), deleted.AttachmentURLs)
 	slog.Info("comment deleted", append(logger.RequestAttrs(r),
@@ -3702,13 +3691,15 @@ func (h *Handler) DeleteComment(w http.ResponseWriter, r *http.Request) {
 		h.publish(protocol.EventCommentDeleted, workspaceID, actorType, actorID, eventPayload)
 	}
 	if hasIssue {
-		h.retriggerCancelledTaskSurvivors(r.Context(), issue, cancelled, comment.ID)
+		h.retriggerCancelledTaskSurvivors(r.Context(), issue, deleted.CancelledTasks, comment.ID)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // commentDeletion is the committed outcome of deleteComment.
 type commentDeletion struct {
+	// CancelledTasks are broadcast after the deletion transaction commits.
+	CancelledTasks []db.AgentTaskQueue
 	// Tombstone is the cleared row when the comment still had replies.
 	Tombstone *db.Comment
 	// RemovedIDs lists every row removed outright: the comment itself when it
@@ -3781,6 +3772,14 @@ const commentTombstonePruneDepth = 256
 //
 // Returns pgx.ErrNoRows when the comment is already gone or already deleted.
 func (h *Handler) deleteComment(ctx context.Context, commentID, workspaceID pgtype.UUID) (commentDeletion, error) {
+	return h.deleteCommentTx(ctx, commentID, workspaceID, false)
+}
+
+func (h *Handler) deleteCommentWithTaskCancellation(ctx context.Context, commentID, workspaceID pgtype.UUID) (commentDeletion, error) {
+	return h.deleteCommentTx(ctx, commentID, workspaceID, true)
+}
+
+func (h *Handler) deleteCommentTx(ctx context.Context, commentID, workspaceID pgtype.UUID, cancelTasks bool) (commentDeletion, error) {
 	var out commentDeletion
 	tx, err := h.beginWakeupWrite(ctx)
 	if err != nil {
@@ -3795,6 +3794,17 @@ func (h *Handler) deleteComment(ctx context.Context, commentID, workspaceID pgty
 	})
 	if err != nil {
 		return out, err
+	}
+	if cancelTasks {
+		// A removed row would clear trigger_comment_id; cancel its planned
+		// task batch before deletion, in this same transaction as the content.
+		out.CancelledTasks, err = qtx.CancelAgentTasksByTriggerComment(ctx, target.ID)
+		if err != nil {
+			return out, err
+		}
+		if err := service.SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, out.CancelledTasks...); err != nil {
+			return out, err
+		}
 	}
 	// Separate statement on purpose: its snapshot postdates the locks above,
 	// so it sees every committed reply, and none can be added while they are
@@ -4047,6 +4057,9 @@ func (h *Handler) ResolveComment(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		slog.Warn("clear other thread resolutions failed", append(logger.RequestAttrs(r), "error", err, "comment_id", uuidToString(comment.ID))...)
+		if writeFrozenWorkflowMutationError(w, err) {
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to resolve comment")
 		return
 	}
@@ -4063,6 +4076,9 @@ func (h *Handler) ResolveComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		slog.Warn("resolve comment failed", append(logger.RequestAttrs(r), "error", err, "comment_id", uuidToString(comment.ID))...)
+		if writeFrozenWorkflowMutationError(w, err) {
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to resolve comment")
 		return
 	}
@@ -4114,6 +4130,9 @@ func (h *Handler) UnresolveComment(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		slog.Warn("unresolve comment failed", append(logger.RequestAttrs(r), "error", err, "comment_id", uuidToString(comment.ID))...)
+		if writeFrozenWorkflowMutationError(w, err) {
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to unresolve comment")
 		return
 	}

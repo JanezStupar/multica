@@ -49,6 +49,8 @@ vi.mock("@multica/core/issues/mutations", () => ({
   useUpdateIssue: () => ({ mutate: mockUpdateMutate }),
 }));
 
+const mockNavigationPush = vi.hoisted(() => vi.fn());
+
 // The status catalog is server state; this suite only needs it to answer which
 // CATEGORY a key belongs to, so the entries are fed in directly. `later` parks
 // like Backlog and `rework` starts work like Todo — the two cases a raw
@@ -102,7 +104,7 @@ vi.mock("@multica/core/paths", async () => {
 
 vi.mock("../../../navigation", () => ({
   useNavigation: () => ({
-    push: vi.fn(),
+    push: mockNavigationPush,
     pathname: "/test/issues/issue-1",
     searchParams: new URLSearchParams(),
     hash: "",
@@ -151,6 +153,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
 beforeEach(() => {
   mockOpenModal.mockReset();
   mockUpdateMutate.mockReset();
+  mockNavigationPush.mockReset();
   mockCreatePinMutate.mockReset();
   mockDeletePinMutate.mockReset();
   vi.mocked(toast.success).mockReset();
@@ -175,6 +178,18 @@ describe("useIssueActions", () => {
       { id: "issue-1", status: "done" },
       expect.any(Object),
     );
+  });
+
+  it("routes Done for workflow-managed issues to the candidate acceptance panel", () => {
+    const enrolledIssue = { ...mockIssue, workflow_policy_present: true } as Issue;
+    const { result } = renderHook(() => useIssueActions(enrolledIssue), { wrapper });
+
+    act(() => {
+      result.current.updateField({ status: "done" });
+    });
+
+    expect(mockNavigationPush).toHaveBeenCalledWith("/test/issues/TES-1?workflow=accept");
+    expect(mockUpdateMutate).not.toHaveBeenCalled();
   });
 
   it("assigning an agent routes through the run-confirm modal instead of mutating directly", () => {

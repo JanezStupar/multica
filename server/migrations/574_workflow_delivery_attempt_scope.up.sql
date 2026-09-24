@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY issue_workflow_delivery_attempt_scope_idx ON issue_workflow_delivery_attempt (workspace_id, issue_id, delivery_id);

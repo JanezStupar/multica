@@ -430,6 +430,9 @@ func TestCommentChildWritesWaitingOnDeleteDoNotLandOnTombstone(t *testing.T) {
 				t.Fatalf("begin holder: %v", err)
 			}
 			defer holder.Rollback(ctx)
+			if _, err := holder.Exec(ctx, `SELECT id FROM issue WHERE id = $1 FOR UPDATE`, issueID); err != nil {
+				t.Fatalf("lock issue: %v", err)
+			}
 			if _, err := holder.Exec(ctx, `SELECT id FROM comment WHERE id = $1 FOR UPDATE`, target); err != nil {
 				t.Fatalf("lock comment: %v", err)
 			}

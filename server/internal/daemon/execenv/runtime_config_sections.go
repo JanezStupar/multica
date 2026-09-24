@@ -45,6 +45,19 @@ func writeHeader(b *strings.Builder) {
 	b.WriteString("You are a coding agent in the Multica platform. Use the `multica` CLI to interact with the platform.\n\n")
 }
 
+// writeTaskCLISelection binds the brief's many `multica ...` examples to the
+// daemon executable selected for this task. Shell startup can reorder PATH,
+// so examples must not silently resolve a different global installation.
+func writeTaskCLISelection(b *strings.Builder, ctx TaskContextForEnv) {
+	if ctx.MulticaCLIPath == "" {
+		return
+	}
+	b.WriteString("## Task Multica CLI\n\n")
+	fmt.Fprintf(b, "The daemon selected this absolute executable for this task: %q. `MULTICA_CLI_PATH` contains that path.\n\n", ctx.MulticaCLIPath)
+	b.WriteString("Invoke it using the form for your shell: on POSIX shells use `\"$MULTICA_CLI_PATH\" issue get <id> --output json`; in PowerShell use `& $env:MULTICA_CLI_PATH issue get <id> --output json`; in cmd.exe use `\"%MULTICA_CLI_PATH%\" issue get <id> --output json`. These forms handle paths containing spaces.\n\n")
+	b.WriteString("Every `multica ...` example in this brief, the task prompt, and installed skills names this selected executable. Use the task path for all Multica commands even if a bare `multica` resolves elsewhere. Do not install or update another Multica CLI to make a command work; report a missing or unsupported command.\n\n")
+}
+
 // writeBackgroundTaskSafetySlim emits the Background Task Safety section
 // in its judgment form (MUL-5442): four paragraphs — the platform fact
 // everything else derives from (turn exit is task-terminal, no wakeup
@@ -514,18 +527,25 @@ func writeProjectContext(b *strings.Builder, ctx TaskContextForEnv) {
 	}
 }
 
-// writeInstructionPrecedence emits the "Agent Identity wins over the issue
-// workflow below" guardrail. Caller gates on kind == kindIssue.
+// writeInstructionPrecedence emits the issue-path precedence guidance.
+// Caller gates on kind == kindIssue. A selected platform replacement owns
+// issue lifecycle and role policy; the built-in path retains its established
+// Agent Identity guardrail.
 //
-// This section owns the single enumeration of the actions Agent Identity can
-// forbid. It and workflow step 3 were added together in #3802 and each carried
-// its own list; the lists then disagreed — this one named status changes, the
-// step named issue create/update and delegation, and neither contained the
-// other. MUL-5442 merges them here so adding an action type is a one-place
-// edit. Step 4 keeps only what this section cannot express: the delegation-only
+// On the built-in path, this section owns the single enumeration of actions
+// Agent Identity can forbid. It and workflow step 3 were added together in
+// #3802, and each carried its own list. They disagreed: this one named status
+// changes; the step named issue create/update and delegation, and neither
+// contained the other. MUL-5442 merges the built-in enumeration here so adding
+// an action type is a one-place edit. Step 4 keeps only what this section
+// cannot express: the delegation-only
 // role's "stop once the delegation is delivered" rule.
-func writeInstructionPrecedence(b *strings.Builder) {
+func writeInstructionPrecedence(b *strings.Builder, hasPlatformReplacement bool) {
 	b.WriteString("## Instruction Precedence\n\n")
+	if hasPlatformReplacement {
+		b.WriteString("The selected workflow governs issue lifecycle and role behavior. Agent Identity describes your role and capabilities. Apply explicit user overrides and scoped exceptions only where the selected workflow permits them. Platform and runtime permissions remain enforced.\n\n")
+		return
+	}
 	b.WriteString("Agent Identity instructions have priority over the issue workflow below. ")
 	b.WriteString("If a workflow step conflicts with Agent Identity, skip the conflicting action and continue with the remaining compatible steps. ")
 	b.WriteString("Never treat this runtime workflow as permission to change issue status, investigate, implement, create issues, update issues, delegate, or otherwise act beyond your Agent Identity.\n\n")
@@ -1077,6 +1097,7 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	// broke prompt-cache prefix stability on every resume; they now travel in
 	// the per-turn user message (daemon.BuildPrompt) instead. See MUL-5377.
 	writeHeader(&b)
+	writeTaskCLISelection(&b, ctx)
 	writeBackgroundTaskSafetySlim(&b)
 	writeAgentIdentity(&b, ctx)
 	writeRequestingUser(&b, ctx)
@@ -1101,7 +1122,8 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	writeProjectContext(&b, ctx)
 
 	if kind == kindIssue {
-		writeInstructionPrecedence(&b)
+		_, hasPlatformReplacement := platformReplacementSkill(ctx.AgentSkills)
+		writeInstructionPrecedence(&b, hasPlatformReplacement)
 	}
 
 	writeWorkflowHeader(&b)

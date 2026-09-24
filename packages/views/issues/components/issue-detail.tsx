@@ -11,7 +11,7 @@ import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
-import { AppLink, useBackOrReplace } from "../../navigation";
+import { AppLink, useBackOrReplace, useNavigation } from "../../navigation";
 import {
   Archive,
   Calendar,
@@ -66,6 +66,7 @@ import { isBuiltInIssueStatus } from "@multica/core/issue-statuses";
 import { commentLandingTarget } from "@multica/core/issues/comment-deletion";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
+import { useAcceptIssueWorkflow, useIssueWorkflow } from "@multica/core/issues/workflow";
 import { toast } from "sonner";
 import { errorCode } from "@multica/core/api";
 import { StatusIcon } from "./status-icon";
@@ -80,6 +81,7 @@ import { LabelPicker } from "./pickers/label-picker";
 import { CustomPropertyValueEditor, CustomPropertyValueDisplay } from "./pickers/custom-property-picker";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { IssueActionsDropdown, useIssueActions, IssueActionsContextMenu, IssueContextMenuProvider } from "../actions";
+import type { IssueSurfaceMutationOptions } from "../surface/actions-context";
 import { LabelChip } from "../../labels/label-chip";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
 import { SubIssuesAgentWorkingChip } from "./sub-issues-agent-working-chip";
@@ -103,6 +105,7 @@ import { WakeupsSection } from "./wakeups-section";
 import { QuickActionsSection } from "./quick-actions-section";
 import { PluginPanelSection } from "../../plugins";
 import { PullRequestList } from "./pull-request-list";
+import { IssueWorkflowSection } from "./issue-workflow-section";
 import { useGitHubSettings } from "@multica/core/github";
 import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "@multica/core/auth";
@@ -1157,6 +1160,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const id = issueId;
   const user = useAuthStore((s) => s.user);
   const paths = useWorkspacePaths();
+  const navigation = useNavigation();
   const openModal = useModalStore((state) => state.open);
 
   // Issue navigation — read from TQ list cache
@@ -2099,7 +2103,43 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // Shared issue actions (mutations, pin, copy-link, modal dispatch, etc.).
   // Called before the `if (!issue)` early return so hook order stays stable.
   const actions = useIssueActions(issue);
-  const handleUpdateField = actions.updateField;
+  const workflowEnabled = issue?.workflow_policy_present === true || issue?.workflow_frozen === true;
+  const { data: workflowSnapshot } = useIssueWorkflow(wsId, issue?.id ?? id, issue?.workflow_policy_present === true);
+  const { mutate: acceptWorkflowCandidate, isPending: acceptingWorkflow, error: workflowAcceptError } = useAcceptIssueWorkflow(wsId, issue?.id ?? id);
+  const updateIssueField = actions.updateField;
+  const handleUpdateField = useCallback(
+    (updates: Partial<UpdateIssueRequest>, options?: IssueSurfaceMutationOptions) => {
+      const targetCategory = updates.status === "done"
+        ? "done"
+        : updates.status
+          ? resolveStatusCategory(updates.status)
+          : undefined;
+      if (issue && workflowEnabled && targetCategory === "done") {
+        if (acceptingWorkflow) {
+          navigation.push(`${paths.issueDetail(issue.identifier || issue.id)}?workflow=accept`);
+          return;
+        }
+        const candidate = workflowSnapshot?.candidate;
+        const requiresExplicitOrder = workflowSnapshot?.delivery_preview?.requires_order === true && (candidate?.prs.length ?? 0) > 1;
+        const snapshotMatchesIssue = typeof issue.revision === "number" && workflowSnapshot?.issue_revision === issue.revision;
+        const canAcceptDisplayedCandidate = !!candidate && snapshotMatchesIssue &&
+          workflowSnapshot?.available_actions.accept_human === true && !workflowSnapshot.frozen &&
+          workflowSnapshot.acceptance_blockers.length === 0 &&
+          !!workflowSnapshot.delivery_preview && !requiresExplicitOrder;
+        if (canAcceptDisplayedCandidate) {
+          acceptWorkflowCandidate({
+            candidate_id: candidate.id,
+            expected_revision: workflowSnapshot.issue_revision,
+          });
+        } else {
+          navigation.push(`${paths.issueDetail(issue.identifier || issue.id)}?workflow=accept`);
+        }
+        return;
+      }
+      updateIssueField(updates, options);
+    },
+    [updateIssueField, acceptWorkflowCandidate, acceptingWorkflow, issue, workflowEnabled, workflowSnapshot, resolveStatusCategory, navigation, paths],
+  );
 
   // Labels live in their own query (not on the issue body) — fetch the count
   // here so seeding can decide whether the "Labels" optional row should be
@@ -2501,6 +2541,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         </div>}
       </div>
 
+      <IssueWorkflowSection
+        workspaceId={wsId}
+        issueId={issue.id}
+        enabled={issue.workflow_policy_present === true}
+        frozen={issue.workflow_frozen === true}
+        focusAccept={navigation.searchParams.get("workflow") === "accept"}
+        acceptAction={{ mutate: acceptWorkflowCandidate, isPending: acceptingWorkflow, error: workflowAcceptError }}
+      />
+
       {/* Quick actions — the sidebar's only "do something" block, so it sits
           directly under Properties and above every read-only section. Renders
           nothing when the workspace has no active action visible to this
@@ -2808,7 +2857,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                       variant="ghost"
                       size="icon-sm"
                       className="text-muted-foreground"
-                      onClick={() => { handleUpdateField({ status: "done" }); onDone?.(); }}
+                      aria-label={t(($) => $.detail.mark_done_tooltip)}
+                      disabled={workflowEnabled && acceptingWorkflow}
+                      aria-busy={workflowEnabled && acceptingWorkflow}
+                      onClick={() => {
+                        handleUpdateField({ status: "done" });
+                        if (!issue.workflow_policy_present && !issue.workflow_frozen) onDone?.();
+                      }}
                     >
                       <CircleCheck />
                     </Button>
@@ -2851,6 +2906,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             </Tooltip>
             <IssueActionsDropdown
               issue={issue}
+              onUpdateField={handleUpdateField}
               align="end"
               // When a parent passes `onDelete`, we detect deletion via effect
               // above and skip navigation. Otherwise the modal takes us back

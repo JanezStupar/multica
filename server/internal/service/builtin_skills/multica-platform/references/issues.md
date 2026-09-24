@@ -248,25 +248,14 @@ archived statuses remain readable via an explicit status filter.
 - **`backlog`** parks an agent-assigned issue: the assignee is set but no task
   fires. Moving `backlog → todo` (or any non-done/non-cancelled status) enqueues
   the assigned agent then.
-- **`in_progress` / `in_review`** are agent-managed CLI mutations, not automatic
-  side effects of a task starting or finishing. The runtime brief asks agents to
-  write the state the issue is in whenever their work changes it — not from
-  the trigger type or the run's lifecycle, and not gated on being the
-  assignee. Writes happen whenever the state changes, mid-turn included: a
-  turn that advances the issue's own ask sets `in_progress` as soon as that
-  is known, so the board shows the work while it runs; a blocker is recorded
-  when it is hit; and the turn must not exit with a stale value — delivered
-  the issue's own ask → `in_review`; work continues beyond the turn
-  (dispatched sub-issues, partial delivery) → `in_progress`; stuck →
-  `blocked`. A turn that produces none of the issue's own deliverable —
-  answering a question, consulting on work owned elsewhere — writes nothing
-  at any point. The kind of activity never decides this: research, design,
-  planning, and review all count as the work exactly when they are what the
-  issue asks for (a review-the-PR issue is being worked the moment reviewing
-  starts). Questions, discussion, or acknowledgements never move the status.
-  Squad leaders: dispatching members is not delivery — a dispatch turn
-  leaves the parent `in_progress`, and it moves to `in_review` only when a
-  later re-trigger confirms the overall goal is met.
+- **`in_progress` / `in_review`** are explicit issue-status mutations, not
+  automatic side effects of a task starting or finishing. Updates can happen
+  while a task runs; the trigger type and run lifecycle do not themselves
+  change status. For issues without an enrolled workflow policy, the generated
+  runtime brief supplies the current default status guidance. An enrolled
+  issue follows its selected workflow's phase and assignment rules. This
+  reference documents status command effects, not a workflow for deciding
+  when an agent must change status.
 - **`in_review`** is an accepted issue status. Some workflows use it while a PR
   is open and awaiting review; moving to it is an explicit mutation.
 - **`done`** on a child issue posts a system comment on its parent. If a PR
@@ -410,6 +399,16 @@ current run. A wakeup persists on the issue; it is not a sleeping process.
 - `wakeup create <issue> --agent-id <target> --kind event --event task.completed,task.failed,task.cancelled --task-id <run> --instruction-file ./instruction.md` wakes once. Omit `--agent-id` only when acting as the authenticated agent. A specific run must belong to this issue; if already terminal, registration captures its matching state immediately.
 - For a continuing subscription use `--mode continuous`. For task events, use `--filter-agent-id` to match that agent's future runs; this does not replay historical runs. For comment/issue/reaction/attachment changes, use `--filter-actor-type member|agent --filter-actor-id <user-or-agent-id>` to match the actual author/editor. Mutation-only `--filter-agent-id` remains a legacy alias for actor=agent; do not combine it with actor flags.
 - `wakeup create <issue> --kind at --after 10m --instruction-file ./instruction.md` schedules one run. Alternatively use `--at <RFC3339>`.
+- Add `--fresh-session` to create/update when each triggered run needs a new
+  provider context, such as an independent review. Without it, ordinary
+  same-agent issue-session resumption applies. Re-enabling or editing only the
+  instruction preserves this choice; replacing the full configuration without
+  the flag restores normal resumption. A fresh session does not itself filter
+  issue history or prove independent review inputs; provide the intended scope
+  and evidence explicitly. The fresh wakeup does not request the previous
+  run's working directory, so a candidate left only in that run's disposable
+  worktree may be unavailable. Point the review at a revision or branch that
+  the configured project resource can access.
 - `wakeup create <issue> --kind every --every 1h --instruction-file ./instruction.md` schedules a repeating check. Or use `--kind cron --cron '0 * * * *' --timezone Asia/Shanghai`.
 - `wakeup list <issue>` / `wakeup get <issue> <id>` show the saved configuration, next time and latest run. Only promise that a reminder is arranged after creation succeeds.
 - `wakeup update <issue> <id>` uses the same flags as create and replaces the whole configuration, explicitly re-enabling it. Supply all intended fields. Old unclaimed work is withdrawn.
@@ -428,3 +427,44 @@ Self-trigger protection excludes the registering run and runs started by the
 same rule when their source identity is available. It does not prevent cycles
 between different rules. Avoid mutually triggering continuous comment subscriptions;
 when waiting for a person's reply, filter that member explicitly.
+
+## Recoverable issue handoffs
+
+On an issue with a pinned workflow policy, this command records one immutable
+transfer from an outgoing task to one agent:
+
+```bash
+multica issue handoff create <issue-id> --file handoff.json
+```
+
+The request includes a stable `request_key`, the exact outgoing task for this
+issue, recipient,
+intended status (`in_progress` or `in_review`), context mode, instruction,
+evidence links and candidate PRs. Each candidate records its repository,
+draft PR, branch and full commit SHA; an empty candidate list is valid for
+work without code. These references are recorded as supplied and do not
+verify provider PR state or that its head still matches the declared SHA.
+
+Reuse the same `request_key` and exact request after an ambiguous response. An exact replay returns the saved handoff; reusing its key with changed input conflicts. `context_mode: "fresh"` starts an independent context. Use `context_mode: "resume"` with an exact `resume_task_id` only when resuming a completed task for that recipient, runtime and issue.
+
+Creating a handoff records intent; it does not immediately change ownership or
+status. When the named outgoing task completes successfully, Multica checks
+that issue status and assignee still match the registration snapshot and that
+no other issue run is active. It then changes status and assignee and enqueues
+the recipient atomically. Other active work may defer dispatch. If the outgoing
+task fails or is cancelled, or issue status/ownership changed, the recipient
+does not launch; inspect the record with
+`multica issue handoff list <issue-id>` and recover the issue before creating a
+new request.
+
+Handoffs are create-only; ordinary wakeup update/re-enable commands do not
+change them. Cancel a pending handoff with:
+
+```bash
+multica issue handoff cancel <issue-id> --handoff-id <uuid>
+```
+
+This disables the handoff and cancels its unstarted recipient task when
+possible. A recipient already running continues; use
+`multica issue cancel-task <run-id>` to stop that run. The durable history
+remains available from `multica issue handoff list <issue-id>`.

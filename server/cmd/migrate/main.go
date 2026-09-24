@@ -140,6 +140,25 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"574_workflow_delivery_attempt_scope":                     "issue_workflow_delivery_attempt_scope_idx",
+	"571_workflow_exception_issue_history":                      "issue_workflow_exception_issue_history_idx",
+	"540_issue_handoff_request_key":                             "issue_wakeup_handoff_request_key_idx",
+	"543_issue_workflow_profile_id_index":                       "issue_workflow_profile_id_idx",
+	"544_issue_workflow_profile_agent_index":                    "issue_workflow_profile_agent_idx",
+	"548_workflow_candidate_id":                                 "issue_workflow_candidate_id_idx",
+	"549_workflow_review_id":                                    "issue_workflow_review_id_idx",
+	"550_workflow_exception_id":                                 "issue_workflow_exception_id_idx",
+	"551_workflow_acceptance_id":                                "issue_workflow_acceptance_id_idx",
+	"552_workflow_rejection_id":                                 "issue_workflow_rejection_id_idx",
+	"553_workflow_delivery_id":                                  "issue_workflow_delivery_id_idx",
+	"554_workflow_delivery_attempt_id":                          "issue_workflow_delivery_attempt_id_idx",
+	"555_workflow_candidate_issue":                              "issue_workflow_candidate_issue_idx",
+	"556_workflow_review_candidate":                             "issue_workflow_review_candidate_idx",
+	"557_workflow_acceptance_issue":                             "issue_workflow_acceptance_issue_idx",
+	"558_workflow_delivery_due":                                 "issue_workflow_delivery_due_idx",
+	"559_workflow_delivery_ordinal":                             "issue_workflow_delivery_ordinal_idx",
+	"561_issue_workflow_profile_revision_index":                 "issue_workflow_profile_revision_idx",
+	"563_issue_workflow_profile_request_index":                  "issue_workflow_profile_request_idx",
 	"535_github_pr_address_index":                               "idx_github_pull_request_pr_owner_repo",
 	"510_wakeup_id":                                             "issue_wakeup_id_idx",
 	"511_wakeup_issue":                                          "issue_wakeup_issue_idx",
@@ -342,6 +361,7 @@ var concurrentIndexCleanups = map[string]string{
 // the retry, while a bare CREATE would stay wedged on "already exists"; both
 // cases need direction-specific cleanup before the rollback can retry safely.
 var concurrentDownIndexCleanups = map[string]string{
+	"562_issue_workflow_profile_old_index":                  "issue_workflow_profile_agent_idx",
 	"144_drop_agent_task_queue_chat_pending_v1":             "idx_agent_task_queue_chat_pending",
 	"171_drop_legacy_label_namespace_index":                 "issue_label_workspace_name_lower_idx",
 	"256_drop_agent_task_queue_chat_pending_v2":             "idx_agent_task_queue_chat_pending_v2",

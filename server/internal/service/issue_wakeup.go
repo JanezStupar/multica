@@ -28,21 +28,22 @@ var ErrWakeupForbidden = errors.New("wakeup permission denied")
 var WakeupEventTypes = eventcontract.WakeupTypes
 
 type WakeupInput struct {
-	AgentID         string     `json:"agent_id"`
-	Instruction     string     `json:"instruction"`
-	Kind            string     `json:"kind"`
-	Mode            string     `json:"mode"`
-	EventTypes      []string   `json:"event_types"`
-	FilterAgentID   string     `json:"filter_agent_id"`
-	FilterActorType string     `json:"filter_actor_type"`
-	FilterActorID   string     `json:"filter_actor_id"`
-	FilterTaskID    string     `json:"filter_task_id"`
-	ParentCommentID string     `json:"parent_comment_id"`
-	AfterSeconds    int64      `json:"after_seconds"`
-	At              *time.Time `json:"at"`
-	IntervalSeconds int64      `json:"interval_seconds"`
-	CronExpression  string     `json:"cron_expression"`
-	Timezone        string     `json:"timezone"`
+	ForceFreshSession bool       `json:"force_fresh_session"`
+	AgentID           string     `json:"agent_id"`
+	Instruction       string     `json:"instruction"`
+	Kind              string     `json:"kind"`
+	Mode              string     `json:"mode"`
+	EventTypes        []string   `json:"event_types"`
+	FilterAgentID     string     `json:"filter_agent_id"`
+	FilterActorType   string     `json:"filter_actor_type"`
+	FilterActorID     string     `json:"filter_actor_id"`
+	FilterTaskID      string     `json:"filter_task_id"`
+	ParentCommentID   string     `json:"parent_comment_id"`
+	AfterSeconds      int64      `json:"after_seconds"`
+	At                *time.Time `json:"at"`
+	IntervalSeconds   int64      `json:"interval_seconds"`
+	CronExpression    string     `json:"cron_expression"`
+	Timezone          string     `json:"timezone"`
 }
 
 type IssueWakeupService struct{ Tasks *TaskService }
@@ -240,6 +241,9 @@ func (s *IssueWakeupService) EditInstruction(ctx context.Context, issueID, id, m
 	if w.IssueID != issue.ID || w.WorkspaceID != issue.WorkspaceID {
 		return pgx.ErrNoRows
 	}
+	if len(w.Handoff) != 0 {
+		return fmt.Errorf("%w: handoffs are create-only", ErrWakeupInput)
+	}
 	if w.CreatedBy != member && membership.Role != "owner" && membership.Role != "admin" {
 		return ErrWakeupForbidden
 	}
@@ -287,6 +291,9 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 	if err != nil {
 		return out, err
 	}
+	if issue.WorkflowFrozen {
+		return out, fmt.Errorf("%w: issue is frozen until workflow migration", ErrWakeupInput)
+	}
 	active, err := wakeupIssueActive(ctx, q, issue)
 	if err != nil {
 		return out, err
@@ -307,6 +314,9 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 		if old.IssueID != issueID || old.WorkspaceID != issue.WorkspaceID {
 			return out, pgx.ErrNoRows
 		}
+		if len(old.Handoff) != 0 {
+			return out, fmt.Errorf("%w: handoffs cannot be enabled or rearmed", ErrWakeupInput)
+		}
 		if enable.Revision < 1 {
 			return out, fmt.Errorf("%w: revision is required", ErrWakeupInput)
 		}
@@ -319,7 +329,7 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 			}
 			return ""
 		}
-		in = WakeupInput{AgentID: optionalID(old.AgentID), Instruction: old.Instruction, Kind: old.Kind, Mode: old.Mode, EventTypes: old.EventTypes, FilterAgentID: optionalID(old.FilterAgentID), FilterTaskID: optionalID(old.FilterTaskID), FilterActorType: old.FilterActorType.String, FilterActorID: optionalID(old.FilterActorID), ParentCommentID: optionalID(old.ParentCommentID), IntervalSeconds: old.IntervalSeconds.Int64, CronExpression: old.CronExpression.String, Timezone: old.Timezone}
+		in = WakeupInput{ForceFreshSession: old.ForceFreshSession, AgentID: optionalID(old.AgentID), Instruction: old.Instruction, Kind: old.Kind, Mode: old.Mode, EventTypes: old.EventTypes, FilterAgentID: optionalID(old.FilterAgentID), FilterTaskID: optionalID(old.FilterTaskID), FilterActorType: old.FilterActorType.String, FilterActorID: optionalID(old.FilterActorID), ParentCommentID: optionalID(old.ParentCommentID), IntervalSeconds: old.IntervalSeconds.Int64, CronExpression: old.CronExpression.String, Timezone: old.Timezone}
 		if enable.At != nil && old.Kind != "at" {
 			return out, fmt.Errorf("%w: only single-time wakeups accept a new time", ErrWakeupInput)
 		}
@@ -418,6 +428,9 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 		if old.IssueID != issueID || old.WorkspaceID != issue.WorkspaceID {
 			return out, pgx.ErrNoRows
 		}
+		if len(old.Handoff) != 0 {
+			return out, fmt.Errorf("%w: handoffs are create-only", ErrWakeupInput)
+		}
 		membership, e := q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: member, WorkspaceID: issue.WorkspaceID})
 		if e != nil {
 			return out, ErrWakeupForbidden
@@ -451,9 +464,9 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 			return out, fmt.Errorf("%w: run and agent filters disagree", ErrWakeupInput)
 		}
 	}
-	params := db.CreateIssueWakeupParams{ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: agent.ID, CreatedBy: member, SourceTaskID: source, ParentCommentID: parent, Instruction: in.Instruction, Kind: in.Kind, Mode: in.Mode, EventTypes: append([]string{}, in.EventTypes...), FilterAgentID: filterAgent, FilterTaskID: filterTask, FilterActorType: pgtype.Text{String: in.FilterActorType, Valid: in.FilterActorType != ""}, FilterActorID: filterActor, IntervalSeconds: pgtype.Int8{Int64: in.IntervalSeconds, Valid: in.IntervalSeconds > 0}, CronExpression: pgtype.Text{String: in.CronExpression, Valid: in.CronExpression != ""}, Timezone: in.Timezone, NextFireAt: next}
+	params := db.CreateIssueWakeupParams{ForceFreshSession: in.ForceFreshSession, ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: agent.ID, CreatedBy: member, SourceTaskID: source, ParentCommentID: parent, Instruction: in.Instruction, Kind: in.Kind, Mode: in.Mode, EventTypes: append([]string{}, in.EventTypes...), FilterAgentID: filterAgent, FilterTaskID: filterTask, FilterActorType: pgtype.Text{String: in.FilterActorType, Valid: in.FilterActorType != ""}, FilterActorID: filterActor, IntervalSeconds: pgtype.Int8{Int64: in.IntervalSeconds, Valid: in.IntervalSeconds > 0}, CronExpression: pgtype.Text{String: in.CronExpression, Valid: in.CronExpression != ""}, Timezone: in.Timezone, NextFireAt: next}
 	if existingID.Valid {
-		_, err = tx.Exec(ctx, `UPDATE issue_wakeup SET agent_id=$2,created_by=$3,source_task_id=$4,parent_comment_id=$5,instruction=$6,kind=$7,mode=$8,event_types=$9,filter_agent_id=$10,filter_task_id=$11,interval_seconds=$12,cron_expression=$13,timezone=$14,next_fire_at=$15,filter_actor_type=$16,filter_actor_id=$17,enabled=true,disabled_at=NULL,revision=revision+1,last_task_id=NULL,last_error=NULL,updated_at=now() WHERE id=$1`, existingID, params.AgentID, member, source, parent, in.Instruction, in.Kind, in.Mode, params.EventTypes, filterAgent, filterTask, params.IntervalSeconds, params.CronExpression, in.Timezone, next, params.FilterActorType, filterActor)
+		_, err = tx.Exec(ctx, `UPDATE issue_wakeup SET agent_id=$2,created_by=$3,source_task_id=$4,parent_comment_id=$5,instruction=$6,kind=$7,mode=$8,event_types=$9,filter_agent_id=$10,filter_task_id=$11,interval_seconds=$12,cron_expression=$13,timezone=$14,next_fire_at=$15,filter_actor_type=$16,filter_actor_id=$17,force_fresh_session=$18,enabled=true,disabled_at=NULL,revision=revision+1,last_task_id=NULL,last_error=NULL,updated_at=now() WHERE id=$1`, existingID, params.AgentID, member, source, parent, in.Instruction, in.Kind, in.Mode, params.EventTypes, filterAgent, filterTask, params.IntervalSeconds, params.CronExpression, in.Timezone, next, params.FilterActorType, filterActor, in.ForceFreshSession)
 		if err == nil {
 			out, err = q.LockIssueWakeup(ctx, existingID)
 		}
@@ -589,6 +602,11 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if err != nil {
 		return err
 	}
+	if issue.WorkflowFrozen {
+		// Preserve subscriptions and pending receipts for explicit migration.
+		// No timer advance or task creation may cross the freeze boundary.
+		return tx.Commit(ctx)
+	}
 	w, err := q.LockIssueWakeup(ctx, prev.ID)
 	if err != nil {
 		return err
@@ -623,6 +641,9 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 			return err
 		}
 		return tx.Commit(ctx)
+	}
+	if len(w.Handoff) != 0 {
+		return s.dispatchHandoff(ctx, tx, q, issue, w, agent, overlay)
 	}
 	if _, err = tx.Exec(ctx, "UPDATE issue_wakeup_receipt SET processed_at=now() WHERE wakeup_id=$1 AND revision<>$2 AND processed_at IS NULL", w.ID, w.Revision); err != nil {
 		return err
@@ -711,7 +732,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 			return err
 		}
 		contextJSON, _ := json.Marshal(map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence})
-		task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{ID: dbid.NewV7(), AgentID: w.AgentID, RuntimeID: agent.RuntimeID, IssueID: w.IssueID, Priority: priorityToInt(issue.Priority), TriggerCommentID: w.ParentCommentID, TriggerSummary: pgtype.Text{String: "Wakeup: " + truncateForSummary(w.Instruction, 160), Valid: true}, HandoffNote: pgtype.Text{String: note, Valid: true}, OriginatorUserID: w.CreatedBy, AccountableUserID: w.CreatedBy, OriginatorSource: pgtype.Text{String: "trigger_owner", Valid: true}, TriggerEvidenceKind: pgtype.Text{String: "issue_wakeup", Valid: true}, TriggerEvidenceRefID: w.ID, DelegatedFromTaskID: w.SourceTaskID, WakeupContext: contextJSON, RuntimeMcpOverlay: overlay.Overlay, RuntimeConnectedApps: overlay.ConnectedApps})
+		task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{ForceFreshSession: pgtype.Bool{Bool: w.ForceFreshSession, Valid: true}, ID: dbid.NewV7(), AgentID: w.AgentID, RuntimeID: agent.RuntimeID, IssueID: w.IssueID, Priority: priorityToInt(issue.Priority), TriggerCommentID: w.ParentCommentID, TriggerSummary: pgtype.Text{String: "Wakeup: " + truncateForSummary(w.Instruction, 160), Valid: true}, HandoffNote: pgtype.Text{String: note, Valid: true}, OriginatorUserID: w.CreatedBy, AccountableUserID: w.CreatedBy, OriginatorSource: pgtype.Text{String: "trigger_owner", Valid: true}, TriggerEvidenceKind: pgtype.Text{String: "issue_wakeup", Valid: true}, TriggerEvidenceRefID: w.ID, DelegatedFromTaskID: w.SourceTaskID, WakeupContext: contextJSON, RuntimeMcpOverlay: overlay.Overlay, RuntimeConnectedApps: overlay.ConnectedApps})
 	}
 	if err != nil {
 		return err
@@ -799,6 +820,10 @@ func (s *IssueWakeupService) Disable(ctx context.Context, issueID, id, member pg
 // CheckClaim revalidates stored human authority after an offline wait. The
 // enqueue-time MCP overlay does not grant permission to execute forever.
 func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQueue) error {
+	return s.checkClaimWithQueries(ctx, s.Tasks.Queries, task)
+}
+
+func (s *IssueWakeupService) checkClaimWithQueries(ctx context.Context, q *db.Queries, task db.AgentTaskQueue) error {
 	var source struct {
 		ID       string `json:"wakeup_id"`
 		Revision int64  `json:"wakeup_revision"`
@@ -810,7 +835,7 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 	if err != nil {
 		return ErrWakeupForbidden
 	}
-	w, err := s.Tasks.Queries.LocklessWakeup(ctx, id)
+	w, err := q.LocklessWakeup(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrWakeupForbidden
 	}
@@ -820,12 +845,22 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 	if w.DisabledAt.Valid || w.Revision != source.Revision || w.IssueID != task.IssueID || w.AgentID != task.AgentID || w.CreatedBy != task.OriginatorUserID {
 		return ErrWakeupForbidden
 	}
-	agent, err := s.Tasks.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: w.AgentID, WorkspaceID: w.WorkspaceID})
+	if len(w.Handoff) != 0 {
+		intent, err := handoffIntent(w)
+		if err != nil || !w.LastTaskID.Valid || !handoffRecipientMatches(ctx, q, w, task) {
+			return ErrWakeupForbidden
+		}
+		issue, err := q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: w.IssueID, WorkspaceID: w.WorkspaceID})
+		if err != nil || issue.Status != intent.Status || issue.AssigneeType.String != "agent" || issue.AssigneeID != w.AgentID {
+			return ErrWakeupForbidden
+		}
+	}
+	agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: w.AgentID, WorkspaceID: w.WorkspaceID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrWakeupForbidden
 	}
 	if err != nil {
 		return err
 	}
-	return s.authorize(ctx, s.Tasks.Queries, w.WorkspaceID, w.CreatedBy, agent)
+	return s.authorize(ctx, q, w.WorkspaceID, w.CreatedBy, agent)
 }

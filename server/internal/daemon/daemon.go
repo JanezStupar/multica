@@ -191,6 +191,28 @@ func taskMulticaEnvironment(task Task, agentName, token, configRoot, workspacesR
 	}
 }
 
+// resolveTaskCLIExecutable pins agent-side Multica commands to this daemon's
+// executable. An in-place upgrade can leave os.Executable pointing at a Linux
+// " (deleted)" path; never let that fall through to another CLI on PATH.
+func resolveTaskCLIExecutable() (string, error) {
+	path, err := resolveSelfExecutable()
+	if err != nil {
+		return "", fmt.Errorf("resolve task Multica CLI: %w", err)
+	}
+	if !filepath.IsAbs(path) || !agentExecutablePresent(path) {
+		return "", fmt.Errorf("task Multica CLI is not a launchable absolute executable: %q", path)
+	}
+	return path, nil
+}
+
+func setTaskCLIEnvironment(agentEnv map[string]string, cliPath string) {
+	agentEnv["MULTICA_CLI_PATH"] = cliPath
+	// Keep bare-command compatibility for shells that preserve this PATH order.
+	// The brief directs the agent to the absolute path because login shells can
+	// reorder PATH after the provider starts.
+	agentEnv["PATH"] = filepath.Dir(cliPath) + string(os.PathListSeparator) + os.Getenv("PATH")
+}
+
 // taskRunner executes a single agent task and returns the result.
 // Extracted as an interface so tests can inject a fake without spawning real
 // agent processes, while keeping test scaffolding out of the production struct.
@@ -7734,6 +7756,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if !ok {
 		return TaskResult{}, fmt.Errorf("no agent configured for provider %q", provider)
 	}
+	taskCLIPath, err := resolveTaskCLIExecutable()
+	if err != nil {
+		return TaskResult{}, err
+	}
 
 	stopPrepareLease := d.startTaskPrepareLeaseExtender(prepareCtx, task, taskLog)
 	defer stopPrepareLease()
@@ -7754,6 +7780,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Repos are passed as metadata only — the agent checks them out on demand
 	// via `multica repo checkout <url>`.
 	taskCtx := execenv.TaskContextForEnv{
+		MulticaCLIPath:      taskCLIPath,
 		IssueID:             task.IssueID,
 		TriggerCommentID:    task.TriggerCommentID,
 		TriggerThreadID:     task.TriggerThreadID,
@@ -8441,6 +8468,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, err
 	}
 	agentEnv := taskMulticaEnvironment(task, agentName, agentToken, env.MulticaConfigRoot, d.cfg.WorkspacesRoot, d.cfg.ServerBaseURL, d.cfg.HealthPort, slot, taskTempDir)
+	setTaskCLIEnvironment(agentEnv, taskCLIPath)
 	if checkoutMode := repoCheckoutModeFor(provider, runtime.GOOS); checkoutMode != "" {
 		agentEnv[repoCheckoutModeEnv] = checkoutMode
 	}
@@ -8463,14 +8491,6 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				taskLog.Warn("quick-create attachment ids: marshal failed; skipping env injection", "error", err)
 			}
 		}
-	}
-	// Ensure the multica CLI is on PATH inside the agent's environment.
-	// Some runtimes (e.g. Codex) run in an isolated sandbox that may not
-	// inherit the daemon's PATH. Prepend the directory of the running
-	// multica binary so that `multica` commands in the agent always resolve.
-	if selfBin, err := resolveSelfExecutable(); err == nil {
-		binDir := filepath.Dir(selfBin)
-		agentEnv["PATH"] = binDir + string(os.PathListSeparator) + os.Getenv("PATH")
 	}
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.

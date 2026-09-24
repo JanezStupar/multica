@@ -102,11 +102,9 @@ func legacyRedirectSkills() []AgentSkillData {
 	return loadSkillDirs(legacyBuiltinSkillsFS, legacyBuiltinSkillsRoot, func(string) bool { return true })
 }
 
-// AllBuiltinSkills returns every built-in skill regardless of agent scope. Only
-// the bundle-resolve path uses it: the claim already decided which built-ins an
-// agent was told about, and a daemon can only ask to resolve a ref it was
-// handed, so re-deriving the scope there would cost an agent read to re-answer
-// a question the claim answered.
+// AllBuiltinSkills returns the inventory regardless of agent scope. Resolve
+// callers without an agent policy use it; task resolution checks the selected
+// agent's live policy or the task's frozen workflow profile.
 func (s *TaskService) AllBuiltinSkills() []AgentSkillData {
 	return append(loadBuiltinSkillDirs(func(string) bool { return true }), legacyRedirectSkills()...)
 }

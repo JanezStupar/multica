@@ -139,13 +139,17 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 	// caused the surprise cascade. A completion that does not close a stage is
 	// silent: no comment, no wake. ListChildIssues already reflects this child's
 	// committed terminal status (the status update commits before this runs).
-	children, err := h.Queries.ListChildIssues(ctx, parent.ID)
+	rows, err := h.Queries.ListChildIssues(ctx, parent.ID)
 	if err != nil {
 		slog.Warn("child done: failed to list siblings for stage barrier",
 			"error", err,
 			"child_id", uuidToString(issue.ID),
 			"parent_id", uuidToString(parent.ID))
 		return
+	}
+	children := make([]db.Issue, len(rows))
+	for i, row := range rows {
+		children[i] = db.Issue(row)
 	}
 	statuses, err := resolveChildStatuses(children, effective)
 	if err != nil {
@@ -232,13 +236,17 @@ func (h *Handler) notifyParentsOfBatchChildDone(ctx context.Context, completed [
 			continue
 		}
 
-		children, err := h.Queries.ListChildIssues(ctx, parent.ID)
+		rows, err := h.Queries.ListChildIssues(ctx, parent.ID)
 		if err != nil {
 			slog.Warn("batch child done: failed to list siblings for stage barrier",
 				"error", err, "parent_id", uuidToString(parent.ID))
 			continue
 		}
 
+		children := make([]db.Issue, len(rows))
+		for i, row := range rows {
+			children[i] = db.Issue(row)
+		}
 		statuses, err := resolveChildStatuses(children, effective)
 		if err != nil {
 			slog.Warn("batch child done: failed to resolve sibling statuses", "error", err, "parent_id", uuidToString(parent.ID))
@@ -340,7 +348,25 @@ func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db
 	mentionPrefix := h.buildParentAssigneeMention(ctx, parent)
 
 	var content string
-	if staged {
+	if len(parent.WorkflowPolicy) > 0 && string(parent.WorkflowPolicy) != "null" {
+		// A child completion is coordination evidence, not permission to
+		// replace the parent's pinned acceptance or decomposition policy.
+		content = fmt.Sprintf("%sSub-issue [%s](mention://issue/%s) — \"%s\" — reached %s.",
+			mentionPrefix, identifier, childID, title, completedStatus)
+		if staged {
+			summary, nextStage := stageProgressSummary(children, closedStage, statuses.status)
+			content += fmt.Sprintf(" Stage %d is closed. Stage progress — %s.", closedStage, summary)
+			if nextStage > 0 {
+				content += fmt.Sprintf(" Stage %d has pending work.", nextStage)
+			}
+		} else {
+			content += " All current sub-issues are terminal."
+		}
+		if anyCancelledChildren(children, statuses.status) {
+			content += " The child set includes cancelled work."
+		}
+		content += " Reconcile the parent outcome and linked PR reviews under its selected ticket workflow; child completion does not establish parent acceptance."
+	} else if staged {
 		stageCancelledCount := countStageCancelled(children, closedStage, statuses.status)
 		stageCancelled := stageCancelledCount > 0
 		advanceHasCancelled := stageCancelled

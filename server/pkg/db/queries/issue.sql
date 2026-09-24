@@ -8,7 +8,7 @@
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision
+       i.revision, i.workflow_frozen, (i.workflow_policy IS NOT NULL)::boolean AS workflow_policy_present
 FROM issue i
 WHERE i.workspace_id = $1
   AND (sqlc.narg('status')::text IS NULL OR i.status = sqlc.narg('status'))
@@ -312,6 +312,26 @@ FROM wakeup_source
 WHERE i.id = $1 AND i.workspace_id = $3
 RETURNING i.*;
 
+-- name: ResetFailedLegacyIssueToTodo :one
+-- HandleFailedTasks may run after a cutover froze a pre-existing task. Fence
+-- the legacy failure reset in the UPDATE itself, not a prior GetIssue read.
+WITH wakeup_source AS MATERIALIZED (
+    SELECT set_config('multica.source_task_id', sqlc.arg('source_task_id')::uuid::text, true)
+)
+UPDATE issue AS i SET
+    status='todo',
+    position=(SELECT COALESCE(MIN(target.position),0)-1 FROM issue AS target
+              WHERE target.workspace_id=i.workspace_id AND target.status='todo'),
+    revision=i.revision+1,
+    last_activity_at=GREATEST(COALESCE(i.last_activity_at,i.updated_at),now()),
+    updated_at=now()
+FROM wakeup_source
+WHERE i.id=sqlc.arg('id')::uuid AND i.workspace_id=sqlc.arg('workspace_id')::uuid
+  AND i.status='in_progress' AND i.workflow_policy IS NULL AND NOT i.workflow_frozen
+  AND NOT EXISTS(SELECT 1 FROM agent_task_queue t WHERE t.issue_id=i.id AND
+      t.status IN ('queued','dispatched','running','waiting_local_directory'))
+RETURNING i.*;
+
 -- name: CreateIssueWithOrigin :one
 INSERT INTO issue (
     workspace_id, title, description, status, priority,
@@ -383,7 +403,7 @@ LIMIT 1;
 -- itself is correctly untouched, but the links are already gone) — the exact
 -- cross-tenant leak the #1661 guard above exists to prevent.
 WITH target AS (
-    SELECT issue.id FROM issue WHERE issue.id = $1 AND issue.workspace_id = $2
+    SELECT issue.id FROM issue WHERE issue.id = $1 AND issue.workspace_id = $2 FOR UPDATE
 ),
 cleared_wakeup_receipts AS (
  DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id IN (SELECT target.id FROM target))
@@ -393,6 +413,30 @@ cleared_wakeups AS (
 ),
 cleared_vcs_pr_links AS (
     DELETE FROM issue_vcs_pull_request WHERE issue_id IN (SELECT target.id FROM target)
+),
+cleared_workflow_profiles AS (
+    DELETE FROM issue_workflow_profile WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
+),
+cleared_workflow_candidates AS (
+    DELETE FROM issue_workflow_candidate WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
+),
+cleared_workflow_reviews AS (
+    DELETE FROM issue_workflow_review WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
+),
+cleared_workflow_exceptions AS (
+    DELETE FROM issue_workflow_exception WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
+),
+cleared_workflow_acceptances AS (
+    DELETE FROM issue_workflow_acceptance WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
+),
+cleared_workflow_rejections AS (
+    DELETE FROM issue_workflow_rejection WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
+),
+cleared_workflow_deliveries AS (
+    DELETE FROM issue_workflow_delivery WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
+),
+cleared_workflow_delivery_attempts AS (
+    DELETE FROM issue_workflow_delivery_attempt WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
 )
 DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target);
 
@@ -402,7 +446,7 @@ DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target);
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision
+       i.revision, i.workflow_frozen, (i.workflow_policy IS NOT NULL)::boolean AS workflow_policy_present
 FROM issue i
 WHERE i.workspace_id = $1
   -- Negate only known terminal keys so an unknown legacy key remains visible.
@@ -556,7 +600,16 @@ WHERE i.workspace_id = $1
 -- not relative to siblings, so ordering by it interleaves children
 -- unpredictably across batches and statuses; number is a per-workspace
 -- monotonic counter and is sibling-stable.
-SELECT * FROM issue
+-- Child projections omit policy archives while keeping the Issue shape;
+-- claim and policy readback load the archive through GetIssueWorkflowPolicy.
+SELECT id, workspace_id, title, description, status, priority,
+       assignee_type, assignee_id, creator_type, creator_id, parent_issue_id,
+       acceptance_criteria, context_refs, position, due_date, created_at,
+       updated_at, number, project_id, origin_type, origin_id, first_executed_at,
+       start_date, metadata, stage, properties, revision, last_activity_at,
+       triage_state, NULL::jsonb AS workflow_policy,
+       workflow_frozen, workflow_migrated_at, workflow_candidate_id
+FROM issue
 WHERE parent_issue_id = $1
 ORDER BY number ASC;
 
@@ -568,7 +621,14 @@ ORDER BY number ASC;
 -- enumerate children of parents in workspaces they don't belong to.
 -- Within each parent, order by number ASC for the same sibling-stable
 -- creation order as ListChildIssues.
-SELECT * FROM issue
+SELECT id, workspace_id, title, description, status, priority,
+       assignee_type, assignee_id, creator_type, creator_id, parent_issue_id,
+       acceptance_criteria, context_refs, position, due_date, created_at,
+       updated_at, number, project_id, origin_type, origin_id, first_executed_at,
+       start_date, metadata, stage, properties, revision, last_activity_at,
+       triage_state, NULL::jsonb AS workflow_policy,
+       workflow_frozen, workflow_migrated_at, workflow_candidate_id
+FROM issue
 WHERE workspace_id = sqlc.arg('workspace_id')
   AND parent_issue_id = ANY(sqlc.arg('parent_ids')::uuid[])
 ORDER BY parent_issue_id, number ASC;

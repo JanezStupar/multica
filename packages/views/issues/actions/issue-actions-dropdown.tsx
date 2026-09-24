@@ -7,7 +7,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuContent,
 } from "@multica/ui/components/ui/dropdown-menu";
-import { useIssueActions } from "./use-issue-actions";
+import { useIssueActions, type UseIssueActionsResult } from "./use-issue-actions";
 import {
   IssueActionsMenuItems,
   dropdownPrimitives,
@@ -22,6 +22,8 @@ interface IssueActionsDropdownProps {
   /** If set, leave the page after the issue is deleted — back to wherever the
    *  user came from, or to this path when there is no in-app history. */
   onDeletedFallbackPath?: string;
+  /** Override shared updates when a detail surface has an exact workflow snapshot. */
+  onUpdateField?: UseIssueActionsResult["updateField"];
 }
 
 export function IssueActionsDropdown({
@@ -29,8 +31,10 @@ export function IssueActionsDropdown({
   trigger,
   align = "end",
   onDeletedFallbackPath,
+  onUpdateField,
 }: IssueActionsDropdownProps) {
   const actions = useIssueActions(issue);
+  const menuActions = onUpdateField ? { ...actions, updateField: onUpdateField } : actions;
   const [assigneeOpen, setAssigneeOpen] = useState(false);
 
   // The outer `relative inline-flex` is the picker's anchor box: the
@@ -44,7 +48,7 @@ export function IssueActionsDropdown({
         <DropdownMenuContent align={align} className="w-auto">
           <IssueActionsMenuItems
             issue={issue}
-            actions={actions}
+            actions={menuActions}
             primitives={dropdownPrimitives}
             onOpenAssignee={() => setAssigneeOpen(true)}
             onDeletedFallbackPath={onDeletedFallbackPath}
@@ -58,7 +62,7 @@ export function IssueActionsDropdown({
         <AssigneePicker
           assigneeType={issue.assignee_type}
           assigneeId={issue.assignee_id}
-          onUpdate={actions.updateField}
+          onUpdate={menuActions.updateField}
           open={assigneeOpen}
           onOpenChange={setAssigneeOpen}
           triggerRender={

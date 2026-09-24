@@ -30,11 +30,11 @@ func TestIssueWakeupCLIPreservesInstructionAndDuration(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := newIssueWakeupCommand()
-	cmd.SetArgs([]string{"create", issue, "--kind", "at", "--after", "10m", "--instruction-file", "./instruction.md"})
+	cmd.SetArgs([]string{"create", issue, "--kind", "at", "--after", "10m", "--instruction-file", "./instruction.md", "--fresh-session"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if body["after_seconds"] != float64(600) || body["instruction"] != note {
+	if body["after_seconds"] != float64(600) || body["instruction"] != note || body["force_fresh_session"] != true {
 		t.Fatalf("unexpected body %+v", body)
 	}
 }

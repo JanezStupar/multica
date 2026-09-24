@@ -195,7 +195,7 @@ func TestBuildSquadLeaderBriefing_FullSquad(t *testing.T) {
 	_ = memberRowID
 	addHumanMember(t, squad.ID, userID, "reviewer")
 
-	out := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true)
+	out := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true, true)
 
 	for _, want := range []string{
 		"## Squad Operating Protocol",
@@ -271,7 +271,7 @@ func TestBuildSquadLeaderBriefing_MemberSkillsInRoster(t *testing.T) {
 	_ = memberRowID
 	addHumanMember(t, squad.ID, userID, "reviewer")
 
-	out := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true)
+	out := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true, true)
 
 	if !strings.Contains(out, "skills: polars, statistical-analysis") {
 		t.Errorf("expected skilled member skills in roster, got:\n%s", out)
@@ -290,13 +290,37 @@ func TestBuildSquadLeaderBriefing_OnlyLeader(t *testing.T) {
 	leaderID, _ := seededLeaderAgent(t)
 	squad := seedSquadForBriefing(t, leaderID, "Solo Squad", "")
 
-	out := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true)
+	out := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true, true)
 	if !strings.Contains(out, "Members: (none — you are the only member of this squad)") {
 		t.Errorf("expected lone-leader fallback line, got:\n%s", out)
 	}
 	// No user instructions → no Squad Instructions section.
 	if strings.Contains(out, "## Squad Instructions") {
 		t.Errorf("expected no Squad Instructions section when empty, got:\n%s", out)
+	}
+}
+
+func TestBuildSquadLeaderBriefing_PinnedGuestKeepsOwnershipFact(t *testing.T) {
+	ctx := context.Background()
+	leaderID, _ := seededLeaderAgent(t)
+	squad := seedSquadForBriefing(t, leaderID, "Guest Policy Squad", "Keep the handoff concise.")
+
+	out := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, false, false)
+	for _, want := range []string{
+		"This issue is assigned elsewhere; your squad is assisting.",
+		"Follow this issue's selected ticket workflow",
+		"## Squad Roster",
+		"## Squad Instructions (Guest Policy Squad)",
+		"Keep the handoff concise.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("pinned guest lost %q:\n%s", want, out)
+		}
+	}
+	for _, oldPolicy := range []string{"## Squad Operating Protocol", "Do NOT change this issue's status", "Record your evaluation"} {
+		if strings.Contains(out, oldPolicy) {
+			t.Errorf("pinned guest received compiled squad policy %q:\n%s", oldPolicy, out)
+		}
 	}
 }
 
@@ -314,7 +338,7 @@ func TestBuildSquadLeaderBriefing_SkipsArchivedAgent(t *testing.T) {
 		t.Fatalf("archive agent: %v", err)
 	}
 
-	out := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true)
+	out := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true, true)
 	if strings.Contains(out, "Retired Bot") {
 		t.Errorf("archived agent should not appear in roster:\n%s", out)
 	}
@@ -339,7 +363,7 @@ func TestBuildSquadLeaderBriefing_MentionsRoundTrip(t *testing.T) {
 	_ = memberRowID
 	addHumanMember(t, squad.ID, userID, "")
 
-	out := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true)
+	out := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true, true)
 	mentions := util.ParseMentions(out)
 
 	wantIDs := map[string]string{

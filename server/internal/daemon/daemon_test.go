@@ -427,6 +427,7 @@ func TestCodexTaskShellEnvInheritsRealHome(t *testing.T) {
 	// task-scoped CODEX_HOME, and — since MUL-5578 — no HOME/XDG entry.
 	explicit := map[string]string{
 		"CODEX_HOME":               codexHome,
+		"MULTICA_CLI_PATH":         "/candidate CLI/multica",
 		"MULTICA_TASK_CONFIG_ROOT": "/task/multica-config",
 		"MULTICA_TOKEN":            "mat_task",
 		"MULTICA_SERVER_URL":       "https://task.example",
@@ -463,6 +464,9 @@ func TestCodexTaskShellEnvInheritsRealHome(t *testing.T) {
 	}
 	if !slices.Contains(include, "MULTICA_TASK_CONFIG_ROOT") {
 		t.Errorf("include_only missing MULTICA_TASK_CONFIG_ROOT, got %v", include)
+	}
+	if !slices.Contains(include, "MULTICA_CLI_PATH") {
+		t.Errorf("include_only missing MULTICA_CLI_PATH, got %v", include)
 	}
 }
 
@@ -581,6 +585,69 @@ func TestTaskMulticaEnvironmentIncludesPrivateConfigRoot(t *testing.T) {
 	}
 	if env["MULTICA_TOKEN"] != fakeToken {
 		t.Fatal("custom env replaced task-scoped token")
+	}
+}
+
+func TestTaskCLIExecutableUsesDaemonBinaryAfterShellPATHReorder(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell regression; Windows command syntax is covered by the runtime brief test")
+	}
+	candidateDir := filepath.Join(t.TempDir(), "candidate CLI")
+	globalDir := filepath.Join(t.TempDir(), "global CLI")
+	for _, dir := range []string{candidateDir, globalDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	candidate := filepath.Join(candidateDir, "multica")
+	for path, output := range map[string]string{
+		candidate:                           "candidate",
+		filepath.Join(globalDir, "multica"): "global",
+	} {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s\\n' '"+output+"'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	originalResolve := resolveSelfExecutable
+	resolveSelfExecutable = func() (string, error) { return candidate, nil }
+	t.Cleanup(func() { resolveSelfExecutable = originalResolve })
+	cliPath, err := resolveTaskCLIExecutable()
+	if err != nil || cliPath != candidate {
+		t.Fatalf("resolveTaskCLIExecutable() = %q, %v; want %q", cliPath, err, candidate)
+	}
+
+	agentEnv := map[string]string{"MULTICA_CLI_PATH": "/stale/inherited/multica"}
+	setTaskCLIEnvironment(agentEnv, cliPath)
+	layerCustomEnvAndHermesHome(agentEnv, map[string]string{"MULTICA_CLI_PATH": "/custom/wrong/multica"}, "", nil)
+	if got := agentEnv["MULTICA_CLI_PATH"]; got != candidate {
+		t.Fatalf("MULTICA_CLI_PATH = %q, want %q", got, candidate)
+	}
+	cmd := exec.Command("/bin/sh", "-c", `PATH="$GLOBAL_BIN:$PATH"; "$MULTICA_CLI_PATH" --version`)
+	cmd.Env = append(os.Environ(), "GLOBAL_BIN="+globalDir, "PATH="+agentEnv["PATH"], "MULTICA_CLI_PATH="+agentEnv["MULTICA_CLI_PATH"])
+	out, err := cmd.CombinedOutput()
+	if err != nil || string(out) != "candidate\n" {
+		t.Fatalf("selected CLI output = %q, %v; want candidate", out, err)
+	}
+	cmd = exec.Command("/bin/sh", "-c", `PATH="$GLOBAL_BIN:$PATH"; multica --version`)
+	cmd.Env = append(os.Environ(), "GLOBAL_BIN="+globalDir, "PATH="+agentEnv["PATH"])
+	out, err = cmd.CombinedOutput()
+	if err != nil || string(out) != "global\n" {
+		t.Fatalf("bare CLI output = %q, %v; want global to prove collision", out, err)
+	}
+}
+
+func TestResolveTaskCLIExecutableRejectsDeletedAndMissingBinary(t *testing.T) {
+	originalResolve := resolveSelfExecutable
+	t.Cleanup(func() { resolveSelfExecutable = originalResolve })
+	for _, path := range []string{"", filepath.Join(t.TempDir(), "multica (deleted)")} {
+		resolveSelfExecutable = func() (string, error) { return path, nil }
+		if _, err := resolveTaskCLIExecutable(); err == nil {
+			t.Fatalf("resolveTaskCLIExecutable(%q) succeeded", path)
+		}
+	}
+	resolveSelfExecutable = func() (string, error) { return "", errors.New("cannot resolve") }
+	if _, err := resolveTaskCLIExecutable(); err == nil || !strings.Contains(err.Error(), "cannot resolve") {
+		t.Fatalf("resolveTaskCLIExecutable() error = %v, want resolution failure", err)
 	}
 }
 

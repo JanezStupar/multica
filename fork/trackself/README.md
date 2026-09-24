@@ -1,119 +1,292 @@
-# Trackself Multica fork: built-in skill replacement
+# Trackself Mica policy bundle
 
-This fork lets each agent inherit, disable, or replace a complete Multica
-built-in skill bundle at task claim time. The Trackself configuration replaces
-the consolidated `multica-platform` bundle for parent orchestrators while
-keeping Multica's eight platform references available on demand. Other agents
-can retain the embedded bundle or choose another workspace replacement.
+The [workflow spec](workflow_spec.md) records the agreed target for ticket
+execution, review, acceptance and delivery. The [implementation plan](implementation_plan.md)
+coordinates the engineering work. The policy archive built here is a prepared
+input, not an activated workflow.
 
-## How selection works
+The builder only reads repository sources and writes a `.skill` archive. It
+does not import a workspace skill, change agent or ticket bindings, enroll or
+migrate tickets, or start work. Building, importing or binding a skill does not
+by itself prove the complete workflow or activate ticket policy.
 
-An agent stores two independent settings:
+## Replacement capability
+
+Multica supports per-agent built-in skill selection and replacement:
 
 - `enabled_builtin_skill_ids: null` inherits the built-ins available to that
   agent. An explicit list is exact, and `[]` disables every built-in.
-- `builtin_skill_replacements` maps a stable built-in ID, such as
-  `builtin:multica-platform`, to a workspace skill UUID. The slot must be
-  enabled. Only that agent receives the replacement. The embedded bundle is
-  omitted, and a replacement that is also assigned as a regular workspace
-  skill is included just once.
+- `builtin_skill_replacements` maps an enabled stable built-in ID, such as
+  `builtin:multica-platform`, to a workspace skill UUID. The embedded bundle
+  is omitted for that agent, and a skill assigned in both ways is included
+  once.
+- A `multica-platform` replacement needs a root `SKILL.md`, the platform
+  references, and `runtime/issue-workflow.md`. A missing or incomplete bundle
+  blocks a claim instead of silently restoring conflicting instructions.
 
-The workspace replacement must contain its own `SKILL.md` and every supporting
-file path of the built-in it replaces. A `multica-platform` replacement also
-requires `runtime/issue-workflow.md`, a short workflow section rendered into
-the generated runtime brief. Other reference files remain available for
-selective reading. A missing, deleted, cross-workspace, or incomplete bundle
-blocks a claim; it never silently restores the embedded behavior. The server
-also checks selection on skill resolution, so a disabled or replaced built-in
-cannot be fetched directly by ID.
+The generated issue brief uses the selected replacement's runtime instructions
+for its workflow and retains Multica's command and safety instructions. The
+platform references describe command effects; the selected Mica policy decides
+when and under what authority to use them.
 
-The generated brief keeps Multica's command and safety instructions. For an
-issue task using a platform replacement, its issue workflow comes from that
-replacement's `runtime/issue-workflow.md`. The per-turn prompt gives the issue
-and trigger facts and points to the selected skill. This avoids the generic
-issue read, comment, and status rules contradicting the Trackself procedure.
+## Existing configuration
 
-## Database compatibility
+Migration `536_agent_builtin_skill_policy` adds replacement storage while
+preserving the nullable built-in allowlist, including its inheritance and
+exact-list behavior. Existing exact allowlists with old granular built-in IDs
+are not automatically changed to `builtin:multica-platform`. Keep current
+bindings as they are until the coordinated cutover reconciles the active
+agents, all-role policy and ticket enrollment.
 
-Migration `536_agent_builtin_skill_policy` uses `ADD COLUMN IF NOT EXISTS`
-for `enabled_builtin_skill_ids`. Personal-fork databases may already have that
-column from migration 327 or 451; their stored `NULL`, exact lists, and empty
-lists are preserved. The migration adds `builtin_skill_replacements` as a
-JSONB object with an empty default and a task-level platform bundle fingerprint.
-Its down migration removes those two new columns; it preserves the older
-allowlist because dropping it would destroy existing configuration. The
-migration runner records full filename stems, so the new
-stem is distinct from both earlier fork migrations and main's unrelated 327.
+## Build a versioned archive
 
-Existing exact allowlists with old granular IDs do **not** automatically
-become `builtin:multica-platform`. Review and update each affected agent
-before assigning it new work. In particular, a Trackself parent agent that
-previously omitted `multica-working-on-issues` needs the new platform slot
-enabled and mapped to the Trackself replacement. This is an intentional
-cutover step: an automatic rewrite could silently give that agent the generic
-Multica issue workflow.
-
-Install a daemon that advertises the consolidated platform-skill capability
-before selecting a replacement. A task claim from an older daemon fails
-visibly for a mapped agent because its compiled brief still points at the old
-granular issue skill and would conflict with the selected workflow.
-
-## Build and import the Trackself bundle
-
-From this repository root:
+From the repository root, build the default `mica-v1` policy:
 
 ```bash
-python3 fork/trackself/build_skill.py \
-  --trackself-skill ~/workspaces/trackself/workspace-control/config/multica-skills/trackself-working-on-issues
-multica skill import --file fork/trackself/trackself-platform.skill --on-conflict fail --output json
+python3 fork/trackself/build_skill.py
 ```
 
-The builder copies the current embedded platform references and the current
-Trackself skill and its references into one complete archive. It replaces the
-old standalone skill's obsolete introduction in the nested copy. It checks
-that Multica still has the expected eight references and stops if the bundle
-shape changes; review any upstream additions before changing that check.
-`source-manifest.json` in the archive records source hashes for review.
+The default policy source is `fork/trackself/policies/mica-v1`. Select another
+version with `--policy-dir`; choose a different artifact destination with
+`--output`. Without `--output`, the builder writes the content-named archive
+under `fork/trackself/` with a gitignored `.skill` extension and prints its
+path.
 
-Record the imported workspace skill UUID from the JSON response. In the
-agent's **Skills** tab, ensure `multica-platform` is enabled, then select the
-imported `trackself-platform` skill as its replacement. Apply this only to the
-Trackself orchestrators that own automatic parents (currently Mika, Maca, and
-Mewina). Specialists may continue to inherit the embedded bundle. The UI
-refuses a replacement that lacks a required file, and refuses disabling a
-slot while it has a replacement; clear the replacement first.
+The archive contains the selected all-role workflow and runtime instructions,
+the current eight Multica platform references, and `source-manifest.json`.
+The manifest records the full policy version, complete bundle SHA-256 identity,
+and hashes of every policy and platform input. The skill name uses the first
+16 identity characters. Any content or policy-version change creates a new
+skill name. The builder rejects malformed or oversized inputs, symlinks,
+nested `SKILL.md` files and platform reference-set drift. The stable ZIP output
+lets reviewers compare identical source inputs byte for byte.
 
-For API automation, the same selection is:
+Under this policy, each PR carries its branch, exact commit and draft code
+handoff. PR reviews hold technical findings, fixes, validation and independent
+verdicts; the ticket tracks outcome, owner, status, scope, blockers and
+acceptance, with links to reviews. One ticket may coordinate multiple PRs
+across repositories.
 
-```http
-PUT /api/agents/<agent-id>/builtin-skills/replacements
-Content-Type: application/json
+## Recoverable issue handoffs
 
-{"skill_id":"builtin:multica-platform","replacement_skill_id":"<workspace-skill-uuid>"}
+For an explicitly enrolled issue, create a durable transfer to an agent or a
+human member:
+
+```bash
+multica issue handoff create <issue-id> --file handoff.json
 ```
 
-Send an empty `replacement_skill_id` to restore the embedded bundle. The
-existing `PUT /api/agents/<id>/builtin-skills/enabled` endpoint sets the slot's
-enabled state. `DELETE /api/agents/<id>/builtin-skills` restores inherit-all
-without clearing a valid replacement. Agent copy and the web Duplicate flow
-preserve both policy fields within the same workspace.
+Supply a `request_key` UUID and reuse the exact request and key after an
+ambiguous response. Use `multica issue handoff list <issue-id>` to reconcile
+saved handoffs. The request names the outgoing task, recipient, target status
+(`in_progress` or `in_review`), context mode (`fresh` or `resume`), instruction
+and evidence URLs. Agent requests may use legacy `agent_id` or
+`assignee_type: "agent"` and `assignee_id`. A human member request uses
+`assignee_type: "member"` and `assignee_id`, and must target `in_review` with
+fresh context; no agent task is created for that recipient. Resume mode also
+requires an exact completed `resume_task_id` for the same agent, runtime and
+issue. A candidate records `repository_url`,
+`pr_url`, `branch`, full 40- or 64-character `commit_sha` and `draft: true`.
+Use `"candidates": []` for non-code work. These PR and commit references are
+declared inputs; the handoff does not verify provider state or compare the
+current PR head with the declared commit.
 
-## Update and review
+Creation records intent. When the named outgoing task completes successfully,
+Multica changes issue status and assignee and enqueues an agent recipient
+together, provided the issue still matches the saved status/assignee. Other
+active issue runs defer dispatch until the issue is clear. A failed or
+cancelled outgoing task, or a changed issue owner/status, prevents launch and
+leaves a record to inspect or cancel. A human handoff is consumed by the
+completion marker `handoff_completed_at`; its `last_task_id` remains null.
+Cancel a pending handoff with:
 
-After changing Trackself's source skill or after merging a Multica release,
-rebuild the archive and inspect its `source-manifest.json`. Import with
-`--on-conflict overwrite` under the same skill creator to update the existing
-workspace skill in place; its UUID and per-agent selections remain stable.
-The next task claim receives the new bundle without rebuilding Multica. A
-claim already in progress is pinned to its advertised replacement hash and
-fails visibly if the skill changes between claim and resolution. Each issue
-task records its effective platform bundle fingerprint. If the next issue
-turn would resume a session created with another fingerprint, it starts a
-fresh provider session and reconstructs context under the new workflow.
+```bash
+multica issue handoff cancel <issue-id> --handoff-id <uuid>
+```
 
-Before enabling a replacement, inspect its root router, short runtime policy,
-and relevant references. Verify a full and slim claim for a selected agent,
-a resolve request for its workspace skill, rejection of the replaced built-in
-ID, and the rendered issue brief. The focused Go tests cover these paths;
-`pnpm typecheck` covers the web configuration surface. No database or running
-Multica instance is changed merely by building this archive.
+This disables pending execution and cancels an unstarted recipient task when
+possible. A started recipient keeps running; use
+`multica issue cancel-task <run-id>` to stop it. The API exposes create/list at
+`/api/issues/{id}/handoffs` and cancellation at
+`/api/issues/{id}/wakeups/{handoff-id}/disable`. The endpoint requires a ticket
+policy pin and does not enroll tickets or activate a workspace default.
+
+If a coordinated cutover imports an archive, import its new content-derived
+name as a new skill with conflict handling set to fail. Do not overwrite an
+older policy skill in place: tickets may still be pinned to its version. The
+short name identifies archive contents only; the runtime must separately
+record and enforce each ticket's selected policy version.
+
+## Explicit ticket enrollment interface
+
+The current CLI can inspect or explicitly enroll one issue:
+
+```bash
+multica issue workflow-policy get <issue-id>
+multica issue workflow-policy pin <issue-id> --skill-id <workspace-skill-uuid>
+```
+
+The matching API is `GET /api/issues/{id}/workflow-policy` and
+`POST /api/issues/{id}/workflow-policy` with `{"skill_id":"<workspace-skill-uuid>"}`.
+Reading is available to workspace members. Pinning is a mutation for a human
+workspace owner or administrator. The source must be a complete
+`multica-platform` replacement in the same workspace. A successful pin freezes
+that complete workflow bundle for later claims, even if the source skill or an
+agent's replacement setting later changes. `get` returns the recorded version
+and bundle with `workflow_bundle_pinned: true`,
+`agent_instructions_pinned: false` and `model_settings_pinned: false` coverage.
+
+Pin before the issue has any task history. Create it without assignment or
+other task triggers, pin it, read the result back, then begin execution as
+part of a coordinated cutover. An issue with any task history cannot use this
+endpoint for migration, and an existing pin cannot be changed to a different
+version. `get` returns 404 while an issue is unpinned; `pin` returns a conflict
+when task history, a different pin or concurrent issue activity blocks
+enrollment. Repeating an identical pin before task history is safe and returns
+the existing snapshot. This is per-issue enrollment, not a workspace default.
+The workflow-policy snapshot covers only the platform workflow rules and their
+authority. Each agent's first task on an enrolled issue separately captures
+that agent's behavioral profile, including instructions, model/effort/tier,
+workspace context and selected skills; retries retain it until an authorized
+profile reselection after that agent's pending tasks settle. Run history keeps
+its original profile identity. Profile snapshots exclude credentials,
+permission mode, MCP configuration, environment, custom-argument values and
+runtime bindings; live access and credentials remain governed by the claim
+path. These are separate snapshot layers, not new ticket permissions.
+Importing a skill does not pin an issue.
+
+## Workspace cutover and legacy issue migration
+
+Workspace owners and admins can inspect the selected default, perform the
+one-time cutover, and later change the default for future issues:
+
+```bash
+multica workspace workflow get [workspace-id|slug|prefix]
+multica workspace workflow cutover [workspace-id|slug|prefix] --skill-id <workspace-skill-uuid>
+multica workspace workflow set-default [workspace-id|slug|prefix] --skill-id <workspace-skill-uuid>
+```
+
+Cutover freezes pre-existing unpinned issues, including historical terminal
+issues, and unfinished enrolled issues. Already enrolled terminal issues retain
+their recorded policy and lifecycle. Historical done or closed issues keep
+their status and history. A workspace with a claimed or executing issue task must
+wait until that activity finishes. After cutover, newly created issues receive
+the selected default;
+changing that default does not rewrite existing issue snapshots. The first
+cutover reports the frozen issue count, and an exact replay returns the stored
+cutover time. The API routes are `GET /api/workspaces/{id}/workflow-default`,
+`POST /api/workspaces/{id}/workflow-cutover` and
+`PUT /api/workspaces/{id}/workflow-default`.
+
+While an old issue is frozen, issue updates and comment creation, editing and
+deletion are blocked for human and agent actors. Reading its history and
+explicit issue deletion remain available. A human workspace owner or admin can
+migrate one issue after recording why and how current work was reconciled:
+
+```bash
+multica issue workflow-policy migrate <issue-id> \
+  --skill-id <workspace-skill-uuid> \
+  --reason "why this issue is moving" \
+  --reconciliation "remaining work, evidence, context and ownership reviewed"
+```
+
+Migration snapshots the selected complete workflow bundle on that issue and
+unfreezes it. For an issue currently in a terminal status (including done,
+cancelled or a custom done/closed status), add `--reopen-to <active-nonterminal-status>`
+to explicitly move its current status while preserving its terminal history.
+The target must be an active workspace status whose category is not done or
+closed. The flag is required for terminal issues and forbidden for
+nonterminal issues. Migration does not dispatch work, even when it reopens an
+issue; check the migrated issue before starting any next task. The API is
+`POST /api/issues/{id}/workflow-migrate` with `skill_id`, `reason` and
+`reconciliation`, plus optional `reopen_to` fields.
+Already accepted enrolled work must use recorded rejection before reopening;
+migration is not a substitute for invalidating its acceptance.
+
+## Candidate review and acceptance
+
+The optional `runtime/policy.json` in a policy source directory configures
+machine-enforced authority. Its contents participate in the immutable bundle
+identity. Without this file, independent review is required, workspace owners,
+admins and members may accept, accepted PRs become ready, and autonomous
+acceptance and merging are disabled. This is the unconfigured bundle's behavior,
+not the agreed final choice for Trackself's trivial-work policy.
+
+For example, the following **template** grants one configured agent autonomous
+acceptance and squash merging, while human acceptance only makes PRs ready.
+Replace `<acceptor-agent-uuid>` with an explicitly selected workspace agent ID
+before building; this example does not configure any live agent:
+
+```json
+{
+  "format_version": 1,
+  "human": {"accept_roles": ["owner", "admin", "member"], "delivery": "ready"},
+  "review": {"required": true},
+  "autonomous_trivial": {
+    "enabled": true,
+    "acceptor_agent_ids": ["<acceptor-agent-uuid>"],
+    "delivery": "merge"
+  },
+  "delivery": {"merge_method": "squash", "multi_pr_merge_order": "explicit"},
+  "supervisors": []
+}
+```
+
+Merge methods are `merge`, `squash` or `rebase`; multi-PR merging requires an
+explicit ordered PR list at acceptance. Supervisor entries take `agent_id`
+and delegated `scopes` (`review`, `acceptance`, `delivery`). Classification
+criteria, capability selection and review depth remain editable instructions
+in the policy bundle. The authority file does not decide whether a task is
+trivial: the authorized acceptor records that judgment and its reason.
+An autonomous request becomes acceptance only after its requesting task
+completes successfully and the candidate, review and authority still match.
+
+Scoped exceptions record the candidate, policy version, reason and consequences;
+they do not rewrite the bundle or other tickets. A review exception can waive
+review; acceptance can name one human or agent; delivery can select readiness
+or an explicit merge method. Supervisors can grant only their delegated scopes.
+An exception that affects accepted work requires rejection before revocation.
+
+An enrolled issue's workflow state is available with:
+
+```bash
+multica issue workflow get <issue-id>
+```
+
+The result shows the candidate ID and issue revision, review verdicts,
+acceptance blockers, delivery preview, per-PR delivery state, retained writer
+contexts and exception history. A reviewer agent records its independent
+verdict and PR review links with `multica issue workflow review <issue-id>
+--file <json>`. Human acceptance or rejection uses the exact candidate ID and
+revision from `get` via `multica issue workflow accept|reject <issue-id>
+--file <json>`. Rejection may select a retained task only from the options
+returned by `get`. Use `multica issue workflow exception <issue-id> --file
+<json>` to grant a scoped, explained exception; `multica issue workflow
+exception revoke <issue-id> <exception-id> --file <json>` records its
+revision-bound revocation and consequences. These commands return current
+workflow state so the caller can reconcile each action. Request JSON is strict,
+limited to 64 KiB, and may be supplied on stdin with `--file -`.
+
+Each accepted candidate is bound to its exact commit set and issue revision.
+New commits need renewed evaluation. The server reports why an action is
+blocked and previews readiness or merge actions; provider secrets are not
+returned in the workflow record.
+
+## Coordinated cutover
+
+Binding the Mica policy requires coordinated review of shared Trackself
+workflow guidance, provider configuration, Multica instructions and ticket
+policy snapshots. Importing or preparing a candidate bundle alone does not
+freeze current tickets or activate the workspace default. At the coordinated
+cutover, old unfinished tickets remain frozen until explicit migration
+reconciles current work, remaining scope, evidence, context and ownership.
+Historical terminal tickets retain their done or closed status and history;
+they are not reclassified as unfinished. Reopening one requires an explicit
+migration target and does not dispatch work. Do not bind only the former parent
+orchestrators as a substitute for the agreed all-role workflow.
+
+Before cutover, verify the generated archive with Multica's actual
+`parseSkillArchive` importer and review its root skill, runtime instructions,
+policy reference and source manifest. Those checks establish package
+compatibility and source identity; they do not establish live bindings,
+ticket-policy enforcement, provider behavior or end-to-end workflow readiness.

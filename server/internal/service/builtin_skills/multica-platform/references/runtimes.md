@@ -106,7 +106,12 @@ ref by default for the current task; an explicit
 ## Task CLI boundary
 
 The daemon injects a task-scoped `mat_` credential for Multica API commands and
-a private task-local Multica configuration root. Inside that managed task
+a private task-local Multica configuration root. It also injects
+`MULTICA_CLI_PATH`, the absolute executable for this daemon. Use that path for
+all Multica commands: `"$MULTICA_CLI_PATH"` in POSIX shells,
+`& $env:MULTICA_CLI_PATH` in PowerShell, or `"%MULTICA_CLI_PATH%"` in cmd.exe.
+These forms handle paths containing spaces. A login shell may reorder PATH, so
+bare `multica` can select a different installation. Inside that managed task
 context:
 
 - API commands such as `issue list`, `issue get`, and `issue runs` use the

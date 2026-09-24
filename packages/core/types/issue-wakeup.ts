@@ -1,4 +1,5 @@
 export interface IssueWakeup {
+  force_fresh_session?: boolean;
   id: string;
   issue_id: string;
   agent_id: string;
@@ -23,6 +24,9 @@ export interface IssueWakeup {
   last_error: string | null;
   filter_agent_name?: string | null;
   last_task_status?: string | null;
+  request_key?: string | null;
+  handoff_completed_at?: string | null;
+  handoff?: Record<string, unknown> | null;
 }
 
 export type WakeupPreview = Pick<

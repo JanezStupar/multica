@@ -92,8 +92,14 @@ RETURNING *;
 -- Builder sessions own their hidden execution agent. Deleting the session
 -- removes that carrier and its task rows; the kind guard prevents this cleanup
 -- path from ever deleting a user-authored agent.
-DELETE FROM agent
-WHERE id = $1 AND kind = 'system' AND system_key LIKE 'agent_builder:%';
+WITH target AS (
+    SELECT a.id, a.workspace_id FROM agent a
+    WHERE a.id = $1 AND a.kind = 'system' AND a.system_key LIKE 'agent_builder:%'
+), removed_profiles AS (
+    DELETE FROM issue_workflow_profile p USING target a
+    WHERE p.agent_id = a.id AND p.workspace_id = a.workspace_id
+)
+DELETE FROM agent WHERE agent.id IN (SELECT target.id FROM target);
 
 -- name: RebindAgentBuilderRuntime :one
 -- Re-points a builder carrier at another runtime mid-conversation. The carrier
@@ -345,8 +351,11 @@ SELECT
     sqlc.narg(handoff_note),
     sqlc.narg(squad_id),
     CASE
-        WHEN COALESCE(sqlc.narg('head_sha')::text, '') <> ''
-        THEN jsonb_build_object('head_sha', sqlc.narg('head_sha')::text)
+        WHEN COALESCE(sqlc.narg('head_sha')::text, '') <> '' OR sqlc.narg('workflow_recovery')::jsonb IS NOT NULL
+        THEN jsonb_strip_nulls(jsonb_build_object(
+            'head_sha', NULLIF(COALESCE(sqlc.narg('head_sha')::text, ''), ''),
+            'workflow_recovery', sqlc.narg('workflow_recovery')::jsonb
+        ))
         ELSE NULL
     END,
     sqlc.narg(originator_user_id),
@@ -412,6 +421,7 @@ RETURNING *;
 UPDATE agent_task_queue
 SET status = 'queued', fire_at = NULL
 WHERE id = $1 AND issue_id IS NOT NULL AND status = 'deferred'
+  AND workflow_issue_executable(issue_id)
 RETURNING *;
 
 -- name: SetDeferredChannelIssueTaskRuntimeOverlay :execrows
@@ -568,7 +578,7 @@ SELECT
     CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity' THEN NULL ELSE p.session_id END,
     p.work_dir,
     p.attempt + 1, COALESCE(sqlc.narg(max_attempts)::int, p.max_attempts), p.id,
-    p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity',
+    p.force_fresh_session OR p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity',
     p.is_leader_task,
     p.squad_id,
     p.originator_user_id,
@@ -780,6 +790,7 @@ WHERE id = (
     WHERE atq.agent_id = @agent_id
       AND atq.runtime_id = @runtime_id
       AND atq.status = 'queued'
+      AND workflow_task_claimable(atq.id, atq.issue_id)
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
       AND EXISTS (
           SELECT 1
@@ -896,6 +907,7 @@ WHERE id = (
     WHERE atq.runtime_id = $1
       AND atq.status = 'dispatched'
       AND atq.started_at IS NULL
+      AND workflow_issue_executable(atq.issue_id)
       AND atq.dispatched_at < now() - make_interval(secs => @claim_recovery_secs::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
       AND EXISTS (
@@ -943,6 +955,7 @@ WHERE id IN (
     WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
       AND atq.status = 'dispatched'
       AND atq.started_at IS NULL
+      AND workflow_issue_executable(atq.issue_id)
       AND atq.dispatched_at < now() - make_interval(secs => @claim_recovery_secs::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
       AND EXISTS (
@@ -1181,7 +1194,7 @@ WITH retired_sessions AS (
 ), latest_per_session AS (
     SELECT DISTINCT ON (t.session_id)
         t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error,
-        t.started_at, t.issue_snapshot, t.skill_bundle_fingerprint,
+        t.started_at, t.issue_snapshot, t.skill_bundle_fingerprint, t.workflow_profile_id,
         COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at) AS terminal_at
     FROM agent_task_queue t
     WHERE t.agent_id = $1 AND t.issue_id = $2
@@ -1201,7 +1214,7 @@ WITH retired_sessions AS (
 -- and retired sessions, so it can legitimately return an OLDER run than the
 -- newest one. Measuring against the newest one would then tell an agent whose
 -- resumed memory predates an edit that the issue is unchanged.
-SELECT session_id, work_dir, runtime_id, status, started_at, issue_snapshot, skill_bundle_fingerprint FROM latest_per_session
+SELECT session_id, work_dir, runtime_id, status, started_at, issue_snapshot, skill_bundle_fingerprint, workflow_profile_id FROM latest_per_session
 WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
   AND (
     status IN ('completed', 'cancelled')
@@ -1490,6 +1503,7 @@ RETURNING *;
 WITH victims AS (
     SELECT id FROM agent_task_queue
     WHERE status = 'queued' AND context->>'wakeup_id' IS NULL
+      AND workflow_issue_executable(issue_id)
       AND created_at < now() - make_interval(secs => @reconnect_grace_secs::double precision)
       AND (
           runtime_id IS NULL
@@ -1521,6 +1535,7 @@ SET status = 'failed',
 FROM victims v
 WHERE t.id = v.id
   AND t.status = 'queued'
+  AND workflow_issue_executable(t.issue_id)
   AND t.created_at < now() - make_interval(secs => @reconnect_grace_secs::double precision)
   AND (
       t.runtime_id IS NULL
@@ -1552,6 +1567,7 @@ WITH victims AS (
     FROM agent_task_queue retry
     JOIN agent_task_queue parent ON parent.id = retry.parent_task_id
     WHERE retry.status = 'deferred'
+      AND workflow_issue_executable(retry.issue_id)
       AND retry.fire_at < now() - make_interval(secs => @reconnect_grace_secs::double precision)
       AND parent.failure_reason = 'runtime_offline'
       AND NOT EXISTS (
@@ -1575,6 +1591,7 @@ SET status = 'failed',
 FROM victims
 WHERE retry.id = victims.id
   AND retry.status = 'deferred'
+  AND workflow_issue_executable(retry.issue_id)
   AND retry.fire_at < now() - make_interval(secs => @reconnect_grace_secs::double precision)
   AND EXISTS (
       SELECT 1 FROM agent_task_queue parent
@@ -2204,7 +2221,18 @@ WHERE recovery.author_type = 'system'
   AND failed.trigger_evidence_kind IS DISTINCT FROM 'delegated_failure'
   AND source.autopilot_run_id IS NULL
   AND source.issue_id IS NOT NULL
-  AND source.agent_id <> failed.agent_id
+  AND NOT source_issue.workflow_frozen
+  AND (source_issue.workflow_migrated_at IS NULL OR
+       COALESCE(failed.completed_at,failed.created_at) >= source_issue.workflow_migrated_at)
+  AND (source.agent_id <> failed.agent_id OR EXISTS (
+      SELECT 1 FROM issue_wakeup h
+      WHERE h.id=(SELECT latest.id FROM issue_wakeup latest
+                  WHERE latest.issue_id=source_issue.id AND latest.handoff IS NOT NULL
+                    AND latest.disabled_at IS NULL ORDER BY latest.id DESC LIMIT 1)
+        AND h.id::text=failed.context->'workflow_handoff'->>'wakeup_id'
+        AND h.last_task_id IS NOT NULL AND h.filter_task_id=source.id
+        AND h.agent_id=failed.agent_id
+  ))
   -- Match canDispatchDelegatedFailureRecovery: lifecycle permits recovery only
   -- for open work; parking belongs exclusively to the fixed Backlog status.
   -- Built-ins resolve without catalog rows; unknown custom states stay pending.
@@ -2309,6 +2337,7 @@ ORDER BY priority DESC, created_at ASC;
 SELECT atq.* FROM agent_task_queue atq
 WHERE atq.runtime_id = $1
   AND atq.status = 'queued'
+  AND workflow_task_claimable(atq.id, atq.issue_id)
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
   AND EXISTS (
       -- Keep this authorization fence in sync with ClaimAgentTask.
@@ -2391,6 +2420,7 @@ WITH due AS (
     FROM agent_task_queue t
     WHERE t.runtime_id = @runtime_id
       AND t.status = 'deferred'
+      AND workflow_issue_executable(t.issue_id)
       AND t.fire_at <= now()
       AND EXISTS (
         SELECT 1 FROM agent_runtime r
@@ -2414,6 +2444,7 @@ WITH due AS (
 UPDATE agent_task_queue
 SET status = 'queued'
 WHERE id IN (SELECT id FROM due WHERE issue_id IS NULL OR rn = 1)
+  AND workflow_issue_executable(agent_task_queue.issue_id)
 RETURNING *;
 
 -- name: ListQueuedClaimCandidatesByRuntimes :many
@@ -2430,6 +2461,7 @@ RETURNING *;
 SELECT atq.* FROM agent_task_queue atq
 WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
   AND atq.status = 'queued'
+  AND workflow_task_claimable(atq.id, atq.issue_id)
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
   AND EXISTS (
       -- Keep this authorization fence in sync with ClaimAgentTask.
@@ -2494,6 +2526,7 @@ WITH due AS (
     FROM agent_task_queue t
     WHERE t.runtime_id = ANY(@runtime_ids::uuid[])
       AND t.status = 'deferred'
+      AND workflow_issue_executable(t.issue_id)
       AND t.fire_at <= now()
       AND EXISTS (
         SELECT 1 FROM agent_runtime r
@@ -2517,6 +2550,7 @@ WITH due AS (
 UPDATE agent_task_queue
 SET status = 'queued'
 WHERE id IN (SELECT id FROM due WHERE issue_id IS NULL OR rn = 1)
+  AND workflow_issue_executable(agent_task_queue.issue_id)
 RETURNING *;
 
 -- name: ListActiveTasksByIssue :many

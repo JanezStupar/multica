@@ -1922,7 +1922,9 @@ func (h *Handler) lookupIssueByIdentifier(ctx context.Context, workspaceID pgtyp
 func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, workspaceID string) {
 	// An issue leaves Triage only by being accepted; a merged "Closes" PR
 	// links to it but must not move it out. (MUL-7189 §2.2)
-	if issue.TriageState.Valid {
+	// An enrolled issue also needs its own acceptance, not an automatic
+	// transition driven by a linked PR's merge.
+	if issue.TriageState.Valid || len(issue.WorkflowPolicy) != 0 || issue.WorkflowFrozen {
 		return
 	}
 	tx, err := h.TxStarter.Begin(ctx)
@@ -1932,6 +1934,19 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 	}
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
+	// The webhook's issue row may predate concurrent enrollment. Recheck the
+	// guards under the issue lock before writing status.
+	locked, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
+		ID: issue.ID, WorkspaceID: issue.WorkspaceID,
+	})
+	if err != nil {
+		slog.Warn("github: advance issue to done failed", "err", err)
+		return
+	}
+	if locked.TriageState.Valid || len(locked.WorkflowPolicy) != 0 || locked.WorkflowFrozen {
+		return
+	}
+	issue = locked
 	updated, err := qtx.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
 		ID:          issue.ID,
 		Status:      "done",

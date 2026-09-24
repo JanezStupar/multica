@@ -688,7 +688,7 @@ func sweepDeferredChatFinalizations(ctx context.Context, queries *db.Queries, ta
 // broadcastFailedTasks is preserved as a thin shim for the integration tests
 // in this package. New call sites should use TaskService.HandleFailedTasks
 // directly so the side effects (event broadcast, agent reconcile, issue
-// rollback, auto-retry) are guaranteed in one place.
+// rollback for legacy issues, auto-retry) are guaranteed in one place.
 func broadcastFailedTasks(ctx context.Context, queries *db.Queries, taskSvc *service.TaskService, bus *events.Bus, tasks []db.AgentTaskQueue) {
 	if taskSvc != nil {
 		taskSvc.HandleFailedTasks(ctx, tasks)
@@ -719,10 +719,11 @@ func broadcastFailedTasks(ctx context.Context, queries *db.Queries, taskSvc *ser
 				// nonterminal custom key onto a built-in, so this is a key
 				// comparison on purpose. (MUL-6243, MUL-7240)
 				effectiveStatus := issuestatus.Effective(ctx, queries, issue.WorkspaceID, issue.Status)
-				if effectiveStatus == "in_progress" && !processedIssues[issueKey] {
+				// Keep enrolled issues in their work phase after execution failure.
+				if effectiveStatus == "in_progress" && len(issue.WorkflowPolicy) == 0 && !issue.WorkflowFrozen && !processedIssues[issueKey] {
 					processedIssues[issueKey] = true
 					if hasActive, herr := queries.HasActiveTaskForIssue(ctx, t.IssueID); herr == nil && !hasActive {
-						queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: t.IssueID, Status: "todo", WorkspaceID: issue.WorkspaceID})
+						queries.ResetFailedLegacyIssueToTodo(ctx, db.ResetFailedLegacyIssueToTodoParams{ID: t.IssueID, SourceTaskID: t.ID, WorkspaceID: issue.WorkspaceID})
 					}
 				}
 			}

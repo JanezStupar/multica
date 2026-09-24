@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useRef, useState, useImperativeHandle } from "re
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { AgentTask, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
+import type { AgentTask, Issue, IssueStatusEntry, IssueWorkflow, Label, TimelineEntry } from "@multica/core/types";
 import { issueKeys } from "@multica/core/issues/queries";
 import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -18,6 +18,7 @@ import enIssues from "../../locales/en/issues.json";
 const TEST_RESOURCES = { en: { common: enCommon, issues: enIssues } };
 
 const mockViewport = vi.hoisted(() => ({ isMobile: false }));
+const mockNavigationPush = vi.hoisted(() => vi.fn());
 
 // Counts MockContentEditor mounts. This pins the description to exactly one
 // eager editor per issue and catches stale editor reuse across issue switches.
@@ -122,8 +123,9 @@ vi.mock("../../navigation", () => ({
     </a>
   ),
   useNavigation: () => ({
-    push: vi.fn(),
+    push: mockNavigationPush,
     pathname: "/issues/issue-1",
+    searchParams: new URLSearchParams(),
     getShareableUrl: (p: string) => `https://app.multica.com${p}`,
   }),
   useBackOrReplace: () => vi.fn(),
@@ -296,6 +298,8 @@ vi.mock("../../projects/components/project-picker", () => ({
 // Mock api
 const mockApiObj = vi.hoisted(() => ({
   getIssue: vi.fn(),
+  getIssueWorkflow: vi.fn(),
+  acceptIssueWorkflow: vi.fn(),
   listTimeline: vi.fn().mockResolvedValue([]),
   listComments: vi.fn().mockResolvedValue([]),
   createComment: vi.fn(),
@@ -556,6 +560,29 @@ const mockIssue: Issue = {
   revision: 3,
 };
 
+const mockIssueWorkflow: IssueWorkflow = {
+  issue_id: "issue-1",
+  issue_revision: 3,
+  policy_version: "test-policy",
+  frozen: false,
+  candidate: {
+    id: "candidate-42",
+    digest: "sha256:accepted-candidate",
+    scope_digest: "sha256:scope",
+    writer_task_id: "task-writer",
+    created_at: "2026-09-24T12:00:00Z",
+    prs: [{ repository_url: "https://github.com/acme/service", pr_url: "https://github.com/acme/service/pull/42", branch: "fix/auth", commit_sha: "0123456789abcdef0123456789abcdef01234567", draft: false }],
+  },
+  reviews: [],
+  acceptance: null,
+  acceptance_blockers: [],
+  delivery_preview: { action: "ready", requires_order: false },
+  delivery: [],
+  exceptions: [],
+  retained_context_options: [{ task_id: "task-writer", agent_id: "agent-1", agent_name: "Writer agent", kind: "writer" }],
+  available_actions: { accept_human: true, reject: true, request_trivial_acceptance: false, waive_review: false },
+};
+
 const mockTimeline: TimelineEntry[] = [
   {
     type: "comment",
@@ -600,12 +627,12 @@ function createTestQueryClient() {
   });
 }
 
-function renderIssueDetail(issueId = "issue-1") {
+function renderIssueDetail(issueId = "issue-1", onDone?: () => void) {
   const queryClient = createTestQueryClient();
   return render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
       <QueryClientProvider client={queryClient}>
-        <IssueDetail issueId={issueId} />
+        <IssueDetail issueId={issueId} onDone={onDone} />
       </QueryClientProvider>
     </I18nProvider>,
   );
@@ -685,6 +712,8 @@ describe("IssueDetail (shared)", () => {
     mockViewport.isMobile = false;
     // Default: issue loads successfully
     mockApiObj.getIssue.mockResolvedValue(mockIssue);
+    mockApiObj.getIssueWorkflow.mockResolvedValue(mockIssueWorkflow);
+    mockApiObj.acceptIssueWorkflow.mockResolvedValue(mockIssueWorkflow);
     // /timeline returns the entries flat in chronological order (oldest first).
     mockApiObj.listTimeline.mockResolvedValue(mockTimeline);
     mockApiObj.listIssueReactions.mockResolvedValue([]);
@@ -706,6 +735,71 @@ describe("IssueDetail (shared)", () => {
     // Reset project mock — individual tests override per case. Default fixture
     // has project_id: null so getProject is not invoked.
     mockApiObj.getProject.mockReset();
+  });
+
+  it("accepts the displayed workflow candidate directly from Done when its revision matches", async () => {
+    const enrolledIssue = { ...mockIssue, workflow_policy_present: true };
+    mockApiObj.getIssue.mockResolvedValue(enrolledIssue);
+    const onDone = vi.fn();
+    renderIssueDetail("issue-1", onDone);
+
+    await screen.findByRole("heading", { name: "Workflow acceptance" });
+    fireEvent.click(await screen.findByRole("button", { name: "Mark as done" }));
+
+    await waitFor(() => {
+      expect(mockApiObj.acceptIssueWorkflow).toHaveBeenCalledWith("issue-1", {
+        candidate_id: "candidate-42",
+        expected_revision: 3,
+      });
+    });
+    expect(mockApiObj.updateIssue).not.toHaveBeenCalled();
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("focuses the candidate panel instead of accepting when the snapshot revision is stale", async () => {
+    const enrolledIssue = { ...mockIssue, workflow_policy_present: true };
+    mockApiObj.getIssue.mockResolvedValue(enrolledIssue);
+    mockApiObj.getIssueWorkflow.mockResolvedValue({ ...mockIssueWorkflow, issue_revision: 2 });
+    renderIssueDetail("issue-1", vi.fn());
+
+    await screen.findByRole("heading", { name: "Workflow acceptance" });
+    fireEvent.click(await screen.findByRole("button", { name: "Mark as done" }));
+
+    expect(mockApiObj.acceptIssueWorkflow).not.toHaveBeenCalled();
+    expect(mockNavigationPush).toHaveBeenCalledWith("/test/issues/TES-1?workflow=accept");
+    expect(mockApiObj.updateIssue).not.toHaveBeenCalled();
+  });
+
+  it("shows the frozen legacy state without requesting workflow authority", async () => {
+    mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, workflow_policy_present: false, workflow_frozen: true });
+    const onDone = vi.fn();
+    renderIssueDetail("issue-1", onDone);
+
+    expect(await screen.findByText("This issue is frozen until it is explicitly migrated. Its existing work and history are preserved.")).toBeInTheDocument();
+    expect(mockApiObj.getIssueWorkflow).not.toHaveBeenCalled();
+    expect(mockApiObj.acceptIssueWorkflow).not.toHaveBeenCalled();
+    expect(mockApiObj.updateIssue).not.toHaveBeenCalled();
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("requires the panel order controls before a multi-PR merge acceptance", async () => {
+    const enrolledIssue = { ...mockIssue, workflow_policy_present: true };
+    const secondPR = { ...mockIssueWorkflow.candidate!.prs[0]!, repository_url: "https://github.com/acme/worker", pr_url: "https://github.com/acme/worker/pull/9" };
+    mockApiObj.getIssue.mockResolvedValue(enrolledIssue);
+    mockApiObj.getIssueWorkflow.mockResolvedValue({
+      ...mockIssueWorkflow,
+      acceptance_blockers: ["merge_order_required"],
+      delivery_preview: { action: "merge", merge_method: "squash", requires_order: true },
+      candidate: { ...mockIssueWorkflow.candidate!, prs: [...mockIssueWorkflow.candidate!.prs, secondPR] },
+    });
+    renderIssueDetail("issue-1", vi.fn());
+
+    await screen.findByRole("heading", { name: "Workflow acceptance" });
+    fireEvent.click(await screen.findByRole("button", { name: "Mark as done" }));
+
+    expect(mockApiObj.acceptIssueWorkflow).not.toHaveBeenCalled();
+    expect(mockNavigationPush).toHaveBeenCalledWith("/test/issues/TES-1?workflow=accept");
+    expect(screen.getByRole("combobox", { name: "Merge order for pull request 1" })).toBeInTheDocument();
   });
 
   it("opens source-context creation from both a root comment and a reply", async () => {

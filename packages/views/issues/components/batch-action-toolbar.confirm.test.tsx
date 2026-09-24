@@ -25,6 +25,15 @@ vi.mock("@multica/core/issues/mutations", () => ({
   useBatchDeleteIssues: () => ({ mutateAsync: batchDelete, isPending: false }),
 }));
 
+vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
+vi.mock("@multica/core/paths", () => ({
+  useWorkspacePaths: () => ({ issueDetail: (identifier: string) => `/workspace/issues/${identifier}` }),
+}));
+vi.mock("@multica/core/issue-statuses/hooks", () => ({
+  useIssueStatuses: () => ({ categoryOf: (status: string) => status === "done" ? "done" : "unstarted" }),
+}));
+vi.mock("../../navigation", () => ({ useNavigation: () => ({ push: vi.fn() }) }));
+
 const openModal = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/modals", () => ({
   useModalStore: (selector: (s: { open: typeof openModal }) => unknown) => selector({ open: openModal }),

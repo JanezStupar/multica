@@ -13,6 +13,8 @@ import {
   useInboxUnreadCount,
 } from "../inbox/queries";
 import { createQueryClient } from "../query-client";
+import type { IssueWorkflow } from "../types";
+import { issueWorkflowKeys } from "../issues/workflow";
 import type { InboxItem } from "../types";
 import { useRealtimeSync, type RealtimeSyncStores } from "./use-realtime-sync";
 
@@ -114,11 +116,14 @@ it("refreshes an inactive Inbox after inbox:new then issue:updated (MUL-7286)", 
 
     // Any later issue update patches status, without re-reading notifications.
     rows = rows.map((item) => ({ ...item, issue_status: "in_progress" }));
+    const workflowKey = issueWorkflowKeys.detail("ws-1", "issue-1");
+    qc.setQueryData(workflowKey, { issue_id: "issue-1" } as IssueWorkflow);
     act(() => {
       handlers["issue:updated"]!({
         issue: { id: "issue-1", status: "in_progress", revision: 2 },
       });
     });
+    expect(qc.getQueryState(workflowKey)?.isInvalidated).toBe(true);
     page = mountInbox();
     await waitFor(() => expect(listInbox).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(page.result.current.data).toEqual(rows));
