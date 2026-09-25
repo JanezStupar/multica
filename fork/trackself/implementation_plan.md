@@ -1,10 +1,10 @@
 # Mica workflow implementation and cutover
 
-The implementation is published as `v0.5.1-janez.1` from source commit
-`3ed16d8217503e168961f1d52ba97a2c20aae207`. The production server and all
-three Linux runtimes run this release, and the recorded production migration,
-configuration, health and authenticated API checks passed. Publication and
-platform deployment did not activate the Trackself workflow. The release
+The implementation is published and deployed as `v0.5.1-janez.2` from source
+commit `0f23313676b0fcc66f197dd9dffef7c4feb10d09`. Production server, main and
+branch-2 runtime health and authenticated checks passed. Branch-1 has the new
+image and remains stopped; its previous fault was not repaired by this upgrade.
+Publication and platform deployment did not activate the Trackself workflow. The release
 record in [release.md](release.md) owns artifact identity and points to the
 private-infra deployment record that owns deployment state. The [README](README.md)
 owns implementation usage and limits.
@@ -27,9 +27,9 @@ handoff and detailed in the implementation history retained by Git. Current
 source, tests and the importer are authoritative for implementation behavior;
 this plan does not duplicate their mechanism descriptions or session diary.
 
-No production policy was imported or bound, no workspace default changed, and
-no live ticket was frozen or migrated. The proof policy was imported only in a
-disposable workspace. Native macOS and Windows execution remains deferred until
+The exact published policy was imported as an unbound Trackself skill; no
+agent binding or workspace default changed, and no live ticket was frozen or
+migrated. The proof policy was imported only in a disposable workspace. Native macOS and Windows execution remains deferred until
 deployment to those hosts. Release publication and deployment are not workflow
 activation.
 
@@ -44,7 +44,7 @@ workspace-control consumers remain isolated
 candidates. Human acceptance defaults to automatic merge unless explicitly
 held, and the inactive policy encodes the selected Linux authority bindings.
 The follow-up is published as `v0.5.1-janez.2` from
-`0f23313676b0fcc66f197dd9dffef7c4feb10d09`, but is not deployed or activated.
+`0f23313676b0fcc66f197dd9dffef7c4feb10d09`, and is deployed but not activated.
 The earlier provider trials are supplemented by the new format-2 trial.
 
 Both disposable completion-test Compose projects, volumes and networks were
@@ -61,8 +61,7 @@ to remain stopped through configuration read-back and coordinated cutover.
    them to active consumers. Verify the updated KB at the branch runtimes'
    actual task workspaces: refreshing the operator's `/home/janez/.codex-kb`
    does not refresh those containers' separate Codex homes or workspace copies.
-2. Deploy the published `PR Ready`/`Done` and durable hold implementation;
-   the installed release currently marks acceptance `done`. Apply the
+2. Reconcile the deployed format-2 implementation with the consumers. Apply the
    [agreed production policy](workflow_spec.md#agreed-production-policy), then
    resolve only the [remaining bindings and defaults](workflow_spec.md#remaining-policy-parameters)
    in their owners. Classification, ordinary review, supervisor boundaries and
@@ -87,10 +86,10 @@ read-back under the owning workspace procedures.
 
 ## Completion boundary
 
-Format 1 is released and deployed; format 2 has passed source review and the
-bounded completion trial and is published, awaiting deployment. Cutover coordination
-is not complete until its deployment, the consumers, bundle identity, workspace configuration, and
-live freeze/migration procedure are reconciled. Do not retire this plan before
+Format 2 is released and deployed after source review, bounded completion
+proof and production-copy migration rehearsal. Cutover coordination
+is not complete until the consumers, bundle identity, workspace configuration,
+and live freeze/migration procedure are reconciled. Do not retire this plan before
 that boundary; after coordination ends, retain lasting operating guidance in
 the README and requirements in the spec. Git preserves prior implementation
 diagnoses and detailed proof history.
