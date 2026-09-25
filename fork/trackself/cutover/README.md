@@ -4,7 +4,8 @@ These patches prepare the agreed Trackself workflow change. **Live cutover has
 not occurred.** They have been reviewed in isolated copies; they are not installed
 KB instructions, agent settings, imported skills, or ticket policy.
 
-The server and Linux runtime upgrade is separate and complete. The owning
+The prior server and Linux runtime upgrade is complete; the format-2 follow-up
+is published and awaits deployment. The owning
 [release record](../release.md) links the deployment record; the
 [runtime proof](../runtime-proof.md) identifies the successful Linux provider
 trials and their source snapshots. Native macOS/Windows checks accompany their

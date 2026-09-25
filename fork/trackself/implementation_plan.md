@@ -43,8 +43,9 @@ records exact evidence and broader frontend baseline failures. The KB and
 workspace-control consumers remain isolated
 candidates. Human acceptance defaults to automatic merge unless explicitly
 held, and the inactive policy encodes the selected Linux authority bindings.
-This working candidate has not been released or activated; the earlier
-provider trials are supplemented by the new format-2 trial.
+The follow-up is published as `v0.5.1-janez.2` from
+`0f23313676b0fcc66f197dd9dffef7c4feb10d09`, but is not deployed or activated.
+The earlier provider trials are supplemented by the new format-2 trial.
 
 Both disposable completion-test Compose projects, volumes and networks were
 removed after validation. The workstation and Linux-runtime databases were
@@ -57,8 +58,10 @@ to remain stopped through configuration read-back and coordinated cutover.
 1. Reconcile the prepared KB and `workspace-control` candidates against their
    current owning repositories and review all consumer changes together. The
    candidate artifacts record their baselines and are not authority to apply
-   them to active consumers.
-2. Publish and deploy the proven `PR Ready`/`Done` and durable hold implementation;
+   them to active consumers. Verify the updated KB at the branch runtimes'
+   actual task workspaces: refreshing the operator's `/home/janez/.codex-kb`
+   does not refresh those containers' separate Codex homes or workspace copies.
+2. Deploy the published `PR Ready`/`Done` and durable hold implementation;
    the installed release currently marks acceptance `done`. Apply the
    [agreed production policy](workflow_spec.md#agreed-production-policy), then
    resolve only the [remaining bindings and defaults](workflow_spec.md#remaining-policy-parameters)
@@ -85,7 +88,7 @@ read-back under the owning workspace procedures.
 ## Completion boundary
 
 Format 1 is released and deployed; format 2 has passed source review and the
-bounded completion trial and awaits publication/deployment. Cutover coordination
+bounded completion trial and is published, awaiting deployment. Cutover coordination
 is not complete until its deployment, the consumers, bundle identity, workspace configuration, and
 live freeze/migration procedure are reconciled. Do not retire this plan before
 that boundary; after coordination ends, retain lasting operating guidance in

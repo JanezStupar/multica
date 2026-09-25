@@ -90,7 +90,7 @@ activated, native host upgraded, or runtime restarted by this preparation.
 The [production policy choices](../workflow_spec.md#agreed-production-policy)
 are agreed. Revised `PR Ready`/`Done` and durable hold mechanics passed source
 review and the [format-2 trial](../runtime-proof.md#2026-09-25-format-2-completion-trial);
-their release and deployment remain pending. The inactive policy encodes Linux authority
+they are published in `v0.5.1-janez.2` and await deployment. The inactive policy encodes Linux authority
 bindings and automatic merge after human acceptance unless explicitly held;
 final import identity, live mutation/read-back proof and coordinated cutover
 remain outstanding. Offline preparation does not prove the live cutover.

@@ -1,99 +1,86 @@
 # Mica deployment candidate
 
-Published 2026-09-24 as `v0.5.1-janez.1` from source commit
-`3ed16d8217503e168961f1d52ba97a2c20aae207` on
-`feature/trackself-context-workflow`. The local annotated release tag points to
-that source commit. It is deliberately not pushed to GitHub: the fork's tag
-workflow also publishes GHCR artifacts, outside this Forgejo publication.
-The registry bundle includes the exact source archive, so artifact recovery
-does not depend on an unpublished source branch.
+Published 2026-09-25 as `v0.5.1-janez.2` from reviewed source commit
+`0f23313676b0fcc66f197dd9dffef7c4feb10d09` on
+`feature/trackself-context-workflow`. The registry bundle contains the exact
+source archive, so recovery does not depend on an unpublished source branch.
+No GitHub release tag was pushed.
 
-Publication and the utility-server upgrade are complete. The backend/frontend
-run this release and production migration/configuration checks passed. All three
-Linux runtimes are upgraded and healthy, with original mounts preserved and
-authenticated CLI checks passing. The main development database was started
-with separate user approval and is healthy.
-Native agents are paused. No native installed CLI, active KB/skill workflow
-binding or workspace default was changed. The three Linux agents received only
-the platform capability skill; Mica policy activation remains separate.
-The private-infra deployment record below owns live deployment status.
+Publication is complete. Production and Linux runtimes still use
+`v0.5.1-janez.1`; deployment of this follow-up and coordinated Mica activation
+remain pending. Native macOS/Windows activation remains deferred. The
+private-infra record `infra/automation-server/multica/upgrade-v0.5.1-janez.2.md`
+will own deployment state; the prior `upgrade-v0.5.1-janez.1.md` owns the
+currently deployed revision and rollback baseline.
 
 ## Registry artifacts
 
 All repositories use `git.thn.janezstupar.com/janez/` and exact tag
-`v0.5.1-janez.1`. Prefer the verified immutable digests for deployment.
+`v0.5.1-janez.2`. Use immutable digests for deployment.
 
 | Repository | Digest | Contents |
 | --- | --- | --- |
-| `multica-backend` | `sha256:39ed2a8ff5597d9f486f9700a74f63a6f0adbd5c7c4d8dce9269ba4573cc3514` | Linux amd64 server, CLI, migration and maintenance binaries; migrations through 574. |
-| `multica-web` | `sha256:409cb6817271ca50453510930e7adf471884b456b5683655d79afd30787ddacf` | Matching Linux amd64 frontend. |
-| `multica-cli` | `sha256:113ec748cec026f508c2d11c6bc14cf4523f23b70689ab32ecaee7d0820d7245` | Extract-only `/dist` bundle: CLI archives for Linux/macOS/Windows on amd64/arm64, exact source, prepared Mica skill, metadata and SHA-256 checksums. |
+| `multica-backend` | `sha256:90ba6d031ec0bce386319806294bf2c9297ec759060e1c685c18a1209fb6f025` | Linux amd64 server, CLI, migration and maintenance binaries; migrations through 578. |
+| `multica-web` | `sha256:ba19c70c3776e55608f9b9b3eb123e6c5c1a7e7fa5f7824941b41be2f7f2ef86` | Matching Linux amd64 frontend. |
+| `multica-cli` | `sha256:1b344007c565855d97f6a5971081ddc0b332d18ff159c32c3d5d0276ab772f30` | Extract-only `/dist` bundle: CLI archives for Linux/macOS/Windows on amd64/arm64, exact source, prepared Mica skill, metadata and checksums. |
 
-The CLI bundle is an OCI image with Linux amd64 metadata for transport; it is
-not runnable and its archives cover all six target combinations. Extract it
-without starting a container:
+The CLI bundle's Linux amd64 OCI metadata describes its transport container,
+not the six archive targets. Extract it without starting a container:
 
 ```sh
-artifact=git.thn.janezstupar.com/janez/multica-cli@sha256:113ec748cec026f508c2d11c6bc14cf4523f23b70689ab32ecaee7d0820d7245
+artifact=git.thn.janezstupar.com/janez/multica-cli@sha256:1b344007c565855d97f6a5971081ddc0b332d18ff159c32c3d5d0276ab772f30
 docker pull --platform linux/amd64 "$artifact"
 container=$(docker create --platform linux/amd64 "$artifact")
-mkdir -p ./multica-v0.5.1-janez.1
-docker cp "$container":/dist/. ./multica-v0.5.1-janez.1/
+mkdir -p ./multica-v0.5.1-janez.2
+docker cp "$container":/dist/. ./multica-v0.5.1-janez.2/
 docker rm "$container"
-(cd ./multica-v0.5.1-janez.1 && sha256sum -c checksums.txt)
+(cd ./multica-v0.5.1-janez.2 && sha256sum -c checksums.txt)
 ```
 
-Archive filenames follow the existing installer convention, e.g.
-`multica-cli-0.5.1-janez.1-linux-amd64.tar.gz`; binaries report the full
-`v0.5.1-janez.1` release tag. The policy archive is a prepared unconfigured
-bundle: importing it neither selects production acceptance authority nor
-activates a workspace default. Rebuild with the chosen production authority
-before its eventual import and selection.
+The prepared policy is `trackself-platform-4ea20d203a893dc2`, content identity
+`4ea20d203a893dc2610d93fbd1c47cce11013e2e0a79b837ea29a465759ca6cb`.
+It includes the agreed production authority and format-2 completion semantics.
+Its imported workspace UUID must be read from the actual import result;
+packaging does not bind agents, activate defaults or migrate existing tickets.
 
-Local retained artifacts are in the ignored `dist/releases/v0.5.1-janez.1/`
-directory: `cli/`, extracted Linux `backend/` binaries and `validation/` logs.
+Local retained artifacts are under ignored `dist/releases/v0.5.1-janez.2/`.
 Registry artifacts are the durable published copies.
 
 ## Validation and build identity
 
-- Source build date: `2026-09-24T18:02:05Z`; Go binaries use Go 1.26.8,
-  `CGO_ENABLED=0`, exact version and full source commit. CLI builds use
-  `-trimpath -buildvcs=false` with explicit identity flags because the source
-  archive has no Git metadata.
-- Backend and frontend images were built from a clean `git archive` context
-  using the repository Dockerfiles. Both image labels identify the source
-  commit. The frontend production compile and TypeScript checks passed.
-- The backend CLI and standalone Linux amd64 CLI reported the expected version,
-  commit, date and target at runtime. All six CLI build targets and archive
-  contents were checked; their checksums passed again after extraction from
-  the OCI bundle. Native macOS and Windows runtime checks are deferred to their
-  deployment, not implied by cross-compilation.
-- `go tool govulncheck ./...` found no vulnerabilities in the source scan.
-  Separate binary-mode scans of the built server and CLI also found none.
-- The frontend returned HTTP 200 in a temporary network-isolated container;
-  the container was removed. No backend/database deployment was performed.
-- All three registry manifests were read back and all three digest pulls
-  succeeded using an empty Docker configuration with no registry credentials.
-- Workflow correctness and the single-/multi-repository live trials are recorded
-  in [runtime-proof.md](runtime-proof.md). Those isolated trials precede release
-  packaging; publication itself is not a deployed-environment canary.
+- Build date `2026-09-25T07:55:44Z`; Go binaries use Go 1.26.8,
+  `CGO_ENABLED=0`, exact version and full source commit. Standalone CLI builds
+  use `-trimpath -buildvcs=false` and explicit identity flags.
+- Backend and web images were built from a clean `git archive` context and
+  carry the full source revision label. The frontend production compile,
+  TypeScript check and network-isolated HTTP 200 smoke passed.
+- Backend and standalone Linux CLI report the expected identity. All six
+  archive targets and contents passed checks; checksums passed again after
+  extraction from the published OCI image. Native runtime behavior is deferred.
+- Source and built backend/CLI vulnerability scans found no vulnerabilities.
+- All three registry manifests were read back; anonymous pulls by digest passed.
+- Independent code acceptance, database proof, guarded Forgejo PR10 delivery
+  and cleanup, and unrelated broad frontend baseline failures are recorded in
+  [runtime-proof.md](runtime-proof.md#2026-09-25-format-2-completion-trial).
+  They do not constitute a deployed-environment canary.
+
+The matching local Linux runtime image is
+`local/multica-trackself-desktopapp-runtime:multica-v0.5.1-janez.2-codex-0.156.1`,
+image ID `sha256:6950ac009b752846498d6b50be5074f2434a15acf356556fe46974771d1361d2`.
+It replaces only the Multica CLI over the exact previous runtime image.
+Isolated checks confirmed Multica identity, Codex 0.156.1, Node 22.23.2 and
+Git 2.55.0. Building this image did not restart a runtime.
 
 ## Deployment boundary
 
-The 2026-09-24 read-only utility-server preflight and proposed upgrade/rollback
-procedure are recorded in private-infra at
-`infra/automation-server/multica/upgrade-v0.5.1-janez.1.md`. The isolated rehearsal passed on 2026-09-24: a fresh production dump restored,
-all 120 pending migrations applied, invariant checks and a second migration run
-passed, and all temporary database resources were removed. Production retained
-its old images and migration history. The matching Linux runtime image is now built locally and its unchanged toolchain
-and exact Multica identity are verified. The same private-infra package contains
-prepared server configuration, Linux agent skill API payloads and maintenance/
-rollback commands. Production server and all three Linux-runtime health/API canaries have passed.
-Trackself workflow cutover and native-host upgrades follow separately. The server entrypoint runs migrations on startup, so an older
-image alone is not a database rollback plan. Check self-host telemetry settings
-(`DO_NOT_TRACK`) when preparing the production configuration.
+Rehearse the four new migrations on a disposable production dump, then preserve
+a fresh database/uploads/configuration backup before the scoped server/Linux
+upgrade. An older image alone is not a database rollback. Keep `DO_NOT_TRACK=1`,
+original mounts, credentials and toolchain settings intact. Preserve branch-1's
+pre-existing stopped state; restart only the previously running main and branch-2
+runtimes after health and configuration checks.
 
-Reconcile agent roles, exact effort settings, production triviality and merge
-policy, KB/skill consumers and dispatch sources together. New tickets adopt the
-selected policy at cutover; old unfinished tickets remain frozen until explicit
-migration. Platform upgrade and policy activation are separate operations.
+Coordinate the KB, workspace-control, complete skill replacement, imported
+bundle identity, existing `pr_ready` status category and new-ticket default at
+activation. Old unfinished tickets remain frozen until explicitly migrated.
+No native host upgrade or automatic legacy-ticket migration is implied.
