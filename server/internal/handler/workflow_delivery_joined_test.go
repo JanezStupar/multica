@@ -103,7 +103,8 @@ func runWorkflowAutonomousReviewedPRFinalizesAndDeliversThroughPoller(t *testing
 	dbfx.Insert(t, "skill_file", testutil.Cols{"skill_id": skill, "path": "runtime/policy.json", "content": policyJSON})
 	var pinned service.IssueWorkflowPolicy
 	enrollWorkflowPolicy(t, issue, skill).Want(http.StatusCreated).JSON(&pinned)
-	prURL := provider.URL + "/team/project/pulls/1"
+	providerRepoURL := provider.URL + "/team/project"
+	prURL := providerRepoURL + "/pulls/1"
 	pr := dbfx.Insert(t, "vcs_pull_request", testutil.Cols{
 		"workspace_id": testWorkspaceID, "connection_id": binding, "provider": "forgejo",
 		"repo_owner": "team", "repo_name": "project", "pr_number": 1,
@@ -122,7 +123,7 @@ func runWorkflowAutonomousReviewedPRFinalizesAndDeliversThroughPoller(t *testing
 		service.HandoffInput{RequestKey: uuidToString(dbid.NewV7()), OutgoingTaskID: writerTask,
 			AgentID: reviewer, Status: "in_review", ContextMode: "fresh",
 			Instruction: "Independently review the exact candidate PR revision.",
-			Candidates: []service.HandoffCandidate{{RepositoryURL: provider.URL + "/team/project",
+			Candidates: []service.HandoffCandidate{{RepositoryURL: providerRepoURL + ".git",
 				PRURL: prURL, Branch: "reviewed-change", CommitSHA: workflowDeliveryHead, Draft: true}},
 			EvidenceURLs: []string{},
 		})
@@ -201,6 +202,17 @@ func runWorkflowAutonomousReviewedPRFinalizesAndDeliversThroughPoller(t *testing
 	cancel()
 	if !worker.WaitWithTimeout(time.Second) {
 		t.Fatal("workflow worker did not stop")
+	}
+	var candidateRepoURL, deliveryRepoURL, deliveredPRURL, deliveredHead string
+	if err := testPool.QueryRow(context.Background(), `SELECT c.pr_set->0->>'repository_url',d.repository_url,d.pr_url,d.expected_head_sha
+		FROM issue_workflow_candidate c JOIN issue_workflow_delivery d ON d.candidate_id=c.id
+		WHERE c.id=(SELECT workflow_candidate_id FROM issue WHERE id=$1)`, issue).
+		Scan(&candidateRepoURL, &deliveryRepoURL, &deliveredPRURL, &deliveredHead); err != nil {
+		t.Fatalf("read candidate and delivery URL identity: %v", err)
+	}
+	if candidateRepoURL != providerRepoURL+".git" || deliveryRepoURL != providerRepoURL || deliveredPRURL != prURL || deliveredHead != workflowDeliveryHead {
+		t.Fatalf("candidate identity was not preserved or canonicalized for delivery: candidate=%q delivery=%q pr=%q head=%q",
+			candidateRepoURL, deliveryRepoURL, deliveredPRURL, deliveredHead)
 	}
 	if got := dbfx.Count(t, `SELECT count(*) FROM issue_workflow_acceptance WHERE issue_id=$1 AND state='accepted'`, issue); got != 1 {
 		t.Fatalf("accepted authority records=%d", got)

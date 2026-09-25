@@ -23,12 +23,13 @@ type workflowCandidateRecord struct {
 }
 
 type workflowDeliveryBinding struct {
-	PR        HandoffCandidate
-	Provider  string
-	BindingID pgtype.UUID
-	Owner     string
-	Repo      string
-	Number    int64
+	PR                    HandoffCandidate
+	ProviderRepositoryURL string
+	Provider              string
+	BindingID             pgtype.UUID
+	Owner                 string
+	Repo                  string
+	Number                int64
 }
 
 type WorkflowReviewPR struct {
@@ -136,6 +137,10 @@ func workflowHasPendingHandoff(ctx context.Context, tx pgx.Tx, issueID pgtype.UU
 	return pending, err
 }
 
+func workflowRepositoryURLMatchesBase(base, candidate string) bool {
+	return candidate == base || candidate == base+".git"
+}
+
 func workflowDeliveryBindings(ctx context.Context, tx pgx.Tx, issue db.Issue, prs []HandoffCandidate) ([]workflowDeliveryBinding, error) {
 	bindings := make([]workflowDeliveryBinding, 0, len(prs))
 	for _, pr := range prs {
@@ -182,9 +187,10 @@ func workflowDeliveryBindings(ctx context.Context, tx pgx.Tx, issue db.Issue, pr
 			}
 			base = strings.TrimRight(instance, "/") + "/" + b.Owner + "/" + b.Repo
 		}
-		if pr.RepositoryURL != base || pr.PRURL != fmt.Sprintf("%s%s%d", base, pullPath, b.Number) {
+		if !workflowRepositoryURLMatchesBase(base, pr.RepositoryURL) || pr.PRURL != fmt.Sprintf("%s%s%d", base, pullPath, b.Number) {
 			return nil, fmt.Errorf("%w: candidate PR identity differs from provider mirror", ErrWorkflowAuthorityConflict)
 		}
+		b.ProviderRepositoryURL = base
 		bindings = append(bindings, b)
 	}
 	return bindings, nil

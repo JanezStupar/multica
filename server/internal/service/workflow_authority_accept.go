@@ -198,7 +198,7 @@ func workflowReviewEvidence(ctx context.Context, s WorkflowAuthorityService, tx 
 	input := WorkflowReviewEvidenceInput{WorkspaceID: issue.WorkspaceID, ReviewURLs: urls}
 	for _, b := range bindings {
 		input.PRs = append(input.PRs, WorkflowReviewPR{
-			Provider: b.Provider, BindingID: b.BindingID, RepositoryURL: b.PR.RepositoryURL,
+			Provider: b.Provider, BindingID: b.BindingID, RepositoryURL: b.ProviderRepositoryURL,
 			PRURL: b.PR.PRURL, Owner: b.Owner, Repo: b.Repo, Number: b.Number, ExpectedHeadSHA: b.PR.CommitSHA,
 		})
 	}
@@ -467,7 +467,7 @@ func finalizeWorkflowAcceptance(ctx context.Context, tx pgx.Tx, q *db.Queries, i
 			repository_url,pr_url,repo_owner,repo_name,pr_number,expected_head_sha,action,merge_method)
 			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 			dbid.NewV7(), issue.WorkspaceID, issue.ID, acceptanceID, issue.WorkflowCandidateID, ordinal,
-			b.Provider, b.BindingID, pr.RepositoryURL, pr.PRURL, b.Owner, b.Repo, b.Number, pr.CommitSHA, action, mergeMethod)
+			b.Provider, b.BindingID, b.ProviderRepositoryURL, pr.PRURL, b.Owner, b.Repo, b.Number, pr.CommitSHA, action, mergeMethod)
 		if err != nil {
 			return nil, err
 		}
