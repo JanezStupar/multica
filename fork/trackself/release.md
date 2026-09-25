@@ -143,3 +143,18 @@ The consumed preparation patches and completed implementation plan were retired.
 Native host dispatch/repository/context checks accompany their later deployment;
 they do not repeat server delivery proof. Old tickets remain frozen until
 explicit migration; neither this activation nor client upgrades migrate them.
+
+At the user's request, the five obsolete Review Controller agents were archived
+through the supported API after activation. Read-back confirmed removal from
+active use while preserving all 189 terminal task records. The obsolete temporary 0.4.21 prompt-probe agent was also archived, preserving
+its 11 terminal tasks. The active catalog contains exactly the 24 retained
+implementation, coordination, acceptance-review and native specialist roles. Workspace-control owns the
+exact role identities and cleanup record.
+
+The documentation closeout was published as workspace-control
+`2180e03d5fbfd7c6ed4a8ee82ebfcb99ad7e7ac9` and adopted by both branch bootstraps.
+The workstation shell CLI at `/home/janez/.local/bin/multica` still holds the
+trial-restored `v0.4.27-janez.1`; replacement with the verified `.2` binary awaits
+separate approval after automatic review rejected that installation change.
+Until then, operator workflow commands must use the verified `.2` release CLI
+explicitly. Desktop and container CLIs are already `.2`.
