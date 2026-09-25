@@ -153,8 +153,9 @@ exact role identities and cleanup record.
 
 The documentation closeout was published as workspace-control
 `2180e03d5fbfd7c6ed4a8ee82ebfcb99ad7e7ac9` and adopted by both branch bootstraps.
-The workstation shell CLI at `/home/janez/.local/bin/multica` still holds the
-trial-restored `v0.4.27-janez.1`; replacement with the verified `.2` binary awaits
-separate approval after automatic review rejected that installation change.
-Until then, operator workflow commands must use the verified `.2` release CLI
-explicitly. Desktop and container CLIs are already `.2`.
+After explicit approval, the workstation shell CLI at
+`/home/janez/.local/bin/multica` was replaced with the published `.2` CLI
+(SHA-256 `eb43ece3fce1467536764f22af03ae6eba3fe432ee77266a8c1a9e80dbe6fa98`).
+Version/commit and authenticated workflow-default read-back passed. The old
+operator binary was removed without a rollback copy at the user's request.
+Desktop, container and operator CLIs now all use `.2`.
