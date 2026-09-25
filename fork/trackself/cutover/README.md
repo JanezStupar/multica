@@ -1,15 +1,26 @@
 # Prepared Mica cutover
 
-These patches prepare the agreed Trackself workflow change. **Live cutover has
-not occurred.** They have been reviewed in isolated copies; they are not installed
-KB instructions, agent settings, imported skills, or ticket policy.
+**Live cutover has not occurred.** The patches and baseline here are earlier
+preparation inputs, superseded by the independently reviewed owner candidates:
 
-The prior server and Linux runtime upgrade is complete; the format-2 follow-up
-is published and awaits deployment. The owning
-[release record](../release.md) links the deployment record; the
-[runtime proof](../runtime-proof.md) identifies the successful Linux provider
-trials and their source snapshots. Native macOS/Windows checks accompany their
-own deployment and do not block Linux activation.
+- KB: `dfefa3c236cb2a66dcb4919db9e93f920fc36865`, based on Forgejo main
+  `68afe455ea7ff9dac855787cf9b2785b449a4e04`.
+- Workspace-control: `d6338efb66b7e3de663d0ed5125d5ff396740e1a`, based on main
+  `6871897ce8c95126955f263127ae441bcf0276b4`.
+
+Do not apply the old patches as the final cutover. The current candidates include
+review corrections and the actual imported skill UUID. They remain local in
+`/tmp/mica-kb-publication-candidate` and `/tmp/mica-control-candidate.xRKBeX`;
+publication awaits scoped user approval after automatic review rejected the two
+main-branch pushes. The prepared execution sequence is
+`/tmp/mica-followup-deploy/cutover-commands.md`. Preserve the active owner edits
+when adopting the exact published commits; verify branch task checkout before
+activation. Retire these earlier preparation inputs after owner adoption.
+
+The format-2 server and Linux runtime upgrade is complete. The owning
+[release record](../release.md) links deployment evidence; the
+[runtime proof](../runtime-proof.md) records provider trials. Native checks
+accompany their own deployment and do not block Linux activation.
 
 ## Review surface and ownership
 

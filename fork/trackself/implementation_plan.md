@@ -40,8 +40,10 @@ format-2 PR Ready, durable hold/release and outcome completion. Focused checks,
 clean migrations, independent code acceptance and the guarded Forgejo trial
 passed; [runtime-proof.md](runtime-proof.md#2026-09-25-format-2-completion-trial)
 records exact evidence and broader frontend baseline failures. The KB and
-workspace-control consumers remain isolated
-candidates. Human acceptance defaults to automatic merge unless explicitly
+workspace-control consumers have independently reviewed local commits, recorded
+in [the cutover preparation status](cutover/README.md). Their Forgejo main
+pushes await scoped user approval after automatic review rejected publication;
+active owners and bindings remain unchanged. Human acceptance defaults to automatic merge unless explicitly
 held, and the inactive policy encodes the selected Linux authority bindings.
 The follow-up is published as `v0.5.1-janez.2` from
 `0f23313676b0fcc66f197dd9dffef7c4feb10d09`, and is deployed but not activated.
