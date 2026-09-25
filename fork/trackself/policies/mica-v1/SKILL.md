@@ -6,6 +6,12 @@ allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 
 # Mica ticket workflow
 
+**Draft for the next policy version; not ready for activation.** The source now
+includes the agreed `PR Ready`/`Done` and durable hold requirements. The released
+workflow writes `done` at acceptance and does not establish these semantics.
+Complete implementation, proof and authority bindings before building/importing
+this revision for cutover. Existing tickets keep their pinned policy.
+
 This bundle defines the Trackself workflow for every role working on an
 enrolled ticket. Read [`references/workflow.md`](references/workflow.md) for
 the shared policy. For issue turns, also follow

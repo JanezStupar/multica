@@ -1,3 +1,107 @@
+diff --git a/README.md b/README.md
+index ced2ac3..34ce058 100644
+--- a/README.md
++++ b/README.md
+@@ -101,7 +101,9 @@ It never reaches into a private-infra checkout during normal Trackself work.
+ `objective-context` invokes the mounted stateless read-only context preparer;
+ it retrieves complete native child/task structure but returns a bounded
+ projection and exact detail requests rather than placing raw histories in the
+-orchestrator context. `queue-head` similarly scans native issue state outside
++orchestrator context. This stage-aware projector is for legacy-pinned tickets
++only; the Mica candidate uses native same-ticket workflow records. `queue-head`
++similarly scans native issue state outside
+ model context and returns only the topmost eligible unassigned backlog parent
+ for the declared lane. Lane desired state is in
+ `config/multica-lanes.toml`; queue membership uses its exact label and visual
+@@ -127,16 +129,31 @@ python3 workspace-control/scripts/trackself-agent-definitions check
+ ```
+ 
+ `check` is read-only and requires the configured local Multica daemon or the
+-explicit native executable/profile pair. Live
+-reconciliation is deliberately separate: `apply` requires the exact workspace
+-UUID confirmation and must receive specific authority before execution. Normal
++explicit native executable/profile pair. The old `apply` entry point is
++disabled because its agent mutation CLI path is unproven against the current
++provider. `config/mica-cutover-profile.toml` declares the inactive role
++selection; `scripts/prepare-mica-agent-handoff` prints an offline update plan
++only after receiving the final imported bundle's real skill UUID and name.
++This plan requires a separately proven mutation path and full read-back before
++any live use. Normal
+ workspace preflight validates the repository desired state offline; it never
+ mutates or depends on live Multica state.
+ 
++After importing the final bundle, render that review input with the actual
++import result and its extracted source manifest:
++
++```sh
++python3 workspace-control/scripts/prepare-mica-agent-handoff \
++  --imported-skill-id <uuid-from-import> \
++  --source-manifest <extracted-source-manifest.json> > /tmp/mica-agent-handoff.json
++```
++
++The JSON is an inactive plan, not an executable provider mutation.
++
+ `has_custom_env` records only required presence for an operator-managed
+ protected agent environment. Environment names and values remain outside
+-repository desired state and diagnostics; `apply` refuses presence drift
+-instead of changing that environment.
++repository desired state and diagnostics; the future reconciliation path must
++refuse presence drift instead of changing that environment.
+ 
+ Each selected Multica project must bind role tasks mechanically to exactly one
+ declared execution environment through the desired `local_directory` resource
+diff --git a/config/mica-cutover-profile.toml b/config/mica-cutover-profile.toml
+new file mode 100644
+index 0000000..167919e
+--- /dev/null
++++ b/config/mica-cutover-profile.toml
+@@ -0,0 +1,46 @@
++# Inactive Mica v1 candidate. No live agent or ticket uses this file.
++schema_version = 1
++source_policy = "fork/trackself/policies/mica-v1"
++source_manifest = "source-manifest.json"
++legacy_manifest = "multica-agents.toml"
++# Exclude process-only review controllers from NEW Mica routing. Keep all five
++# live records and their old task/session history untouched until migration.
++retire_from_new_routing = [
++  "review_controller",
++  "review_controller_linux_branch",
++  "review_controller_linux_branch_2",
++  "macos_review_controller",
++  "windows_review_controller",
++]
++review_fix_route = "senior_implementor"
++final_review_route = "acceptance_reviewer"
++
++[roles.orchestrator]
++model = "gpt-6-astra"
++thinking_level = "low"
++purpose = "Mica outcome coordination, including runtime-specific variants"
++
++[roles.implementor]
++model = "gpt-6-luna"
++thinking_level = "xhigh"
++purpose = "bounded implementation with retained writer context"
++
++[roles.senior_implementor]
++model = "gpt-6-sol"
++thinking_level = "medium"
++purpose = "judgment-heavy implementation with retained writer context"
++
++[roles.acceptance_reviewer]
++model = "gpt-6-sol"
++thinking_level = "medium"
++purpose = "fresh independent read-only final review"
++
++[roles.qa]
++model = "gpt-6-sol"
++thinking_level = "medium"
++purpose = "optional native validation evidence"
++
++[roles.release_builder]
++model = "gpt-6-sol"
++thinking_level = "high"
++purpose = "optional authorized native artifact work"
 diff --git a/config/multica-agent-instructions/acceptance-reviewer-workflow.md b/config/multica-agent-instructions/acceptance-reviewer-workflow.md
 index 2b30ad7..6288ddf 100644
 --- a/config/multica-agent-instructions/acceptance-reviewer-workflow.md
@@ -540,10 +644,10 @@ index 9e91d2f..892a7c3 100644
 -When the authorized artifact deliverable and verification are complete, reconcile the assigned child's existing checkboxes and current-state section, persist and read the description back, record the result there, mark only that child `done`, and read it back. If an authorized local packaging step cannot proceed safely, keep the truthful issue disposition and report the blocker; do not substitute a different identity, destination, version, or release channel. Do not change assignment, the parent, siblings, or later stages.
 +Return the artifact result, source revision, hashes, verification, and any exact blocker to the assigned owner. Keep the issue's truthful status under its pinned workflow policy. Do not substitute a different identity, destination, version, or release channel.
 diff --git a/config/multica-skills/trackself-working-on-issues/SKILL.md b/config/multica-skills/trackself-working-on-issues/SKILL.md
-index 444d2d4..4ede8e2 100644
+index 444d2d4..1445203 100644
 --- a/config/multica-skills/trackself-working-on-issues/SKILL.md
 +++ b/config/multica-skills/trackself-working-on-issues/SKILL.md
-@@ -1,232 +1,59 @@
+@@ -1,232 +1,57 @@
  ---
  name: trackself-working-on-issues
 -description: Use when Mika, Maca, or Mewina owns an approved Trackself automatic parent objective and must reconcile its staged children, dispatch one role, handle a stage wake, or reconcile the parent. This replaces the generic multica-working-on-issues skill for those Trackself orchestrators only.
@@ -811,8 +915,7 @@ index 444d2d4..4ede8e2 100644
 +
 +Follow root `AGENTS.md`, the ticket's actual project, its selected execution
 +target, and current role instructions. For provider mechanics, use the matching
-+sections of `workspace-control/docs/multica-workflow.md`; use the lane and
-+continuation references below only when the assigned operation uses them.
++sections of `workspace-control/docs/multica-workflow.md`.
 +
 +Before execution, validate the declared bound workspace or managed repository
 +target with the read-only project check. Preserve the assigned scope and
@@ -824,37 +927,12 @@ index 444d2d4..4ede8e2 100644
 +
 +A queue label and lane remain Multica scheduling mechanics. Queue order,
 +lane occupancy, and nonterminal lane release do not determine product
-+acceptance. Read [continuation](references/continuation.md) only when returning
-+parked work to its original queue. Read [metadata and properties](references/metadata-and-properties.md)
++acceptance. Read [metadata and properties](references/metadata-and-properties.md)
 +only when the assigned operation uses those fields. Read [platform side
 +effects](references/platform-side-effects.md) for relevant command effects.
-+Read [PR linking and state](references/pull-requests.md) for the existing
-+managed-lane transport/readiness details, subject to the ticket's selected
-+policy and current exact candidate.
-diff --git a/config/multica-skills/trackself-working-on-issues/references/continuation.md b/config/multica-skills/trackself-working-on-issues/references/continuation.md
-index 03b1f16..14cc7d2 100644
---- a/config/multica-skills/trackself-working-on-issues/references/continuation.md
-+++ b/config/multica-skills/trackself-working-on-issues/references/continuation.md
-@@ -3,13 +3,14 @@
- The parent orchestrator owns this continuation under the original objective
- authority. Apply it on an external-gate wake, without a second user approval.
- 
--1. Reconcile the user result and final candidate, preserving accepted gates and
--   completed children. If nothing remains, close the parent without acquiring a
--   lane. Otherwise name the exact required in-scope work. Scope expansion or a
-+1. Reconcile the user result and final candidate, preserving accepted gates,
-+   completed work, and exact PR/review evidence. If nothing remains, close the
-+   objective without acquiring a lane. Otherwise name the exact required
-+   in-scope work. Scope expansion or a
-    genuine prerequisite remains an explicit escalation, not automatic authority.
- 2. Resolve the original lane from `trackself_lane_release`; require its coordinator
--   and environment to match this role. Audit complete tasks: no active child or
--   other parent run may exist. The current reconciliation run alone may remain.
-+   and environment to match this role. Audit complete tasks: no other active
-+   task on this ticket may exist. The current reconciliation run alone may remain.
-    If already enrolled, adopt that state without resetting position or dispatching
-    again. Never migrate lanes or create a duplicate parent.
- 3. Validate the project target. Persist/read back the continuation and candidate.
++The selected policy owns PR readiness and delivery. Old continuation and
++readiness evidence may be inspected when migrating a frozen ticket; those
++legacy procedures are not Mica execution instructions.
 diff --git a/config/multica-skills/trackself-working-on-issues/references/platform-side-effects.md b/config/multica-skills/trackself-working-on-issues/references/platform-side-effects.md
 index 985f139..f464bb4 100644
 --- a/config/multica-skills/trackself-working-on-issues/references/platform-side-effects.md
@@ -871,21 +949,6 @@ index 985f139..f464bb4 100644
  Use this reference only when the Mika, Maca, or Mewina parent orchestrator must
  reason about a status, stage, cancellation, or failed-task transition.
  
-diff --git a/config/multica-skills/trackself-working-on-issues/references/pull-requests.md b/config/multica-skills/trackself-working-on-issues/references/pull-requests.md
-index 86b0f2f..b1e08ff 100644
---- a/config/multica-skills/trackself-working-on-issues/references/pull-requests.md
-+++ b/config/multica-skills/trackself-working-on-issues/references/pull-requests.md
-@@ -1,5 +1,10 @@
- # Pull-request linking and state
- 
-+For a ticket pinned to Mica v1, the selected policy owns candidate readiness,
-+acceptance, and delivery. The `WIP:` readiness convention below applies only
-+when the ticket's pinned policy explicitly requires it. A PR close-intent event
-+or generic `done` write is not a substitute for candidate-aware acceptance.
-+
- Use this reference only when the parent orchestrator's reconciliation depends
- on a linked PR, merge state, checks, or close intent. The parent orchestrator
- normally inspects this evidence. In a declared managed staged-PR lane it also
 diff --git a/config/primary-instructions.md b/config/primary-instructions.md
 index 40744a3..5688e77 100644
 --- a/config/primary-instructions.md
@@ -968,11 +1031,69 @@ index 40744a3..5688e77 100644
 +them only when the ticket's operation requires them. Queue order and lane
 +bookkeeping do not establish product acceptance. Keep the user's scope and
 +external-state authority intact.
+diff --git a/docs/agent-routing.md b/docs/agent-routing.md
+index 000717a..eef5cd7 100644
+--- a/docs/agent-routing.md
++++ b/docs/agent-routing.md
+@@ -38,8 +38,10 @@ detect its responsibility.
+ | QA | GPT-6 Sol | medium |
+ | Release Builder | GPT-6 Sol | high |
+ 
+-Keep the orchestrator's medium baseline until the low-effort experiment is
+-compared separately. Do not introduce Astra into the fixed Multica mapping.
++For the active legacy mapping, keep the orchestrator's medium baseline until
++the low-effort experiment is compared separately. The inactive Mica v1 proposal
++below selects Astra low for coordination; that change needs coordinated
++activation and does not alter current agents.
+ Primary or the orchestrator selects Senior Implementor when substantial
+ judgment is required; higher Luna effort does not compensate for unresolved
+ architecture. Preserve runtime-local role identity and task/session continuity
+@@ -49,3 +51,25 @@ context-rich decisions and escalations.
+ Measure total successful-completion cost, including retries and correction
+ work, when evaluation is undertaken. The benchmark is a separate task; this
+ change neither implements it nor claims comparative performance evidence.
++
++## Inactive Mica v1 candidate
++
++The existing table above describes the current legacy desired-state manifest.
++The proposed Mica v1 profile is in
++`config/mica-cutover-profile.toml`: coordinators use Astra low; bounded
++implementors use Luna xhigh; senior implementors, fresh independent acceptance
++reviewers and native QA use Sol medium; release builders retain Sol high.
++The five process-only Review Controller identities are excluded from new
++routing, while their live records and historical sessions stay intact. Sol
++senior implementors can own the retained review/fix context; acceptance
++reviewers provide a separate fresh read-only final review. Linux branch,
++native macOS and Windows identities, runtime IDs, permissions and useful
++specialist records remain present. This selection changes no current task.
++
++After the final `trackself-platform-*` archive is imported, use its actual
++workspace-skill UUID with `scripts/prepare-mica-agent-handoff` to generate a
++reviewable JSON handoff. The generator never calls Multica or guesses the UUID.
++The legacy `trackself-agent-definitions apply` entry point is disabled until
++its agent mutation path is proven against the current provider and a full
++read-back is implemented. `validate` and read-only `check` remain available
++for the existing manifest. Do not treat either as a Mica activation check.
+diff --git a/docs/multica-linux-branch-lane-rollout.md b/docs/multica-linux-branch-lane-rollout.md
+index 21efaf5..0f0cde9 100644
+--- a/docs/multica-linux-branch-lane-rollout.md
++++ b/docs/multica-linux-branch-lane-rollout.md
+@@ -243,6 +243,10 @@ After UUID read-back:
+    shared instructions, skills, built-in policy, and metadata to only the ten
+    idle branch agents, then repeat the same scoped read-only check:
+ 
++   Historical 2026-09-02 execution record: the current
++   `trackself-agent-definitions apply` entry point is disabled pending a
++   proven provider mutation path. Do not rerun this command for Mica cutover.
++
+    ```sh
+    workspace-control/scripts/trackself-agent-definitions apply \
+      --environment linux-branch \
 diff --git a/docs/multica-workflow.md b/docs/multica-workflow.md
-index cb31ab5..44aba98 100644
+index cb31ab5..3510427 100644
 --- a/docs/multica-workflow.md
 +++ b/docs/multica-workflow.md
-@@ -11,12 +11,31 @@ Repository-scoped work may instead use Multica's task-owned managed checkouts;
+@@ -11,12 +11,41 @@ Repository-scoped work may instead use Multica's task-owned managed checkouts;
  separate `git-ws` workspaces are reserved for concurrency that needs an
  independent coherent revision set or for deliberately destructive experiments.
  
@@ -993,10 +1114,10 @@ index cb31ab5..44aba98 100644
 +ticket pin. Follow the active policy recorded on the ticket; do not infer
 +migration from an installed skill or the wording of this runbook.
 +
-+The stage/child recipes in this runbook describe the prior Trackself provider
-+workflow. They apply only when a ticket is explicitly on that legacy workflow;
-+they must not be used for a Mica-pinned ticket. At coordinated cutover, existing
-+unfinished tickets remain frozen until individually migrated. This candidate
++At coordinated cutover, existing unfinished tickets remain frozen until
++individually migrated with their scope, evidence, sessions and owner reconciled.
++The old staged procedure remains in Git history and the recorded ticket policy;
++this runbook does not restart it. This candidate
 +consumer change does not import the bundle, select a workspace default, or
 +activate or migrate tickets. The later configuration change must substitute
 +the workspace-skill UUID returned by the real importer for the imported Mica
@@ -1007,24 +1128,505 @@ index cb31ab5..44aba98 100644
 +safety. Those mechanics remain subject to root `AGENTS.md` and the ticket's
 +selected execution target. Managed-PR transport is not merge authority; preserve
 +the exact candidate and use the selected policy for readiness and delivery.
++
++The `trackself-multica-context` projector and its `prepare` wrapper call read
++the legacy stage/child graph. Use them only to inspect an unfinished frozen
++ticket for migration; they do not prepare or authorize new Mica execution.
++Their tests and historical context metrics remain migration evidence until
++the last such ticket is retired. `trackself-multica-queue` and
++`queue-head` are lane scheduling tools and remain useful independently of the
++ticket lifecycle; a queue projection never grants acceptance or delivery
++authority. The new Mica handoff reads the ticket's native workflow state and
++policy pin through the selected bundle.
  
  ## Durable and local ownership
  
-@@ -568,7 +587,9 @@ state, deployment, push, and broad destructive workspace rewriting remain
+@@ -120,22 +149,14 @@ task target. Trackself supports two explicit native modes:
+   the target daemon. It may name an ordinary Git checkout or an explicit
+   `git-ws` workspace; repository count does not select either form.
+ 
+-For an issue that explicitly authorizes pull-request delivery, the editing
+-specialist commits before task exit, pushes the task branch normally, and
+-opens or updates one issue-linked pull request with the canonical `WIP:` title
+-prefix. Its handoff records the exact pull-request URL, source branch, remote
+-head commit, and live title. A Review Controller verifies the expected head
+-before editing, preserves `WIP:`, and may update the same pull request only with
+-a normal fast-forward push. If the remote head changed, the task stops for
+-reconciliation rather than overwriting it. Force push, merge, close, or
+-default-branch mutation is outside routine delivery authority. Acceptance
+-independently verifies the exact live head and `WIP:` title and treats any later
+-change as stale evidence; missing or null provider checks are not a passing CI
+-result. Only the parent orchestrator changes readiness: it removes `WIP:` after
+-all required gates for the exact live head, including user-owned
+-runtime proof, pass, and restores it if that head or gate state changes. That
+-removal means ready for the user's merge decision, not merge authority;
+-open, mergeable, checks, verdict, or issue status never substitutes for it.
++For a Mica-pinned issue with authorized PR delivery, the editing owner records
++each draft PR's URL, repository, branch and exact head commit before handoff.
++The selected ticket policy owns review, readiness, acceptance and delivery for
++that exact candidate; a changed head requires renewed evaluation. Managed-lane
++transport permits normal feature-branch pushes within the assigned scope but
++does not authorize force push, close, merge or default-branch mutation. Old
++WIP/title and review evidence remains with the frozen ticket and Git history
++for explicit migration.
+ 
+ The repository-owned desired state declares every managed workspace
+ repository, supported runtime, path, binding profile, environment, and exact
+@@ -190,7 +211,7 @@ operational fallbacks.
+ `trackself-multica` runs the same fail-closed check automatically before native
+ assignment, assigned issue creation or update, task-starting status changes,
+ role-bound replies, rerun, or a `done`/`cancelled` child transition that may wake
+-its parent. Managed mode fails when project repositories are absent or a local
++its parent on a frozen legacy ticket. Managed mode fails when project repositories are absent or a local
+ directory ambiguously intercepts the target daemon. Bound mode fails on a
+ missing, duplicate, malformed, wrong-path, or wrong-daemon resource. Repeated
+ or mutually exclusive project and assignee selectors fail before live reads or
+@@ -241,6 +262,14 @@ Provisioned top-level role agents and current runtime mapping:
+ | Trackself Windows Release Builder | `a134cd7b-aeb6-43df-8509-2d50df420ccb` | Unsigned local packaging and artifact verification only |
+ | Trackself Windows Acceptance Reviewer | `822c1390-c36d-4ca9-b6af-168b69efc4d6` | Fresh read-only native acceptance verdict |
+ 
++This table describes provisioned legacy records. The inactive Mica candidate
++keeps their IDs and historical sessions but excludes the five Review Controller
++records from new routing, including both Linux branch variants. In each
++environment, the Sol Senior Implementor can own a retained review/fix context;
++the existing Acceptance Reviewer provides a separate fresh read-only final
++review. The offline handoff generator lists the excluded records and exact
++replacement IDs without changing live agents.
++
+ Primary is the interactive agent carrying user context, not the user or a
+ Multica agent. The user supplies intent and grants authority; Primary resolves
+ questions autonomously when that context and existing authority establish the
+@@ -433,34 +462,18 @@ credentials, or live operational state. Workspace preflight does run the
+ offline `validate` command so malformed or incomplete desired state fails the
+ normal structural gate.
+ 
+-Live reconciliation is an explicit operator action, never an automatic
+-follow-up to a repository edit or broad workflow approval:
+-
+-```sh
+-python3 workspace-control/scripts/trackself-agent-definitions apply \
+-  --confirm-workspace-id 79b97585-6d1d-43cc-a611-db7e2f4faa62
+-```
+-
+-For a runtime-local rollout, repeat `--environment <key>` on `check` and
+-`apply` to scope all agent reads and mutations to those exact environments.
+-The scoped command may bind an existing workspace-skill ID to a selected
+-agent, but it never rewrites shared workspace-skill content. This prevents
+-branch-lane reconciliation from silently applying unrelated main-lane or
+-workspace-global drift.
+-
+-`apply` reads current records; reconciles the declared workspace-skill body,
+-reference files, bindings, built-in policies, and drifted agent fields; and
+-attempts a full read-back even when an update fails or returns an ambiguous
+-response. A `has_custom_env` declaration records only whether an operator-owned
+-protected environment must exist. `apply` refuses any custom-environment
+-presence mismatch rather than creating, clearing, or inspecting that
+-environment; it likewise refuses disabled runtime-skill drift because those
+-sensitive surfaces remain explicit. It refuses automatic deletion of an
+-unexpected live skill file, and refuses to update a skill while a bound agent
+-or a drifted agent is non-idle. The declared workspace skill must already exist
+-with the pinned UUID; initial creation is a separate explicit workspace
+-mutation. A definition change affects tasks claimed after the live update; it
+-does not rewrite an already-running provider task.
++The legacy `trackself-agent-definitions apply` entry point is disabled because
++its mutation CLI path has not been proven against the current provider. For
++Mica v1, `config/mica-cutover-profile.toml` is an inactive routing proposal.
++After final bundle import, run `scripts/prepare-mica-agent-handoff` with the
++actual imported skill UUID and exact `source-manifest.json` to generate an
++offline JSON plan. The plan lists each retained agent update, the five excluded
++Review Controller records, and replacement routes in every environment.
++It does not mutate Multica. Live reconciliation still needs a separately
++proven supported update path, authorization for the exact workspace, and full
++read-back of instructions, model, skills, built-ins, runtime and permissions.
++Keep old agent records and sessions for frozen-ticket migration; do not delete
++or disable them as part of preparing the new routing.
+ 
+ The configured Multica runtime normally resumes the provider session for the
+ same `(agent, issue)` workstream. A new task, reassignment, or comment trigger
+@@ -490,11 +503,11 @@ children, or complete task history unless the assigned objective identifies
+ specific evidence or ambiguity, recovery, continuity verification, or audit
+ requires it. Retrieve only the bounded history needed for that purpose.
+ 
+-The assigned child owns the role-specific goal, authorized execution surface,
+-current premise, required validation, completion condition, and parent
+-reference. The parent owns the durable product objective, its significance,
+-overall state and sequencing, and overall completion criteria. Owning KB and
+-repository artifacts remain authoritative for behavioral truth.
++The assigned ticket owns the outcome, authorized execution surface, current
++premise, required validation, acceptance condition and next responsibility.
++When a useful subtask exists, read its parent for the integrated objective and
++dependency context. Owning KB and repository artifacts remain authoritative
++for behavioral truth.
+ 
+ Use Multica metadata to locate and classify the task and related issues after
+ retrieval, not as a substitute for their content. If the assigned issue, a
+@@ -568,87 +581,7 @@ state, deployment, push, and broad destructive workspace rewriting remain
  outside that authority. Repository-specific instructions still own commit and
  implementation boundaries.
  
 -## Implementation slices and persistence
-+## Legacy staged implementation recipes
+-
+-Within an explicitly authorized Trackself objective, the selected parent
+-orchestrator chooses exactly one Implementor identity for each new implementation
+-slice. Mika selects Trackself Implementor or Trackself Senior Implementor. Maca
+-selects Trackself macOS Implementor or Trackself macOS Senior Implementor;
+-Mewina selects Trackself Windows Implementor or Trackself Windows Senior
+-Implementor. Both native coordinators add the required platform QA stage
+-described below. In every environment, choose
+-the standard Implementor when the premise, owning behavior, repository surface,
+-and focused validation are resolved and the work is bounded and locally
+-verifiable. Choose the Senior Implementor for materially ambiguous,
+-cross-repository, security/privacy-sensitive, migration, cutover,
+-architecture-adjacent, or integration-heavy work. Work size alone does not
+-force either choice; the deciding factor is the reasoning and risk needed to
+-execute safely.
+-
+-The command procedures below use these environment-selected placeholders:
+-
+-| Placeholder | Linux container | Native macOS | Native Windows |
+-| --- | --- | --- | --- |
+-| `<selected-parent-orchestrator-uuid>` | Mika | Maca | Mewina |
+-| `<selected-implementor-uuid>` | Trackself Implementor or Trackself Senior Implementor | Trackself macOS Implementor or Trackself macOS Senior Implementor | Trackself Windows Implementor or Trackself Windows Senior Implementor |
+-| `<selected-review-controller-uuid>` | Trackself Review Controller | Trackself macOS Review Controller | Trackself Windows Review Controller |
+-| `<selected-acceptance-reviewer-uuid>` | Trackself Acceptance Reviewer | Trackself macOS Acceptance Reviewer | Trackself Windows Acceptance Reviewer |
+-
+-Resolve each placeholder to the exact UUID in the provisioned-agent table and
+-verify that live agent record before assignment. Never substitute a role from
+-the other environment merely because it is available.
+-
+-The choice is a routing decision, not new engineering authority. Do not assign
+-both agents to the same slice or use the second identity as an unreviewed
+-parallel writer. Ordinary retries and continuations retain the selected agent.
+-If new evidence requires escalation, first require the outgoing task to be
+-terminal and reconcile the actual workspace, then reassign the same child only
+-when its outcome remains coherent. Create a new slice instead when the outcome
+-or ownership boundary materially changes.
+-
+-One Implementor issue owns exactly one current slice with an observable terminal
+-condition. Size it so one Implementor context can understand the premise,
+-deliver one coherent outcome, run focused validation, leave an inspectable
+-checkpoint, and decide whether the slice is complete. It may require more than
+-one task after interruption or a premature checkpoint; the Implementor may post
+-progress evidence while continuing on the same slice issue.
+-
+-Useful changes, an internal phase boundary, ordinary dependency or test-
+-environment repair, remaining validation debt, or other safe routine work are
+-not terminal conditions. The Implementor reports a final disposition only when
+-the slice is complete, Primary or external resolution is genuinely needed,
+-or the runtime reaches an actual interruption or provider/resource boundary.
+-
+-If Multica records a completed task while safe slice work remains, classify
+-the result as a premature checkpoint. Do not launch review and do not treat the
+-ended task or its comment as a return callback. The parent orchestrator reconciles the actual
+-workspace and explicitly resumes the same role and slice. Repeated premature
+-checkpoints are a role/runtime conformance defect, not evidence that the
+-engineering objective is blocked.
+-
+-Primary carries the user-approved product and architecture within delegated authority. Assign
+-the approved bounded product parent operationally to the selected parent orchestrator so native terminal
+-child-stage notifications wake the orchestrator. Each materially distinct
+-implementation slice uses one staged child issue. Its objective names the
+-product parent, exact outcome and surface, current premise, focused validation,
+-terminal condition, boundaries, owning references, unique slice marker, and
+-exact child-only completion authority. Runs are not slices: retries, recovery,
+-and ordinary same-role continuation stay on the same child.
+-
+-Stage numbers are monotonic orchestration barriers, not role labels. Put
+-parallel-safe children in one stage only when they have independent ownership;
+-otherwise use the next stage. Each acceptance rejection adds a later review
+-stage using the same integration-review child, followed by a later fresh
+-acceptance-child stage. Read back the complete child set after every stage
+-create or update before dispatch.
+-
+-Before activating automatic progression, make the parent objective and its
+-bounded stage plan complete, move the parent to `in_progress`, and assign the
+-selected parent orchestrator as the sole trigger. Read back parent status and
+-assignee and verify exactly one new orchestrator task. The parent orchestrator
+-creates or promotes only children already justified by that
+-approved parent; any material change in outcome, scope, architecture,
+-acceptance criteria, or external authority returns to the Primary.
++## Lane scheduling and provider transport
+ 
+ ### Sequential objective lanes
+ 
+@@ -674,61 +607,21 @@ exact repository-resource and workspace-registry coverage and no matching
+ validation, and reversal record is in
+ `multica-linux-branch-lane-rollout.md`.
+ 
+-### Nonterminal lane release
+-
+-Apply `kb:docs/workflow-automation.md`, “Release a lane while awaiting an external
+-gate”. User GUI QA holds the exact candidate PR, not the execution lane. Finish
+-independent code acceptance separately, retain GUI scenarios in a user-owned
+-child, and keep the parent `in_review` and PR WIP. A named Primary decision can
+-also park an incomplete surface with its actual maturity recorded.
+-
+-Audit all tasks before release; no active child is allowed. Store a JSON string
+-in parent metadata `trackself_lane_release` containing `lane`, `reason`
+-(`user_qa` or `primary_decision`), `candidate`, `completed_gates`, `pending_gate`,
+-`owner`, and `resume_condition`. Reconcile the parent body, persist/read back the
+-record, then remove the exact queue label. Keep the orchestrator assignment for
+-result reconciliation and authorized continuation. Run the unchanged queue projector and ordinary
+-head activation. The projector must still reject overlapping labeled parents.
+-Follow the canonical completion policy in `kb:docs/workflow-automation.md`,
+-“Release a lane while awaiting an external gate”. The coordinator re-enrolls
+-remaining authorized work itself; Primary is not a second approval gate.
+-
+-#### Return a parked parent to its original queue
+-
+-Use the [installed continuation procedure](../config/multica-skills/trackself-working-on-issues/references/continuation.md).
+-It ships with the coordinator skill so remote runtimes receive the same procedure
+-as this control checkout. Existing queue admission and task checks remain authoritative.
+-
+-### Managed branch delivery contract
+-
+-The two managed branch lanes are Forgejo-backed staged pull-request lanes, not
+-ephemeral local-worktree lanes. Enrolling an approved parent in either lane is
+-the scoped authority for its editing roles to create task feature branches,
+-commit complete validated work, push normally without rewriting history, and
+-create or update one issue-linked pull request. The Implementor must record the
+-PR URL, source branch, and exact remote head before its child completes. It
+-creates the PR with the canonical `WIP:` title prefix and verifies the live
+-title. The Review Controller checks out that remote head in its own managed
+-checkout, commits routine fixes, fast-forward pushes the same PR branch, and
+-preserves `WIP:`. Acceptance evaluates the exact live remote head and title
+-read-only.
+-
+-The parent orchestrator owns the readiness-prefix transition. It removes the
+-leading `WIP:` and reads the title and head back only after all required gates
+-for that exact head pass, including user-owned runtime proof when the
+-objective requires it. If the head changes or a gate reopens after removal, the
+-orchestrator restores `WIP:` before further staged work. Only that reconciled
+-removal means the PR is ready for the user's merge decision; it does not
+-authorize merge. Forgejo `open`, `mergeable`, provider checks, review verdicts,
+-and issue status do not independently signal readiness.
+-
+-Normal stage handoff must not copy or reconstruct source from a retained sibling
+-task checkout. Those directories are reconciliation evidence and may be used
+-only for an explicitly authorized recovery. A managed-lane parent that forbids
+-remote feature-branch or PR publication is invalid for that lane; use a bound
+-workspace when unpushed mutable state must cross roles. This scoped transport
+-never authorizes force push, merge, PR closure, default-branch mutation, tag,
+-release, artifact publication, or deployment.
++### Lane release and managed PR transport
 +
-+For a ticket pinned to Mica v1, follow the selected bundle instead of this legacy stage graph. These procedures remain only for an explicitly selected legacy workflow.
++The lane scheduler remains useful for Mica tickets. An external gate may release
++an occupied lane only after the exact candidate, pending gate, owner, and resume
++condition are recorded and active tasks reconciled. Re-enrollment follows the
++pinned ticket policy and must preserve the existing work and authority. A queue
++label or WIP title is scheduling or readiness evidence, never acceptance or
++merge authority. Freeze and explicit migration preserve outstanding work; this runbook does not restart the old stage engine.
++
++On managed branch lanes, editing roles may create issue-linked draft PRs and
++push their scoped feature branches under the declared lane transport contract.
++Handoffs identify the repository, branch, draft PR and exact commit. The
++selected policy controls review, readiness, acceptance and delivery; force
++push, default-branch mutation, tagging, release and deployment remain outside
++this transport authority.
  
- Within an explicitly authorized Trackself objective, the selected parent
- orchestrator chooses exactly one Implementor identity for each new implementation
-@@ -980,47 +1001,30 @@ risky, externally consumable, or difficult to reverse. This is an exception to
- the normal integrated review, not a prerequisite for starting every later
- slice.
+ Each managed lane's `/workspace` is a restricted control bootstrap using the
+ exact `workspace-control/git-ws.branch-control.toml` manifest. The repository
+@@ -780,47 +673,11 @@ lane name. A missing or duplicate label is `error`, not an empty queue. Terminal
+ lane parents remain labeled as history but are excluded from dispatch validity
+ and cannot block a current queue head.
  
+-After the current lane parent is fully reconciled and read back as `done`, as
+-`cancelled` under exact Primary authority, or explicitly released for an external
+-gate, its still-running orchestrator performs queue handoff before ending its task. For `ready`, it
+-retrieves the named complete parent and child topology, confirms approval,
+-project, lane label, and unassigned backlog state, then runs the complete
+-bounded objective-context audit for that parent. The audit must have stable
+-topology and task history, with `parent.tasks.active_count` and every child
+-`tasks.active_count` equal to zero. Retrieve every exact record named by
+-`detail_required`. Terminal tasks, including a cancelled task that never
+-started, and existing authoritative children do not block lane activation when
+-no task is active; the new parent run reconciles their evidence and adopts the
+-existing topology before creating or dispatching anything. The current
+-orchestrator then verifies the issue project's execution target in the lane
+-environment. The reported mode must equal the lane's declared
+-`bound_workspace` or `managed_repositories` target before the orchestrator
+-projects the queue again.
+-The second projection must still name the same issue ID and position before the
+-same-agent cross-issue handoff:
+-
+-```sh
+-workspace-control/scripts/trackself-multica objective-context <next-parent>
+-workspace-control/scripts/trackself-multica-project-workspace check-issue \
+-  <next-parent> --environment <lane-environment>
+-workspace-control/scripts/trackself-multica queue-head <lane-key>
+-workspace-control/scripts/trackself-multica issue status \
+-  <next-parent> in_progress --no-start
+-workspace-control/scripts/trackself-multica issue get \
+-  <next-parent> --output json
+-workspace-control/scripts/trackself-multica issue assign \
+-  <next-parent> --to-id <selected-parent-orchestrator-uuid> --output json
+-workspace-control/scripts/trackself-multica issue runs \
+-  <next-parent> --output json
+-```
+-
+-The status transition is deliberately task-free while the parent remains
+-unassigned; the following exact assignment is the sole launch trigger. Read
+-back every mutation and require exactly one new task even if it finishes
+-quickly. An `empty` result ends the handoff. `busy`, `unstable`, or `error`
+-returns to reconciliation without choosing another card. If a handoff mutation
+-fails or its result is ambiguous, read back the selected issue and complete task
+-set, report the persisted state, and do not retry blindly.
++For a Mica-pinned ticket, Mica reconciles the current occupant and any
++running task before queue handoff. For a `ready` head it verifies the selected
++project, execution target, policy pin, owner and current native workflow state,
++then rechecks the same queue position before a single deliberate assignment.
++A stale or ambiguous read stops activation pending reconciliation. Child stage topology and `objective-context` remain available only to inspect a frozen legacy ticket during migration; they do not govern Mica dispatch.
+ 
+ An orchestrator's `max_concurrent_tasks` must equal its declared lane count.
+ Under the runtime-local topology, each Linux orchestrator owns one lane and one
+@@ -836,191 +693,33 @@ are provider objects and must exist before enrollment; creating or renaming
+ them is live Multica state mutation and remains separate from repository
+ validation, agent-definition apply, credentials, and daemon configuration.
+ 
+-Every parent-orchestrator intake begins with a complete topology audit, including
+-a wake after a child completes. Raw native history does not enter the orchestrator's context
+-by default. Before creating, promoting, or assigning any child:
+-
+-1. retrieve the complete parent once;
+-2. run the read-only context preparer for that parent and, for a stage wake,
+-   name the terminal triggering child;
+-3. require its `compact_full_audit` result to cover every existing child and
+-   complete child task history, report a stable topology digest, and contain no
+-   malformed, truncated, over-limit, or changing native state;
+-4. retrieve the exact triggering child result and actual workspace evidence,
+-   then retrieve only the child or task records named in `detail_required` or
+-   needed to decide semantic outcome matching or supersession;
+-5. map the bounded topology to the approved outcome, stage, unique marker,
+-   assignment, status, criteria state, role identity, provider session, and
+-   relevant workspace effects;
+-6. adopt any matching pre-created child as authoritative instead of creating a
+-   replacement;
+-7. reconcile duplicate, stale, superseded, or conflicting children before any
+-   dispatch. Cancel a duplicate only after exact evidence proves another child
+-   fully supersedes its intended outcome and no unique work or evidence would
+-   be discarded; read the cancelled child and compact topology back. Ambiguous
+-   ownership or supersession returns to the Primary;
+-8. verify the lowest unfinished stage contains exactly the intended children
+-   and no unintended non-terminal child can hold its barrier open; and
+-9. verify every later-stage child is unassigned and `backlog`.
+-
+-Inside a daemon-managed role workspace, the parent orchestrator invokes:
+-
+-```sh
+-workspace-control/scripts/trackself-multica-context TRA-1 \
+-  --trigger-child TRA-2
+-```
+-
+-From the host compatibility seam, the equivalent read-only command is:
+-
+-```sh
+-workspace-control/scripts/trackself-multica objective-context TRA-1 \
+-  --trigger-child TRA-2
+-```
+-
+-`state=ready` means the collected structure is stable and has no named detail
+-expansion. `state=detail_required` means the parent orchestrator must retrieve every named record
+-before mutation. `state=unstable` or `state=error` permits no mutation; retry
+-the read-only collection or perform a complete manual native audit before
+-acting. The preparer never decides semantic matching, supersession, role
+-routing, stage promotion, or parent disposition and never mutates Multica.
+-
+-Only after that audit and every required detail expansion may the parent orchestrator move the selected current-stage child to
+-`in_progress`, read it back, assign exactly one agent, and verify exactly one
+-task. Do not create first and deduplicate later. Human operators normally create
+-only the top-level objective with approved scope, criteria, and proposed stage
+-outline. If they pre-create children, the parent must identify those children
+-as authoritative; all begin unassigned in `backlog`, and the parent orchestrator adopts them.
+-
+-When the topology audit and focused semantic reconciliation prove no existing child matches the intended current
+-slice, create the slice child unassigned and use assignment as its sole initial
+-launch trigger. Snapshot the product parent's children before creation. Read
+-the child and complete child set back before assignment; on an ambiguous create
+-response, retry only after proving that no child with the exact parent, outcome,
+-stage, marker, or description exists. Before creation, bind
+-`<selected-implementor-uuid>` to exactly one provisioned Implementor table row
+-using the routing criteria above, then read that agent back and verify its UUID,
+-name, model, runtime, and availability. Snapshot the child's complete task set,
+-move the child to `in_progress`, and read the child back before assignment.
+-Then assign that selected UUID exactly once and require exactly one new task
+-with the intended agent and assignment attribution. Multica assignment does
+-not imply an issue-status transition. If the status change or assignment is
+-ambiguous, read back both the child and its complete task set before any retry;
+-restore the prior waiting status only after a definitive assignment failure.
+-The first task's non-empty
+-`result.session_id` must differ from every earlier implementation-slice child
+-for that product parent; otherwise stop rather than claiming a fresh slice
+-context.
+-
+-After any same-slice continuation, require the completed task's non-empty
+-`result.session_id` to equal the prior Implementor session. If continuity is
+-lost, treat the new task as a recovered context reconstructed from the issue,
+-owning artifacts, and actual workspace; do not claim that it preserved the
+-original Implementor context.
+-
+-```sh
+-workspace-control/scripts/trackself-multica agent get \
+-  <selected-implementor-uuid> --output json
+-workspace-control/scripts/trackself-multica issue children \
+-  <product-parent-uuid> --output json
+-workspace-control/scripts/trackself-multica issue create \
+-  --project <selected-project-uuid> \
+-  --parent <product-parent-uuid> \
+-  --stage <implementation-stage> \
+-  --title 'Implementation slice <n> — <parent-key> — <outcome>' \
+-  --description-stdin --status todo --output json \
+-  < <implementation-slice-objective>
+-workspace-control/scripts/trackself-multica issue get \
+-  <slice-child-uuid> --output json
+-workspace-control/scripts/trackself-multica issue children \
+-  <product-parent-uuid> --output json
+-workspace-control/scripts/trackself-multica issue runs \
+-  <slice-child-uuid> --output json
+-workspace-control/scripts/trackself-multica issue status \
+-  <slice-child-uuid> in_progress
+-workspace-control/scripts/trackself-multica issue get \
+-  <slice-child-uuid> --output json
+-workspace-control/scripts/trackself-multica issue assign \
+-  <slice-child-uuid> \
+-  --to-id <selected-implementor-uuid> --output json
+-workspace-control/scripts/trackself-multica issue get \
+-  <slice-child-uuid> --output json
+-workspace-control/scripts/trackself-multica issue runs \
+-  <slice-child-uuid> --output json
+-```
+-
+-Every automatic implementation child grants the Implementor exact authority to
+-reconcile and complete only its assigned child after every child criterion and
+-focused check passes, provided no separate slice-local review remains. Before
+-the terminal transition, it updates every existing child-deliverable checkbox
+-and the current-state section against recorded evidence, states any remaining
+-action or that none remains, persists and reads the description back, and posts
+-the final result. The later integrated review of the combined surface does not
+-prevent that child from completing. The Implementor must not use `in_review`
+-merely to hand a completed child back to the parent orchestrator and must not change assignment,
+-the parent, a sibling, or a later stage. After
+-`issue status <slice-child-uuid> done`, it reads the complete child back; an
+-ambiguous response is reconciled by read-back before any retry. The resulting
+-native stage-completion notification is the only automatic orchestrator wake
+-signal. The parent orchestrator then reads the child result and actual workspace before promoting
+-the next stage.
+-
+-This gate is intentionally mechanical, not a general Markdown parser. The
+-context projection recognizes top-level `- [ ]` and `- [x]` lines only inside
+-the exact `## Done criteria` section, and reads completion prose only from the
+-exact top-level `## Current state` section. Agents and users must preserve that
+-template form; alternate markers, nesting, and content outside those sections
+-are not workflow state. Do not put checkbox-like examples in canonical form
+-inside `## Done criteria`.
+-
+-Create the next slice child only for a materially distinct remaining outcome.
+-
+-Do not add routine Review Controller or Acceptance Reviewer tickets per slice.
+-Give a slice a review/fix task on the same issue only when it is independently
+-risky, externally consumable, or difficult to reverse. This is an exception to
+-the normal integrated review, not a prerequisite for starting every later
+-slice.
+-
 -### Native platform validation and release stages
 -
 -For a Maca-owned objective, completed implementation slices do not proceed
@@ -1058,6 +1660,11 @@ index cb31ab5..44aba98 100644
 -Windows QA and require fresh evidence after every material native change.
 -Create a Windows release-artifact child only when unsigned local packaging or
 -artifact verification is required. Trackself Windows Release Builder cannot
++Mica-pinned tickets use their native policy pin, handoff record, candidate and
++revision. No child topology, stage number or Markdown heading is required for
++Mica continuation. The old stage projector may be read only to reconcile a
++frozen ticket before explicit migration.
++
 +### Native platform evidence and release artifacts
 +
 +For a Mica-pinned objective, Mica selects native validation when the requested
@@ -1086,69 +1693,758 @@ index cb31ab5..44aba98 100644
 +deploy, tag, push, or change release channels until audited repository-owned
 +tooling and desired-state policy explicitly enable them.
 +
-+For tickets on the legacy staged policy only, retain the historical platform
-+stage procedure below and its explicit safeguards. Mica-pinned work follows the
-+candidate lifecycle pointer above and the policy recorded on the ticket.
++Mica-pinned work follows its ticket policy and the evidence boundary above.
  
  ## Commands
  
-@@ -1039,7 +1043,9 @@ Before dispatch, make the issue objective human-readable and verify that its
- done criteria, owning references, repository scope, current state, and next
- role are explicit.
+@@ -1035,380 +734,8 @@ workspace-control/scripts/trackself-multica issue runs TRA-1 --output json
+ workspace-control/scripts/trackself-multica issue comment list TRA-1 --output json
+ ```
  
+-Before dispatch, make the issue objective human-readable and verify that its
+-done criteria, owning references, repository scope, current state, and next
+-role are explicit.
+-
 -### Integration review, acceptance, and session identity
-+### Legacy integration-review and acceptance stages
-+
-+Mica-pinned tickets use the bundle's same-ticket review/fix lifecycle, exact-commit PR reviews, fresh independent reviewer, and candidate-aware acceptance. Do not create review or acceptance children for those tickets.
- 
- Keep the approved product parent operationally assigned to the selected parent orchestrator under Primary authority. After its completed slice issues form one coherent surface,
- create exactly one reusable integration-review child under the product parent.
-@@ -1181,7 +1187,9 @@ audit above; it must not create, cancel, promote, assign, or change status.
- Installing or scheduling that watchdog is an operational-state change and is
- not authorized by this repository contract alone.
- 
+-
+-Keep the approved product parent operationally assigned to the selected parent orchestrator under Primary authority. After its completed slice issues form one coherent surface,
+-create exactly one reusable integration-review child under the product parent.
+-The issue description names the included slice issue IDs, exact
+-repository/worktree surface, integrated outcome and invariants, required
+-validation, review/fix authority, child-only completion authority, and a unique
+-review marker. Slice reports help locate the work; they are not acceptance
+-evidence. The Review Controller must inspect the actual combined repositories.
+-
+-Create the integration-review issue unassigned and use assignment as its sole
+-initial launch trigger. Snapshot the product parent's children before creation.
+-Read the issue and complete child set back before assignment. On an ambiguous
+-create response, preserve the exact parent, title, marker, and description and
+-retry only after proving no exact integration-review issue exists. Never use
+-`--allow-duplicate` to recover from ambiguity.
+-
+-Snapshot the integration-review issue's complete task-ID set before every
+-assignment. Move the issue to `in_progress` and read it back before assigning
+-the Review Controller. If the status change or assignment returns an ambiguous
+-result, read the issue and all tasks before considering any retry. Require
+-exactly one new task ID in total, regardless of terminal state, bound to the
+-intended agent UUID and assignment trigger. Never repeat an assignment while
+-its effect is unknown.
+-
+-```sh
+-workspace-control/scripts/trackself-multica issue create \
+-  --project <selected-project-uuid> \
+-  --parent <product-parent-uuid> \
+-  --stage <integration-review-stage> \
+-  --title 'Integration review — <parent-key> — <outcome>' \
+-  --description-stdin --status todo --output json \
+-  < <integration-review-objective>
+-workspace-control/scripts/trackself-multica issue get \
+-  <integration-review-uuid> --output json
+-workspace-control/scripts/trackself-multica issue children \
+-  <product-parent-uuid> --output json
+-workspace-control/scripts/trackself-multica issue runs \
+-  <integration-review-uuid> --output json
+-workspace-control/scripts/trackself-multica issue status \
+-  <integration-review-uuid> in_progress
+-workspace-control/scripts/trackself-multica issue get \
+-  <integration-review-uuid> --output json
+-workspace-control/scripts/trackself-multica issue assign \
+-  <integration-review-uuid> \
+-  --to-id <selected-review-controller-uuid> --output json
+-workspace-control/scripts/trackself-multica issue get \
+-  <integration-review-uuid> --output json
+-workspace-control/scripts/trackself-multica issue runs \
+-  <integration-review-uuid> --output json
+-```
+-
+-The Review Controller's first non-empty `result.session_id` must differ from
+-every included slice's Implementor session and every earlier integration-review
+-issue for that product parent. Transient
+-interruption, clarification, reviewer-owned fixes, and routine acceptance
+-rejection remain on the same integration-review issue so Multica can resume the
+-useful `(Review Controller, issue)` context. After each resumed controller task,
+-require the provider session ID to equal the prior controller session. Missing
+-or changed identity ends that cycle: cancel the issue as interrupted and create
+-a new integration-review issue from the actual surface.
+-
+-The integration-review child explicitly authorizes the Review Controller, once
+-the complete surface is clean and proportionate validation passes, to reconcile
+-that child's existing deliverable checkboxes and current-state section, read
+-the revised description back, record its final result there, mark only that child
+-`done`, read the complete child back, and stop. It does not use `in_review`,
+-change assignment, or launch acceptance. The terminal child transition emits
+-the native parent-stage notification that wakes the parent orchestrator.
+-
+-After that wake, the parent orchestrator reads the review result and actual workspace, then creates
+-a fresh acceptance-verdict child. Every acceptance pass uses a new child; never
+-assign the Acceptance Reviewer to the integration-review child. The acceptance
+-child names the exact reviewed surface and criteria, requires a fresh read-only
+-context, grants exact child-only `done` authority after one valid verdict, and
+-has its own unique marker. Its checkbox criteria describe completing the
+-independent evaluation, recording evidence or the exact blocker, delivering
+-one valid verdict, and reconciling the verdict child. Product acceptance
+-predicates remain non-checkbox evaluation inputs, so a valid `rejected` or
+-`blocked` verdict can complete the child without falsely claiming product
+-acceptance. Create it unassigned, read it and the complete child
+-set back, move it to `in_progress`, read it back, and assign the Acceptance
+-Reviewer exactly once. Require exactly one new task, the Acceptance Reviewer
+-UUID, and a non-empty `result.session_id` different from the Review Controller
+-and Implementor sessions.
+-
+-```sh
+-workspace-control/scripts/trackself-multica issue children \
+-  <product-parent-uuid> --output json
+-workspace-control/scripts/trackself-multica issue create \
+-  --project <selected-project-uuid> \
+-  --parent <product-parent-uuid> \
+-  --stage <acceptance-stage> \
+-  --title 'Acceptance verdict <n> — <parent-key> — <outcome>' \
+-  --description-stdin --status todo --output json \
+-  < <acceptance-verdict-objective>
+-workspace-control/scripts/trackself-multica issue get \
+-  <acceptance-child-uuid> --output json
+-workspace-control/scripts/trackself-multica issue status \
+-  <acceptance-child-uuid> in_progress
+-workspace-control/scripts/trackself-multica issue assign \
+-  <acceptance-child-uuid> \
+-  --to-id <selected-acceptance-reviewer-uuid> --output json
+-workspace-control/scripts/trackself-multica issue runs \
+-  <acceptance-child-uuid> --output json
+-```
+-
+-The Acceptance Reviewer remains read-only on the reviewed surface. After
+-determining exactly one `accepted`, `rejected`, or `blocked` verdict, it
+-reconciles the child-deliverable checkboxes and current-state section, persists
+-and reads the description back, records the verdict there, marks only the acceptance
+-child `done`, reads the complete child back, and stops. Issue-body reconciliation
+-is operational recordkeeping, not reviewed-surface mutation. The verdict is
+-that child's completed deliverable even when the integrated surface was
+-rejected or acceptance itself could not be performed. That terminal transition
+-wakes the parent orchestrator on the product parent. The parent orchestrator reads the verdict and applies it:
+-
+-- `accepted`: reconcile the exact accepted repositories, completed slices, and
+-  parent criteria. Run the mandatory parent-body reconciliation below, then
+-  mark the product parent `done` only when every criterion holds and no named
+-  evaluation or human action remains;
+-- `rejected`: move the same integration-review child to the next review stage,
+-  reopen it as `in_progress`, and assign the same Review Controller as the sole
+-  trigger for routine fixes; require exactly one new task and the original
+-  non-empty Review Controller provider session. When it becomes clean and
+-  completes again, create a new fresh acceptance child in the next stage;
+-- `blocked`: mark the product parent `blocked` only when the named unresolved
+-  condition leaves no safe product-level path. Otherwise retain truthful parent
+-  status and escalate the missing acceptance evidence to the Primary.
+-
+-Never depend on a specialist comment, task completion, or reassignment to wake
+-a previous owner. Child completion and its native parent-stage notification are
+-the automatic continuation mechanism.
+-
+-The event-driven continuation path has no inherent idle-parent watchdog. A
+-separately approved scheduled watchdog may detect an orchestrator-owned `in_progress`
+-parent with no active orchestrator or child task and either a non-terminal stage or an
+-undispatched next child. Its only action is to wake the parent orchestrator to perform the topology
+-audit above; it must not create, cancel, promote, assign, or change status.
+-Installing or scheduling that watchdog is an operational-state change and is
+-not authorized by this repository contract alone.
+-
 -### Done-child reconciliation recovery
-+### Legacy done-child reconciliation recovery
-+
-+Not applicable to Mica-pinned tickets, which do not use mandatory lifecycle children. Follow the pinned policy and its provider handoff records.
- 
- A `done` child with open child-deliverable criteria or a stale current-state
- section is incomplete orchestration. Cancellation does not require satisfied
-@@ -1199,7 +1207,9 @@ Otherwise the parent orchestrator returns reconciliation to the same specialist
- ambiguity to Primary. It never checks a criterion merely to clear a
- `terminal_open_criteria` warning.
- 
+-
+-A `done` child with open child-deliverable criteria or a stale current-state
+-section is incomplete orchestration. Cancellation does not require satisfied
+-deliverable criteria; its separate cancellation and supersession evidence
+-governs reconciliation. The parent orchestrator
+-retrieves the exact result and does not promote the next stage merely because
+-the status is terminal. When the child caused the current stage wake, its
+-bounded current-state section is included directly in the compact projection;
+-a missing section on a `done` child requires exact detail, and a contradictory
+-section blocks promotion even when every checkbox is closed. When the recorded
+-evidence unambiguously proves every existing child-deliverable criterion of a
+-`done` child, the parent orchestrator may repair only those checkboxes and the current-state section,
+-persist and read the description back, and record that bookkeeping recovery.
+-Otherwise the parent orchestrator returns reconciliation to the same specialist or escalates the
+-ambiguity to Primary. It never checks a criterion merely to clear a
+-`terminal_open_criteria` warning.
+-
 -### Parent terminal reconciliation
-+### Legacy parent terminal reconciliation
-+
-+Not applicable to Mica-pinned tickets. Their exact acceptance and delivery actions are defined by the pinned policy; queue progression remains separate scheduling work.
- 
- A parent wake is not complete when the parent orchestrator only posts a summary or changes status.
- Before moving the product parent to `in_review`, `blocked`, or `done`, the parent orchestrator must:
-@@ -1259,7 +1269,9 @@ safe product-level path exists without external resolution, and `done` only
- after the integrated review and required acceptance pass. Finding severity,
- work breadth, or one bounded task ending never creates a blocker by itself.
- 
+-
+-A parent wake is not complete when the parent orchestrator only posts a summary or changes status.
+-Before moving the product parent to `in_review`, `blocked`, or `done`, the parent orchestrator must:
+-
+-1. read the complete parent and the evidence for every existing done criterion;
+-2. evaluate every criterion individually and update its existing Markdown
+-   checkbox truthfully;
+-3. update the existing current-state section with completed work, unresolved
+-   work, and the exact next owner;
+-4. state the remaining human action, or explicitly state that none remains,
+-   without adding or redefining product scope, criteria, or architecture;
+-5. persist the revised description, read the complete parent back, and verify
+-   the checkbox and current-state changes;
+-6. set the truthful status and read the complete parent back again to verify
+-   both description and status; and
+-7. post the Primary-facing disposition stating whether the parent is
+-   done, awaiting a named evaluation/action, or blocked and what remains; and
+-8. for a terminal parent or a parent explicitly released from the orchestrator's lane, run the
+-   declared queue-head projection and either activate the verified `ready`
+-   parent or record `empty`; do not finish while a verified head remains
+-   undispatched.
+-
+-Use `in_review` only when a named evaluation or human action genuinely owns the
+-next decision. If every done criterion and required gate passes and no action
+-remains, set `done`; do not use `in_review` as a generic completion handoff.
+-Multica's native stage-completion wake may include a provider-generic command
+-that suggests moving a complete parent to `in_review`. That prescriptive text
+-is a wake payload, not Trackself status authority and not evidence of a Primary request. The parent orchestrator must apply the criteria above and must
+-not manufacture a final-disposition action from the native suggestion.
+-These edits are reconciliation of existing operational content only. The parent orchestrator does
+-not rewrite the product objective, invent criteria, or perform the Primary's
+-content work.
+-
+-```sh
+-workspace-control/scripts/trackself-multica issue get \
+-  <product-parent-uuid> --output json
+-workspace-control/scripts/trackself-multica issue update \
+-  <product-parent-uuid> --description-file ./parent-reconciled.md
+-workspace-control/scripts/trackself-multica issue get \
+-  <product-parent-uuid> --output json
+-workspace-control/scripts/trackself-multica issue status \
+-  <product-parent-uuid> <in_review|blocked|done>
+-workspace-control/scripts/trackself-multica issue get \
+-  <product-parent-uuid> --output json
+-```
+-
+-If findings require material Implementor rework, cancel the integration-review
+-issue as superseded and return the product parent to `in_progress`. Create a new
+-implementation-slice issue for the corrective outcome unless an existing slice
+-remains the exact coherent owner. After that work is reconciled, create a fresh
+-integration-review issue for the new combined surface.
+-
+-Each issue status follows its own objective. A completed slice may be `done`
+-while the product parent remains `in_progress`. The parent is `in_review` only
+-when its complete remaining outcome is under evaluation, `blocked` only when no
+-safe product-level path exists without external resolution, and `done` only
+-after the integrated review and required acceptance pass. Finding severity,
+-work breadth, or one bounded task ending never creates a blocker by itself.
+-
 -### Trigger-safe role handoff
-+### Legacy trigger-safe role handoff
-+
-+Mica-pinned tickets use the workflow handoff record and command contract in the selected bundle. The child-stage trigger procedure below applies only to the legacy staged workflow.
+-
+-Assignment, rerun, mentions, and replies in a role-bound thread can all be
+-task-producing operations in the active integration. Never post the next-role
+-handoff as a reply to the outgoing agent's result. Never leave the outgoing
+-agent assigned while posting dispatch context. Primary authorship alone does
+-not make a root neutral: if that root previously launched an agent, replies can
+-launch the same role while the issue is unassigned and contain no mention.
+-
+-The configured Multica CLI rejects a top-level `issue comment add` without
+-`--parent`. The role-bound reply path therefore needs an existing
+-Primary-authored root; assignment does not. Record the root's exact comment ID,
+-verify its author UUID against the Human Primary member UUID, and prove its
+-prior task binding. Do not use an agent result, agent-authored root, unverified
+-comment, or merely Primary-authored but unbound root. Verify the exact ID with
+-`comment list --thread <id> --tail 0`; require that the returned root has that
+-ID, a null parent, and the Primary author UUID.
+-
+-Before mutation choose exactly one trigger path:
+-
+-- **Assignment trigger** (default for a role change): make the issue objective
+-  and next slice complete, post no dispatch reply, and assign the incoming role
+-  exactly once.
+-- **Role-bound reply trigger** (same-role continuation only): use a verified
+-  Primary-authored root whose exact comment ID is the `trigger_comment_id` or
+-  attribution evidence of a prior task for the same agent UUID. The reply is
+-  the sole intended trigger; never assign afterward. If task history does not
+-  prove the exact role binding, do not use this path.
+-
+-For every top-level role transition:
+-
+-1. Read `issue get` and `issue runs`; record the assignee and complete task-ID
+-   set. For reply-triggered continuation, also read the exact root and verify
+-   its ID, null parent, Primary author UUID, and prior same-agent task
+-   binding. Require every outgoing-role task to be terminal.
+-2. Unassign the issue. Unassignment is not a cancellation boundary: inspect
+-   actual task state and explicitly stop unintended work before handoff. Read
+-   back the issue and runs; require no assignee, no non-terminal task, and no new task ID. If the command
+-   response is lost or ambiguous, perform this read-back before considering a
+-   retry. For reply-triggered continuation, record the read-back issue's
+-   server-generated `updated_at` as the lower bound for comment reconciliation.
+-3. For the assignment path, post no handoff reply. Use the issue and task
+-   snapshot as the assignment baseline and assign the incoming role by exact
+-   UUID. For the role-bound reply path, create a bounded handoff file containing
+-   a unique marker such as `trackself-handoff:<UUID>`, with no mention, and
+-   stream it through stdin under the verified role-bound Primary root. Read
+-   comments back with `--since <recorded-issue-updated-at>`, require fewer than
+-   2,000 rows, and require exactly one comment with that parent, marker, exact
+-   content, and expected Primary author ID. Preserve the marker, content, and
+-   lower bound after an ambiguous response; never blindly post again. Stdin is
+-   intentional because host redirection occurs before the wrapper enters the
+-   container's private `/tmp`.
+-4. Regardless of trigger path or command response, read back the issue and all
+-   runs. Diff every task ID against the pre-trigger snapshot and require exactly
+-   one new task total, even if already terminal. Require the expected agent UUID
+-   and attribution: assignment/direct for assignment, or the exact trigger
+-   comment ID for a role-bound reply. Assignment also requires the intended
+-   assignee; reply-triggered continuation requires no later assignment.
+-5. Never retry while the first trigger may have committed, and never switch
+-   paths after mutation. Retry an assignment only when read-back proves it
+-   created no task and stored no assignee. Retry a role-bound reply only when
+-   read-back proves both that the complete task-ID set is unchanged and that
+-   zero comments match the preserved marker, parent, content, lower bound, and
+-   Primary author. If the marker comment exists without its attributed task,
+-   stop and reconcile the delayed or failed launch; never repost it. A
+-   wrong-role or extra task is a reconciliation failure, not permission to add
+-   an assignment.
+-6. If any extra task exists, cancel each still-active task by exact ID, inspect
+-   every extra task's transcript, and reconcile its actual repository effects
+-   before continuing. Terminal extra tasks still require the same audit even
+-   though cancellation no longer applies.
+-
+-Example assignment-trigger continuation on an existing slice issue:
+-
+-```sh
+-workspace-control/scripts/trackself-multica issue get TRA-1 --output json
+-workspace-control/scripts/trackself-multica issue runs TRA-1 --output json
+-workspace-control/scripts/trackself-multica issue assign TRA-1 \
+-  --unassign --output json
+-workspace-control/scripts/trackself-multica issue get TRA-1 --output json
+-workspace-control/scripts/trackself-multica issue runs TRA-1 --output json
+-workspace-control/scripts/trackself-multica issue assign TRA-1 \
+-  --to-id <selected-implementor-uuid> --output json
+-workspace-control/scripts/trackself-multica issue get TRA-1 --output json
+-workspace-control/scripts/trackself-multica issue runs TRA-1 --output json
+-```
+-
+-The installed Multica CLI exposes exact-task cancellation and transcript
+-inspection through the same wrapper:
+-
+-```sh
+-workspace-control/scripts/trackself-multica issue cancel-task <task-id> \
+-  --issue TRA-1 --output json
+-workspace-control/scripts/trackself-multica issue run-messages <task-id> \
+-  --issue TRA-1 --output json
+-```
+-
+-To diagnose whether a provider-visible tool result and its persisted task
+-transcript share the same output boundary, use the repository-owned deterministic
+-probe in one disposable task:
+-
+-```sh
+-/workspace/workspace-control/scripts/trackself-multica-output-probe
+-```
+-
+-The task must run that command exactly once and report which of the
+-`TRACKSELF_PROBE_PRE_8192`, `TRACKSELF_PROBE_POST_8192`, and
+-`TRACKSELF_PROBE_END` markers were visible in that single tool response. It
+-must not rerun, filter, page, or infer the output. Compare that report with the
+-exact tool-result content returned by `issue run-messages`. The probe is
+-diagnostic evidence only; it does not relax the fail-closed context-projection
+-contract or establish a provider limit without this two-sided comparison.
+-
+-The 2026-08-17 TRA-100 probe emitted 12,288 ASCII characters. The provider
+-reported all three markers, including the post-8-KiB and end markers, without a
+-truncation notice. The persisted tool result contained exactly 8,192 characters
+-and omitted both later markers. This proves an observability/persistence
+-boundary on that runtime path, not a provider-input boundary. Re-run the probe
+-after relevant Multica runtime or transcript-storage changes rather than
+-assuming that observation remains current.
+-
+-These commands are part of the configured runtime contract. If a future CLI
+-lacks either operation, stop and update this mapping
+-rather than claiming that an unintended task was cancelled or audited.
+-
+-For an issue with no outgoing assignment, still select the trigger path before
+-mutation. Assignment requires no dispatch reply because the incoming agent
+-reads the assigned objective, current parent objective, owning artifacts, and
+-actual repository state under the bounded startup contract. A role-bound
+-continuation uses its reply as the sole trigger and leaves the issue unassigned
+-unless a separate later ownership change is explicitly authorized.
+-
+-Assignment and `issue rerun` are mutating launch commands. Execute them only
+-for the explicit issue and role intended by the Primary. A rerun always creates
+-a new task, but Multica conditionally decides whether to resume the
+-source provider session. Do not use it where the workflow requires proof of
+-either continuity or freshness, including iteration within an active
+-review/fix cycle:
+-
+-```sh
+-workspace-control/scripts/trackself-multica issue rerun TRA-1 --output json
+-```
+-
+-Use the Review Controller only after the completed slices form one coherent
+-reviewable surface, and launch it through the integration-review procedure
+-above. When that reusable review child completes clean, the parent orchestrator creates one fresh
+-acceptance-verdict child for the distinct Acceptance Reviewer. The parent orchestrator then
+-reconciles the completed child evidence against the actual repositories and
+-stated parent criteria. Task success or a comment alone does not make the
+-engineering objective complete and does not drive automatic continuation.
++Before dispatch, verify that the ticket's outcome, scope, acceptance criteria,
++owning references, policy pin, current state, and next owner are explicit.
  
- Assignment, rerun, mentions, and replies in a role-bound thread can all be
- task-producing operations in the active integration. Never post the next-role
-@@ -1426,7 +1438,9 @@ the replacement has passed validation so rollback is a symlink selection, not
+ ## Runtime lifecycle and updates
+ 
+@@ -1424,67 +751,3 @@ emergency local edit occurs, copy the fix back to the canonical bundle and
+ complete that process before depending on it. Keep the previous release until
+ the replacement has passed validation so rollback is a symlink selection, not
  an improvised code edit.
- 
- 
+-
+-
 -## Dispatch preparation and non-blocking result delivery
-+## Legacy staged dispatch preparation and result delivery
+-
+-Before assignment, set the staged child's `trackself_dispatch` metadata to a
+-JSON-encoded string containing an object with exactly `capabilities` (a list)
+-and `baselines` (a repository-ID to revision map). Multica metadata values are
+-primitives; the guard decodes this transport once and validates the object.
+-Example payload for desktopapp repository tests:
+-
+-```json
+-{"capabilities":["shell","linux"],"baselines":{"desktopapp":"develop","kb":"main"}}
+-```
+-
+-Persist the payload with `issue metadata set <child> --key trackself_dispatch
+---type string --value '{"capabilities":["shell","linux"],"baselines":{"desktopapp":"develop","kb":"main"}}'`.
+-Read back the value and run `check-issue` before dispatch. Native object values
+-remain accepted for compatibility; malformed JSON and non-object payloads fail
+-closed. Copy refs
+-from the owning `git-ws.toml`, never from memory or a guessed default. In the
+-actual checkout, resolve the declared ref before implementation. A reviewed PR
+-head is a candidate, not a replacement baseline; retain its separate exact-head
+-checks. An approved alternate baseline requires reconciliation of the owning
+-declaration rather than a silent ticket override.
+-
+-`trackself-multica-project-workspace check-issue <child> --environment <key>`
+-checks these requirements before dispatch. Assignment, rerun, starting status
+-or body updates, and role-bound replies enforce the same requirements. Create
+-children unassigned first. Terminal transitions deliberately do not require
+-capabilities, dependencies, or a comment thread: they must remain available to
+-report an evaluation that could not run. Task-free recordkeeping remains possible.
+-
+-Capabilities are conservative routing declarations in
+-`config/multica-project-workspace.toml`, not proof of a live session. No current
+-lane declares `kde-x11`, authenticated QA fixtures, or an interactive GUI. A stage
+-requiring one must declare it, and cannot be dispatched until a suitable target
+-is verified and declared. Do not erase requirements to pass the guard. Actual
+-session, fixture, credentials and candidate evidence must still be checked at
+-that target; never put secrets in metadata. Empty lists/maps are valid only when
+-the stage needs no special capability/repository baseline. Parent intake remains
+-possible without metadata; staged children must have it, including old children
+-before a new dispatch after rollout.
+-
+-The issue body is the required result channel. Store the outcome, criteria and
+-evidence, read it back, then perform and read back the authorized terminal
+-transition exactly once. Existing-thread comments are optional communication;
+-missing threads or comment failure cannot block closeout. Keep reply guards
+-strict and do not fabricate parent IDs. The provider's child-terminal event is
+-the only automatic parent wake. A lost response requires state reconciliation,
+-not a second assignment or comment trigger.
+-
+-For recovery, distinguish a code defect (fix plus affected checks), unavailable
+-evaluation prerequisites (resume the stage on the unchanged candidate), and
+-communication failure (reconcile delivery only). Preserve independent acceptance
+-and fresh verdict identity; a verdict already completed is not an interrupted
+-evaluation. Record escalation owner, exact unresolved question, evidence, next
+-safe action and delivery acknowledgement. No acknowledgement means delivery is
+-unproven, not that the user rejected or must rediscover the work.
+-
+-Rollout requires these scripts, the schema-7 environment declaration, and role
+-instructions together. Prepare pending children before redispatch; do not rerun
+-completed engineering stages just to add metadata. Read-only unit/integration
+-checks are not live Multica exactly-once proof. Live role application and runtime
+-checkout updates follow the separately scoped deployment authority.
+diff --git a/scripts/prepare-mica-agent-handoff b/scripts/prepare-mica-agent-handoff
+new file mode 100644
+index 0000000..ffa9ddd
+--- /dev/null
++++ b/scripts/prepare-mica-agent-handoff
+@@ -0,0 +1,166 @@
++#!/usr/bin/env python3
++"""Print an offline, inactive Mica agent update handoff as JSON."""
 +
-+Mica-pinned tickets use their selected policy and current provider checks. The child-only metadata and terminal-wake instructions below apply only to the legacy staged workflow. Keep project-target validation, declared baselines, capability checks, secret handling, and actual-environment evidence where the current project guard still requires them.
- 
- Before assignment, set the staged child's `trackself_dispatch` metadata to a
- JSON-encoded string containing an object with exactly `capabilities` (a list)
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.machinery
++import importlib.util
++import json
++import re
++import tomllib
++import uuid
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parent.parent
++PROFILE_PATH = ROOT / "config" / "mica-cutover-profile.toml"
++LEGACY_SCRIPT = ROOT / "scripts" / "trackself-agent-definitions"
++SHA256 = re.compile(r"[0-9a-f]{64}\Z")
++
++
++def build_handoff(skill_id: str, source_manifest: Path) -> dict:
++    try:
++        skill_id = str(uuid.UUID(skill_id))
++    except ValueError as error:
++        raise ValueError("imported skill ID must be a UUID") from error
++    source_bytes = source_manifest.read_bytes()
++    source = json.loads(source_bytes)
++    if not isinstance(source, dict):
++        raise ValueError("source manifest must be an object")
++    identity = source.get("bundle_identity_sha256")
++    if (
++        source.get("schema_version") != 1
++        or source.get("policy_version") != "mica-v1"
++        or not isinstance(identity, str)
++        or not SHA256.fullmatch(identity)
++        or source.get("skill_name") != f"trackself-platform-{identity[:16]}"
++    ):
++        raise ValueError("source manifest has invalid Mica v1 bundle identity")
++    for field in ("source_hashes_sha256", "packaged_file_hashes_sha256"):
++        entries = source.get(field)
++        if not isinstance(entries, dict) or not entries or any(
++            not isinstance(path, str) or not path
++            or not isinstance(digest, str) or not SHA256.fullmatch(digest)
++            for path, digest in entries.items()
++        ):
++            raise ValueError(f"source manifest has invalid {field}")
++    skill_name = source["skill_name"]
++    source_digest = hashlib.sha256(source_bytes).hexdigest()
++    with PROFILE_PATH.open("rb") as stream:
++        profile = tomllib.load(stream)
++    if profile.get("schema_version") != 1 or profile.get("source_policy") != "fork/trackself/policies/mica-v1":
++        raise ValueError("candidate profile has invalid schema or policy source")
++    loader = importlib.machinery.SourceFileLoader("trackself_agent_definitions", str(LEGACY_SCRIPT))
++    spec = importlib.util.spec_from_loader(loader.name, loader)
++    assert spec is not None
++    module = importlib.util.module_from_spec(spec)
++    loader.exec_module(module)
++    legacy = module.load_manifest()
++    old_skill_ids = {skill["id"] for skill in legacy["skills"]}
++    if skill_id in old_skill_ids:
++        raise ValueError("the imported policy skill ID must differ from legacy managed skills")
++    agent_keys = {agent["key"] for agent in legacy["agents"]}
++    retired = profile.get("retire_from_new_routing")
++    if (not isinstance(retired, list) or any(not isinstance(key, str) for key in retired)
++            or len(set(retired)) != len(retired) or not set(retired) <= agent_keys):
++        raise ValueError("retire_from_new_routing must list unique known agent keys")
++    retired_keys = set(retired)
++    active = [agent for agent in legacy["agents"] if agent["key"] not in retired_keys]
++    roles = profile.get("roles")
++    if not isinstance(roles, dict) or set(roles) != {agent["role"] for agent in active}:
++        raise ValueError("candidate profile must cover exactly the retained roles")
++    for role, values in roles.items():
++        if not isinstance(values, dict) or any(
++            not isinstance(values.get(field), str) or not values[field].strip()
++            for field in ("model", "thinking_level", "purpose")
++        ):
++            raise ValueError(f"role {role} needs model, thinking_level and purpose")
++    review_fix_role = profile.get("review_fix_route")
++    final_review_role = profile.get("final_review_route")
++    if (not isinstance(review_fix_role, str) or not isinstance(final_review_role, str)
++            or review_fix_role == final_review_role):
++        raise ValueError("review routes must name distinct retained roles")
++    active_by_environment = {(agent["environment"], agent["role"]): agent for agent in active}
++    environments = sorted({agent["environment"] for agent in active})
++    if any(
++        (environment, role) not in active_by_environment
++        for environment in environments
++        for role in (review_fix_role, final_review_role)
++    ):
++        raise ValueError("review routes must resolve to retained agents in every environment")
++    updates = []
++    excluded = []
++    for agent in legacy["agents"]:
++        if agent["key"] in retired_keys:
++            excluded.append({"key": agent["key"], "id": agent["id"], "environment": agent["environment"]})
++            continue
++        role_profile = profile["roles"][agent["role"]]
++        builtins = ["builtin:multica-platform"]
++        if agent["key"] == "mika":
++            builtins.append("builtin:multica-onboarding")
++        updates.append({
++            "key": agent["key"],
++            "id": agent["id"],
++            "name": agent["name"],
++            "description": agent["description"],
++            "role": agent["role"],
++            "environment": agent["environment"],
++            "runtime_id": agent["runtime_id"],
++            "credential_group": agent["credential_group"],
++            "permission_mode": agent["permission_mode"],
++            "visibility": agent["visibility"],
++            "public_to_workspace": agent["public_to_workspace"],
++            "has_custom_env": agent["has_custom_env"],
++            "custom_args": agent["custom_args"],
++            "model": role_profile["model"],
++            "thinking_level": role_profile["thinking_level"],
++            "service_tier": agent["service_tier"],
++            "instructions": agent["instructions"],
++            "skill_ids": [skill_id],
++            "disabled_runtime_skill_ids": agent["disabled_runtime_skill_ids"],
++            "builtin_skill_mode": "exact",
++            "enabled_builtin_skill_ids": sorted(builtins),
++            "max_concurrent_tasks": agent["max_concurrent_tasks"],
++        })
++    return {
++        "status": "inactive_handoff_only",
++        "workspace_id": legacy["workspace_id"],
++        "source_policy": profile["source_policy"],
++        "imported_skill": {"id": skill_id, "name": skill_name},
++        "source_manifest_sha256": source_digest,
++        "excluded_from_new_routing": excluded,
++        "excluded_record_action": "retain existing agent records and task/session history; do not delete or disable live agents",
++        "review_routes": [
++            {
++                "environment": environment,
++                "review_fix": {"key": active_by_environment[(environment, review_fix_role)]["key"], "id": active_by_environment[(environment, review_fix_role)]["id"]},
++                "final_review": {"key": active_by_environment[(environment, final_review_role)]["key"], "id": active_by_environment[(environment, final_review_role)]["id"]},
++            }
++            for environment in environments
++        ],
++        "updates": updates,
++        "required_before_apply": [
++            "verify bundle source-manifest.json and importer return for this exact ID",
++            "select and pin production policy defaults and authorized exceptions",
++            "prove supported agent update API and full read-back, including skill and builtin bindings",
++            "preserve old agent records and ticket sessions; migrate old tickets explicitly",
++        ],
++    }
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--imported-skill-id", required=True)
++    parser.add_argument("--source-manifest", required=True, type=Path)
++    args = parser.parse_args()
++    try:
++        print(json.dumps(build_handoff(args.imported_skill_id, args.source_manifest), indent=2))
++    except (ValueError, OSError, json.JSONDecodeError) as error:
++        parser.error(str(error))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/scripts/test_prepare_mica_agent_handoff.py b/scripts/test_prepare_mica_agent_handoff.py
+new file mode 100644
+index 0000000..ddc679c
+--- /dev/null
++++ b/scripts/test_prepare_mica_agent_handoff.py
+@@ -0,0 +1,117 @@
++#!/usr/bin/env python3
++"""Offline cutover handoff checks; no provider calls."""
++
++import importlib.machinery
++import importlib.util
++import json
++import subprocess
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++from unittest import mock
++
++
++SCRIPT = Path(__file__).with_name("prepare-mica-agent-handoff")
++LOADER = importlib.machinery.SourceFileLoader("prepare_mica_agent_handoff", str(SCRIPT))
++SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
++assert SPEC is not None
++MODULE = importlib.util.module_from_spec(SPEC)
++LOADER.exec_module(MODULE)
++
++
++def source_manifest(directory: str) -> Path:
++    source = Path(directory) / "source-manifest.json"
++    identity = "a" * 64
++    source.write_text(json.dumps({
++        "schema_version": 1,
++        "policy_version": "mica-v1",
++        "skill_name": f"trackself-platform-{identity[:16]}",
++        "bundle_identity_sha256": identity,
++        "source_hashes_sha256": {"policy/SKILL.md": "b" * 64},
++        "packaged_file_hashes_sha256": {"SKILL.md": "c" * 64},
++    }))
++    return source
++
++
++class CandidateTests(unittest.TestCase):
++    def test_all_runtime_profiles_keep_identity_and_use_imported_skill(self) -> None:
++        skill_id = "3b055ec6-b733-44b9-994c-99762ecf78a4"
++        with tempfile.TemporaryDirectory() as directory:
++            handoff = MODULE.build_handoff(skill_id, source_manifest(directory))
++        agents = handoff["updates"]
++        self.assertEqual(len(agents), 24)
++        self.assertEqual(len(handoff["excluded_from_new_routing"]), 5)
++        self.assertEqual(len(handoff["review_routes"]), 5)
++        self.assertEqual(len({agent["id"] for agent in agents}), len(agents))
++        self.assertEqual({agent["environment"] for agent in agents}, {
++            "linux-container", "linux-branch", "linux-branch-2", "macos-native", "windows-native",
++        })
++        for agent in agents:
++            self.assertEqual(agent["skill_ids"], [skill_id])
++            self.assertEqual(agent["builtin_skill_mode"], "exact")
++            self.assertIn("builtin:multica-platform", agent["enabled_builtin_skill_ids"])
++        self.assertEqual({a["thinking_level"] for a in agents if a["role"] == "orchestrator"}, {"low"})
++        self.assertEqual({a["model"] for a in agents if a["role"] == "orchestrator"}, {"gpt-6-astra"})
++        self.assertEqual({a["model"] for a in agents if a["role"] == "implementor"}, {"gpt-6-luna"})
++        self.assertFalse({a["role"] for a in agents} & {"review_controller"})
++        self.assertEqual({route["review_fix"]["key"] for route in handoff["review_routes"]}, {
++            "senior_implementor", "senior_implementor_linux_branch", "senior_implementor_linux_branch_2",
++            "macos_senior_implementor", "windows_senior_implementor",
++        })
++
++    def test_legacy_skill_id_cannot_be_reused(self) -> None:
++        with tempfile.TemporaryDirectory() as directory:
++            with self.assertRaisesRegex(ValueError, "must differ"):
++                MODULE.build_handoff("836067d8-86f2-4395-bcb0-35be482ad4b6", source_manifest(directory))
++
++    def test_source_manifest_must_match_exact_policy_name(self) -> None:
++        with tempfile.TemporaryDirectory() as directory:
++            source = source_manifest(directory)
++            candidate = MODULE.build_handoff(
++                "3b055ec6-b733-44b9-994c-99762ecf78a4",
++                source,
++            )
++            self.assertEqual(len(candidate["source_manifest_sha256"]), 64)
++            data = json.loads(source.read_text())
++            data["skill_name"] = "trackself-platform-other"
++            source.write_text(json.dumps(data))
++            with self.assertRaisesRegex(ValueError, "invalid Mica v1 bundle identity"):
++                MODULE.build_handoff(
++                    "3b055ec6-b733-44b9-994c-99762ecf78a4",
++                    source,
++                )
++            source.write_text("[]")
++            with self.assertRaisesRegex(ValueError, "must be an object"):
++                MODULE.build_handoff("3b055ec6-b733-44b9-994c-99762ecf78a4", source)
++
++    def test_review_routes_are_selected_by_profile_and_must_be_retained(self) -> None:
++        with tempfile.TemporaryDirectory() as directory:
++            source = source_manifest(directory)
++            candidate = Path(directory) / "profile.toml"
++            original = MODULE.PROFILE_PATH.read_text()
++            candidate.write_text(original.replace('review_fix_route = "senior_implementor"', 'review_fix_route = "implementor"'))
++            with mock.patch.object(MODULE, "PROFILE_PATH", candidate):
++                handoff = MODULE.build_handoff("3b055ec6-b733-44b9-994c-99762ecf78a4", source)
++            self.assertEqual(
++                {route["review_fix"]["key"] for route in handoff["review_routes"]},
++                {"implementor", "implementor_linux_branch", "implementor_linux_branch_2",
++                 "macos_implementor", "windows_implementor"},
++            )
++            candidate.write_text(original.replace('review_fix_route = "senior_implementor"', 'review_fix_route = "review_controller"'))
++            with mock.patch.object(MODULE, "PROFILE_PATH", candidate):
++                with self.assertRaisesRegex(ValueError, "retained agents"):
++                    MODULE.build_handoff("3b055ec6-b733-44b9-994c-99762ecf78a4", source)
++
++    def test_live_apply_fails_before_provider_access(self) -> None:
++        script = Path(__file__).with_name("trackself-agent-definitions")
++        result = subprocess.run(
++            [sys.executable, str(script), "apply", "--confirm-workspace-id", "79b97585-6d1d-43cc-a611-db7e2f4faa62"],
++            capture_output=True, text=True, check=False,
++        )
++        self.assertEqual(result.returncode, 2)
++        self.assertIn("live apply is disabled", result.stderr)
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/scripts/test_trackself_agent_definitions.py b/scripts/test_trackself_agent_definitions.py
-index 0aa5a7b..385456a 100644
+index 0aa5a7b..ed49fa9 100644
 --- a/scripts/test_trackself_agent_definitions.py
 +++ b/scripts/test_trackself_agent_definitions.py
 @@ -305,7 +305,7 @@ class ManifestValidationTests(unittest.TestCase):
@@ -1229,19 +2525,43 @@ index 0aa5a7b..385456a 100644
  
      def test_wip_owners_have_editor_credential_delivery(self) -> None:
          manifest = MODULE.load_manifest()
+@@ -430,7 +428,7 @@ class ManifestValidationTests(unittest.TestCase):
+                     for peer in manifest["agents"]
+                 ))
+ 
+-    def test_working_on_issues_skill_carries_wip_readiness_contract(self) -> None:
++    def test_old_pr_reference_is_not_mica_readiness_authority(self) -> None:
+         manifest = MODULE.load_manifest()
+         files = manifest["skills"][0]["files"]
+         pull_request_reference = next(
 @@ -439,8 +437,10 @@ class ManifestValidationTests(unittest.TestCase):
              if path.endswith("references/pull-requests.md")
          )
  
-+        self.assertIn("selected policy owns candidate readiness", pull_request_reference)
++        adapter = next(skill["content"] for skill in manifest["skills"])
++        self.assertNotIn("Read [PR linking and state]", adapter)
++        self.assertNotIn("Read [continuation]", adapter)
          self.assertIn("WIP title is the readiness barrier", pull_request_reference)
 -        self.assertIn("Only removal under this contract means ready", pull_request_reference)
-+        self.assertIn("PR close-intent event", pull_request_reference)
-+        self.assertIn("candidate-aware acceptance", pull_request_reference)
          self.assertIn("grants no merge authority", pull_request_reference)
  
      def test_linux_implementors_have_two_task_slots_for_parallel_slices(self) -> None:
-@@ -570,8 +570,8 @@ class ManifestValidationTests(unittest.TestCase):
+@@ -530,10 +530,13 @@ class ManifestValidationTests(unittest.TestCase):
+                     )
+                     if family == "orchestrator":
+                         fields.discard("enabled_builtin_skill_ids")
++                        # The legacy desired state is in a partial provider
++                        # built-in migration. The inactive Mica candidate has
++                        # its own explicit platform/onboarding allowlist.
+                         self.assertEqual(
+                             set(platform["enabled_builtin_skill_ids"]),
+                             set(baseline["enabled_builtin_skill_ids"])
+-                            - {"builtin:multica-onboarding"},
++                            - {"builtin:multica-onboarding", "builtin:multica-platform"},
+                         )
+                     fields -= set(overrides)
+                     for field, expected in overrides.items():
+@@ -570,8 +573,8 @@ class ManifestValidationTests(unittest.TestCase):
                  if agent["role"] == "orchestrator":
                      skill = next(x for x in manifest["skills"] if x["id"] in agent["skill_ids"])
                      self.assertIn(skill["content_file"], agent["instructions"])
@@ -1252,7 +2572,7 @@ index 0aa5a7b..385456a 100644
  
      def test_fixed_multica_routing_matches_approved_roles(self) -> None:
          expected = {
-@@ -587,7 +587,7 @@ class ManifestValidationTests(unittest.TestCase):
+@@ -587,7 +590,7 @@ class ManifestValidationTests(unittest.TestCase):
              with self.subTest(agent=agent["key"]):
                  self.assertEqual((agent["model"], agent["thinking_level"]), expected[agent["role"]])
  
@@ -1261,7 +2581,7 @@ index 0aa5a7b..385456a 100644
          manifest = MODULE.load_manifest()
          by_key = {agent["key"]: agent["instructions"] for agent in manifest["agents"]}
          implementors = {
-@@ -599,17 +599,12 @@ class ManifestValidationTests(unittest.TestCase):
+@@ -599,17 +602,12 @@ class ManifestValidationTests(unittest.TestCase):
          for key in implementors:
              with self.subTest(key=key):
                  instructions = by_key[key]
@@ -1284,7 +2604,7 @@ index 0aa5a7b..385456a 100644
          manifest = MODULE.load_manifest()
          by_key = {agent["key"]: agent["instructions"] for agent in manifest["agents"]}
          review_controllers = {
-@@ -620,13 +615,13 @@ class ManifestValidationTests(unittest.TestCase):
+@@ -620,13 +618,13 @@ class ManifestValidationTests(unittest.TestCase):
          for key in review_controllers:
              with self.subTest(key=key):
                  instructions = by_key[key]
@@ -1304,7 +2624,7 @@ index 0aa5a7b..385456a 100644
          manifest = MODULE.load_manifest()
          by_key = {agent["key"]: agent["instructions"] for agent in manifest["agents"]}
          acceptance_reviewers = {
-@@ -637,13 +632,12 @@ class ManifestValidationTests(unittest.TestCase):
+@@ -637,13 +635,12 @@ class ManifestValidationTests(unittest.TestCase):
          for key in acceptance_reviewers:
              with self.subTest(key=key):
                  instructions = by_key[key]
@@ -1324,3 +2644,31 @@ index 0aa5a7b..385456a 100644
  
  
  class LiveSkillValidationTests(unittest.TestCase):
+diff --git a/scripts/trackself-agent-definitions b/scripts/trackself-agent-definitions
+index 36a0873..e593bb1 100755
+--- a/scripts/trackself-agent-definitions
++++ b/scripts/trackself-agent-definitions
+@@ -1166,7 +1166,7 @@ def parse_arguments() -> argparse.Namespace:
+         help="Limit read-back to one declared environment; may be repeated.",
+     )
+     apply_parser = subparsers.add_parser(
+-        "apply", help="Explicitly update drifted live agents, then read them back."
++        "apply", help="Disabled pending a proven current-provider mutation path."
+     )
+     apply_parser.add_argument("--confirm-workspace-id")
+     apply_parser.add_argument(
+@@ -1188,9 +1188,11 @@ def main() -> int:
+         if arguments.command == "check":
+             return command_check(scope_manifest(manifest, arguments.environment))
+         if arguments.command == "apply":
+-            return command_apply(
+-                scope_manifest(manifest, arguments.environment),
+-                arguments.confirm_workspace_id,
++            fail(
++                "live apply is disabled in the Mica cutover candidate: the legacy "
++                "agent mutation CLI path has not been proven against the current "
++                "provider. Use prepare-mica-agent-handoff for an offline, reviewable "
++                "binding plan after the final policy bundle is imported."
+             )
+         fail(f"unsupported command: {arguments.command}")
+     except DefinitionError as error:

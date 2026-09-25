@@ -13,10 +13,20 @@ Linux, macOS and Windows, and inspectable run history. Maintain a focused fork
 where necessary to support the selected workflow. Agent behavior must be
 configurable and overridable rather than inseparable from compiled prompts.
 
-This spec records the workflow agreed on 2026-09-24. It describes intended
-behavior, not an implemented or deployed capability. Technical choices and
-remaining policy parameters are identified below. Writing this spec does not
-activate automation, merge PRs, freeze live tickets, or migrate existing work.
+This spec records the workflow agreed on 2026-09-24, with production policy
+settings and completion semantics refined on 2026-09-25. Its core mechanics are
+implemented in the source published as `v0.5.1-janez.1` and have Linux provider
+and cross-repository trial evidence. Those trials used identified source
+snapshots and are not a deployed-environment canary; see [release.md](release.md)
+and [runtime-proof.md](runtime-proof.md) for the exact source and evidence
+boundaries. The Trackself workflow cutover remains inactive, and native macOS
+and Windows runtime checks remain deferred until deployment to those hosts.
+The revised `PR Ready`/`Done` and durable hold requirements below are not
+implemented by that release: acceptance currently writes `done`, and delivery
+expects it. See the [implementation boundary](README.md#candidate-review-and-acceptance).
+Prove these revised semantics before activating the updated policy.
+This spec does not itself activate automation, merge PRs, freeze live tickets,
+or migrate existing work.
 
 This file owns the proposed Multica fork behavior. Changes to shared Trackself
 protocol belong in canonical KB; provider configuration belongs in
@@ -145,8 +155,8 @@ the delegated deliverable boundary above.
 | `in_review`, review/fix agent | The agent has executable review work, including routine in-scope corrections. |
 | `in_review`, independent final reviewer | A fresh context evaluates the current resulting surface. |
 | `in_review`, human | Required engineering work and agent review are complete; human acceptance is needed. |
-| `done`, human-accepted work | The human accepted the identified candidate; configured delivery follows. |
-| `done`, autonomously accepted trivial work | An authorized agent accepted the candidate under the selected trivial-work policy; automatic delivery follows. |
+| `PR Ready`, accepted work with unmerged PRs | Required review and acceptance passed for the exact candidate; required PRs are ready, with delivery pending, held or failed. |
+| `done`, completed work | All required PRs have merged and the ticket’s actual outcome is complete; work requiring no PR may finish directly after acceptance. |
 
 Routine corrections remain within the review/fix cycle. Material work that must
 return to implementation can move back to `in_progress` and the appropriate
@@ -217,9 +227,11 @@ hardcoding a fixed set of agent identities.
 
 ### Acceptance, triviality and PR delivery
 
-For nontrivial work, successful required agent review leads to `in_review`
-assigned to the human. The human's transition to `done` is acceptance of the
-identified candidate and triggers the configured delivery policy.
+For work requiring human approval, successful required agent review leads to
+`in_review` assigned to the human. Acceptance records the actor, authority and
+exact candidate. With required PRs still unmerged, it moves the ticket to
+`PR Ready` and initiates the authorized delivery policy. A card movement alone
+does not manufacture acceptance or authority for unseen commits.
 
 Human rejection returns work to the appropriate retained implementation or
 review/fix context. Preserve the rejection, existing evidence and useful
@@ -231,7 +243,7 @@ unrelated evidence or silently expand the objective.
 
 Mica may classify a ticket as trivial under a configurable policy and record a
 brief reason. Trivial tickets are eligible for autonomous acceptance and merge,
-without waiting for a human `done` action. An authorized agent can accept and
+without waiting for a human acceptance action. An authorized agent can accept and
 complete them after the policy's required validation and review succeed.
 
 If scope or risk expands beyond the classification, the ticket returns to the
@@ -253,13 +265,58 @@ Acceptance and pending merge authority are tied to identified revisions. A new
 commit after acceptance invalidates authority to merge the changed candidate;
 it must receive the applicable evaluation and acceptance again.
 
-Delivery failure does not erase acceptance. The ticket shows acceptance together
-with delivery pending/failed, the reason and retry state. Retrying must not merge
-a different revision, duplicate completed actions or conceal partial delivery.
-For work with no PR, completion must not depend on manufacturing one.
+Delivery failure does not erase acceptance. While required merges remain, the
+ticket stays `PR Ready` and shows acceptance, pending/failed delivery, reason
+and retry state. For several PRs, record an explicit dependency-aware merge
+order and each result; partial delivery must not appear complete. Retrying must
+not merge a different revision or duplicate completed actions.
 
-The initial triviality threshold, merge method and coordinated multi-PR delivery
-policy remain to be selected. This spec authorizes their design, not live merges.
+Accept-but-hold means accepted work stays `PR Ready` with an explicit delivery
+hold. Preserve the hold across retries and restarts until an authorized release;
+acceptance or a retry alone must not clear it. Ordinary automatic delivery goes
+through `PR Ready` to `done` after all required merges and the actual outcome
+are complete. If deployment or runtime validation is part of the objective,
+merging alone is not completion. Work with no PR may finish directly after
+acceptance when its outcome is complete; do not manufacture a PR.
+
+A changed candidate invalidates affected review, acceptance and readiness and
+returns to the applicable work/review phase. Preserve already delivered facts
+and evaluate the new commits before authorizing further delivery.
+
+### Agreed production policy
+
+These settings were agreed on 2026-09-25. They describe the intended policy;
+encoding them and proving the revised status/hold behavior remain cutover work.
+
+- Autonomous acceptance and merge may cover bounded non-feature work that does
+  not change intended user flow or UX: mechanical refactors, targeted bug fixes
+  and mechanical edits. Record a short classification reason. There is no
+  numeric file-count or line-count threshold.
+- New features, substantive UI/flow/UX changes, data migrations and core-feature
+  changes involving sync or security require user approval. Classify the actual
+  affected behavior, not the task label: a targeted sync fix still needs approval.
+  Purely mechanical label/typo changes or applying already-agreed labels are
+  eligible; changing an action's meaning or interaction is a UX change. Existing
+  scoped approval remains valid; do not ask for the same authority again.
+- Independent review remains the normal requirement, including autonomous work.
+  Use the exception model below for justified departures; classification alone
+  does not waive review.
+- Mica may resolve an overcautious procedural block within existing authority:
+  repeated requests for already-granted permission, optional checks treated as
+  mandatory, or routine execution choices escalated unnecessarily. Record the
+  reason, scope and consequences briefly on the existing work record. This is
+  not delegated authority to waive the explicit user-approval categories above.
+  The user may grant a scoped exception to any user-owned project policy;
+  platform-enforced limits remain in force.
+- Use squash and merge by default, with a meaningful commit title/message and
+  ticket and PR references. This keeps routine development history readable.
+  A separate merge commit is a justified explicit exception for an integration
+  or release branch whose history is meaningful; do not routinely squash and
+  then create a second merge commit.
+
+This list can evolve through explicit policy revision. Keep existing ticket
+pins and scoped exceptions intact. These decisions do not authorize live
+merges or activate a workspace policy.
 
 ### Configurable policy and system mechanics
 
@@ -338,30 +395,28 @@ merely to retain resolved diagnoses.
 - A spec, successful unit test or completed agent run is not proof of the full
   workflow on the deployed environments.
 
-## Technical questions and remaining policy parameters
+## Remaining policy parameters
 
-The behavior above is the target. These questions must not be mistaken for
-reopening the user's agreement on that behavior.
+The released implementation supplies the handoff, context, policy and delivery
+mechanisms. Source behavior and bounded Linux/provider evidence are recorded
+in the [README](README.md), [implementation plan](implementation_plan.md), and
+[runtime proof](runtime-proof.md). The [agreed production policy](#agreed-production-policy)
+settles the classification, ordinary review requirement, supervisor boundary
+and default merge method. The disposable proof policy is not production configuration.
+Remaining configuration and implementation work is:
 
-| Kind | Question to resolve |
+| Parameter or gap | Remaining work |
 | --- | --- |
-| Technical | How is Mica's coordination ownership retained while another agent is assigned, and what reliably returns exceptions or results to Mica? |
-| Technical | Which native assignment/wakeup mechanism implements a recoverable handoff without duplicate launches or outgoing/incoming overlap? |
-| Technical | How are retained implementation/review contexts and explicitly fresh acceptance contexts selected, verified and recovered? What happens on a model/provider change? |
-| Technical | How is the blind review input assembled without inheriting implementation conversation or verdict coaching? |
-| Technical | How do ticket policy versions, scoped exceptions and explicit migrations cover behavioral inputs beyond the workflow skill bundle? |
-| Technical | What durable mechanism performs delivery after completion, independently of ordinary issue wakeups that stop on closed issues? |
-| Technical | Which deployed server/daemon versions, credentials and provider APIs support the required execution and PR actions, including the existing Forgejo usage? |
-| Technical | How do freezing and explicit migration cover active runs and every existing trigger path? |
-| Policy parameter | Initial configurable triviality criteria and exceptions; no numeric or file-count threshold has been agreed. |
-| Policy parameter | Initial review requirements by work class, model/effort mappings, and handling of a review cycle that cannot converge. |
-| Policy parameter | Merge method, automatic merge setting after human acceptance, and acceptance/delivery semantics for several PRs or repositories. |
+| Authority bindings | Select concrete autonomous acceptor and supervisor identities/scopes and human acceptance roles; encode the agreed boundaries in the bundle. |
+| Capability | Finalize model/effort mappings in workspace-control and escalation when a review cycle cannot converge. |
+| Delivery selection | Select the default after human acceptance (automatic merge or ready/hold); preserve a deliberate hold until authorized release. |
+| Completion mechanics | Implement and prove `PR Ready`, revision invalidation, durable holds, multi-PR partial failure and completion only after required delivery and outcome. Map the existing workspace status explicitly; do not invent an API status identifier from its display name. |
 
-The [implementation plan](implementation_plan.md) owns the current implementation
-position, revision-bound diagnoses, remaining mechanics and proof. The
-[fork README](README.md) describes available customization and its limits.
-Neither implementation progress nor a packaged policy establishes the complete
-workflow's acceptance criteria.
+The [implementation plan](implementation_plan.md) owns the current release,
+remaining coordination and activation boundary. The [fork README](README.md)
+describes available customization and its limits. Neither a released build nor
+the bounded runtime trials establish that the Trackself workflow is active or
+that deferred native-host behavior has been proven.
 
 Shared integration references to reconcile in the Trackself workspace are
 `kb/docs/workflow-automation.md`, `kb/skills/review-fix-cycle/SKILL.md`,
@@ -386,7 +441,9 @@ consumers. Keep shared requirements in KB and provider mappings in
 | Handoff recovery | Duplicate events, an ambiguous response or interruption does not produce duplicate recipient execution or review of a still-changing outgoing surface. |
 | Code handoff | A handoff identifies the draft PR, repository, branch and exact commit; technical review evidence stays in PR reviews, linked from the coordinating ticket. |
 | Cross-repository work | One ticket coordinates several PRs and identifies their candidate commits; acceptance and subsequent delivery cannot silently cover changed commits. |
-| Human acceptance | Nontrivial work reaches the human in `in_review`; human `done` records the candidate and initiates readiness and configured delivery. |
+| Human acceptance | Work requiring approval reaches the human in `in_review`; acceptance records actor, authority and exact candidate, then enters `PR Ready` while required PRs remain unmerged. |
+| Accept but hold | Acceptance with an explicit hold leaves the ticket `PR Ready`; retries and restarts preserve it until authorized release. |
+| Outcome completion | `done` requires all required PRs merged and the actual objective complete; no-PR work can finish directly after acceptance. Partial delivery and outstanding deployment/QA remain visible. |
 | Human rejection | An in-scope defect resumes the appropriate retained context, preserves evidence and invalidates affected acceptance; a new request is explicitly distinguished. |
 | Autonomous trivial work | A policy-qualified trivial ticket completes required checks/review, is accepted by an agent and merges without a human acceptance step. |
 | Classification change | Work that ceases to qualify as trivial loses autonomous acceptance eligibility and follows the human path. |
@@ -401,8 +458,10 @@ consumers. Keep shared requirements in KB and provider mappings in
 | Cutover | New tickets use the proven workflow; old unfinished tickets do not resume automatically; explicit migration preserves their work and restores deliberate continuation. |
 
 Validate state, authorization, concurrency, session and provider boundaries with
-focused automated tests, then demonstrate the complete workflow and recovery on
-Linux before initial activation. Native macOS and Windows receive targeted
+focused automated tests, then use the recorded Linux provider and
+cross-repository trials as the initial runtime evidence. Before activating
+Trackself, reconcile the consumers and prove the cutover-specific state against
+its exact workspace. Native macOS and Windows receive targeted
 dispatch, repository access and fresh/retained-context checks when deployed;
 their checks do not block Linux activation or repeat server-side delivery proof.
 Distinguish code-level evidence from

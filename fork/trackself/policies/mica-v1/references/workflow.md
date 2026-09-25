@@ -48,8 +48,15 @@ action:
   read-only evaluation is due.
 - After required agent review, `in_review` assigned to a human means human
   acceptance is due for nontrivial work.
-- `done` records human acceptance or an agent's acceptance under
-  policy-authorized trivial-work rules.
+- `PR Ready` means required review and acceptance passed for the exact candidate
+  but required PRs remain unmerged. Delivery may be pending, held or failed.
+- `done` means required PRs merged and the actual ticket outcome is complete.
+  No-PR work may finish directly after acceptance when its outcome is complete.
+
+These are next-policy requirements. The released acceptance/delivery path still
+uses `done`; do not activate this draft until status mapping and hold behavior
+are implemented and proven. Resolve the workspace status identifier from its
+configuration, not by guessing from the `PR Ready` display name.
 
 Prepare the outgoing result before evaluation starts, then record its owner,
 status and context with `multica issue handoff create <issue-id> --file <json>`.
@@ -87,6 +94,21 @@ review, candidate and authority before accepting and delivering. Do not perform
 manual ticket mutations after requesting acceptance.
 
 ## Review and exceptions
+
+Autonomous acceptance/merge is eligible for bounded non-feature work without
+intended flow/UX changes: mechanical refactors, targeted fixes and mechanical
+edits. New features, substantive UI/flow/UX changes, migrations and core-feature
+changes involving sync/security require user approval. Judge affected behavior,
+not labels: a targeted sync fix still requires approval. Mechanical label/typo
+edits or already-agreed labels are eligible; altered meaning/interaction is a
+UX change. Record a short classification reason, without numeric size thresholds.
+Honor existing scoped approval without asking for it again.
+
+Mica may clear an overcautious procedural block within already-granted authority,
+such as repeated permission requests, optional checks treated as mandatory or
+needless escalation of routine choices. Briefly record scope, reason and
+consequences. This does not delegate waiver of the explicit user-approval
+categories; the user can grant a scoped exception to user-owned policy.
 
 Implementation normally receives independent review, including work that may
 qualify as trivial. The first reviewer starts a fresh context from
@@ -150,15 +172,26 @@ are satisfied. A trivial classification, subtask completion or installed
 bundle grants no authority by itself. If scope or risk no longer fits the
 classification, return to the policy's ordinary acceptance path.
 
-Acceptance identifies the exact reviewed commit or commits. Remove a `WIP:`
+Acceptance records its actor, authority and exact reviewed commit or commits.
+Card movement alone does not create acceptance. Remove a `WIP:`
 PR title prefix and, where supported, mark a draft PR ready for review. After
 human acceptance, merge only when the selected policy calls for it; otherwise
 leave the PR ready. For policy-authorized trivial work, merge after required
 checks and branch protections permit it. A later commit invalidates authority
 to merge that changed candidate and requires the applicable review and
 acceptance again. Delivery failures preserve acceptance and remain visible
-with a retry tied to those same authorized commits. Work without a PR does not
-need one manufactured for completion.
+with a retry tied to those same authorized commits. Keep `PR Ready` while
+required merges remain and expose partial delivery in explicit merge order.
+Preserve an intentional hold across retries/restarts until authorized release.
+New commits invalidate affected review, acceptance and readiness. Mark `done`
+only when required merges and the actual objective are complete, including any
+required deployment or runtime validation. Work without a PR does not need one
+manufactured for completion.
+
+Use squash and merge by default with a meaningful commit title/message and
+references to the ticket and PR. A separate merge commit is a justified explicit
+exception for an integration or release branch with meaningful history.
+Existing ticket pins and scoped overrides remain effective when defaults change.
 
 ## Durable project context
 

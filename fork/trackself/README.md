@@ -205,6 +205,16 @@ migration is not a substitute for invalidating its acceptance.
 
 ## Candidate review and acceptance
 
+**Released behavior versus next policy:** the current acceptance path writes
+`done` in `server/internal/service/workflow_authority_accept.go`; the delivery
+worker and retry path require that status. The agreed
+[`PR Ready`/`Done` and hold semantics](workflow_spec.md#acceptance-triviality-and-pr-delivery)
+are a subsequent requirement, not a capability established by `v0.5.1-janez.1`
+or its recorded trials. Implement and prove the status mapping, persistent hold,
+revision invalidation and delivery-completion behavior before activating the
+updated policy source. Do not simulate acceptance by moving a card or invent
+unsupported command arguments.
+
 The optional `runtime/policy.json` in a policy source directory configures
 machine-enforced authority. Its contents participate in the immutable bundle
 identity. Without this file, independent review is required, workspace owners,

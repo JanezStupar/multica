@@ -1,3 +1,10 @@
+This source is a draft for the next policy version. Do not activate it until
+`PR Ready`/`Done`, persistent holds and the concrete authority bindings are
+implemented and proven. The released workflow currently marks acceptance
+`done`; the commands below document that release's API, not proof of the revised
+completion semantics. Do not emulate the new semantics through manual status
+writes or unsupported flags. Existing tickets follow their pinned version.
+
 For a Trackself issue, whether you are Mica, an implementor, a reviewer or
 another assigned role, understand the requested outcome, current phase,
 trigger and ownership before acting. Identify the policy version explicitly

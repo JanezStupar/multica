@@ -1,0 +1,1658 @@
+diff --git a/README.md b/README.md
+index 55cbf85..c8283aa 100644
+--- a/README.md
++++ b/README.md
+@@ -55,8 +55,12 @@ or situation-specific instruction may override them (a **state of exception**).
+ Briefly identify the existing rule and the stated exception once, then honor
+ its scope and duration without repeated objections or requests for the same
+ approval. Do not infer a permanent policy change or additional authority.
+-Record an exception in the relevant handoff or durable artifact when another
+-role must rely on it. A task, tool result, or agent report cannot invent one.
++Record an exception in the relevant work record or durable artifact when another
++role must rely on it. A supervisor may also grant a justified, scoped exception
++within authority delegated by the user or active policy; record its reason and
++consequences. Neither kind of exception silently changes the standing default
++or grants authority beyond its scope. A task, tool result, or agent report
++cannot invent one.
+ 
+ Explicit, scoped execution authorization persists across turns. A direct
+ instruction to execute an already-discussed change authorizes its necessary
+diff --git a/decisions/0013-lean-capability-aware-agent-protocols.md b/decisions/0013-lean-capability-aware-agent-protocols.md
+index 67ba622..faf4401 100644
+--- a/decisions/0013-lean-capability-aware-agent-protocols.md
++++ b/decisions/0013-lean-capability-aware-agent-protocols.md
+@@ -18,6 +18,7 @@ These protocols target GPT-5-era and newer coding agents. They do not need scaff
+ - Treat agent profiles as responsibility boundaries, not model identities. Proactively assess delegation for substantial work under the [standing delegation policy](../README.md#delegation-initiative). Delegate when it improves cost, focus, independence or parallelism; retain direct execution when coordination overhead outweighs the benefit. Routine in-scope delegation needs notification, not separate user approval; explicit task restrictions and runtime limits still apply.
+ - Use tickets for operational tracking and maintained bounded plans for needed coordination under [ADR 0023](0023-ticket-owned-work-status.md). Preserve essential context in repository owners; specs, decisions, code/tests and dated evidence retain distinct roles.
+ - Scale context gathering, planning ceremony, documentation, and validation to task complexity and risk. Preserve deterministic checks where they cheaply enforce real invariants.
++- Treat operational policies as versioned defaults selected for each ticket. A scoped user exception, or a supervisor exception within delegated authority, can change the applicable behavior without rewriting the default. Preserve the ticket's base policy identity and record the exception and its consequences; a later default edit does not silently reinterpret existing work. [ADR 0017](0017-progressive-workflow-automation.md) owns automation and review boundaries.
+ 
+ [ADR 0012](0012-mechanical-enforcement-layer.md) owns structural enforcement and its boundary with semantic review. Skill bodies have no universal required-section list.
+ 
+diff --git a/decisions/0017-progressive-workflow-automation.md b/decisions/0017-progressive-workflow-automation.md
+index 63589fa..bdc3f4c 100644
+--- a/decisions/0017-progressive-workflow-automation.md
++++ b/decisions/0017-progressive-workflow-automation.md
+@@ -4,11 +4,10 @@
+ Accepted
+ 
+ ## Context
+-The proven engineering workflow uses a persistent Primary session, fresh
+-Implementor and Review Controller sessions, optional bounded workers, and final
+-Primary reconciliation. Manual prompt copying and status updates add friction,
+-but removing them must not collapse architectural ownership, review
+-independence, or approval boundaries.
++The engineering workflow needs implementation continuity, deliberate fresh
++review, and Primary reconciliation. Manual prompt copying and status updates
++add friction, but removing them must preserve architectural ownership, review
++independence, and approval boundaries.
+ 
+ Projects also need to adopt automation gradually. Installing or configuring an
+ operational tool is not sufficient evidence that a project intends agents to
+@@ -20,9 +19,19 @@ continuity without making every later role context ingest all prior execution
+ history or turning each provider run into a separate engineering objective.
+ 
+ ## Decision
+-- Keep Primary, Implementor, and Review Controller as top-level sessions.
+-  Subordinate implementation workers, researchers, and read-only acceptance
+-  reviewers remain project-scoped agent profiles.
++
++This decision retains progressive authorization for automatic work while making
++the issue topology an integration-owned choice. Automatic execution does not by
++itself require a parent/child stage graph. A project that selects staged
++children must declare that pattern and its lifecycle in its active, versioned
++integration instructions.
++
++- Preserve Primary authority, implementation ownership, and independent
++  evaluation as distinct responsibilities. They are not a required hierarchy
++  of separate agent identities or top-level sessions. An integration chooses
++  context and profile boundaries for continuity, capability, parallelism, and
++  any required fresh independent review. Optional implementation workers,
++  researchers, and acceptance reviewers remain project-scoped profiles.
+ - Declare active tools and automation in both human-readable `AGENTS.md` and
+   machine-readable `project-workflow.toml`. They must agree.
+ - Use the declared operational system's native identities, task lifecycle,
+@@ -32,60 +41,79 @@ history or turning each provider run into a separate engineering objective.
+ - Support three progressive automation levels:
+   - `ticket-only`: create and update tickets; people launch sessions manually;
+   - `launch-on-command`: each explicit trigger authorizes one routine role run;
+-  - `automatic`: starting one approved bounded parent objective authorizes its
+-    declared child stages, routine implementation, review/fix, fresh acceptance
+-    passes, orchestrator reconciliation, validation, and local commit flow.
++  - `automatic`: one approved bounded objective may progress through the
++    routine actions explicitly authorized by the project's active integration,
++    without a new human trigger for every role run. This level alone does not
++    prescribe issue topology, roles, status transitions, review policy, or
++    delivery actions.
+ - Treat the selected automation level as durable project authorization for the
+   declared ticket, repositories, development target, and lower levels. Agents
+   do not repeatedly request permission for routine in-scope actions already
+   authorized by that level.
+-- Keep push, deployment, remote mutation, package installation, privileged or
+-  system changes, destructive cleanup, automation-level changes, and starting
+-  an undeclared or materially changed slice outside this durable authorization.
++- Bind each ticket to its selected policy version across runs and retries. A
++  new default applies to new tickets; existing work changes policy only through
++  explicit migration or a scoped override. Record user exceptions and justified
++  supervisor exceptions within delegated authority alongside their reason,
++  scope, and consequences. An exception does not expand underlying permissions.
++- Keep push, deployment, remote mutation, host or system package installation,
++  privileged or system changes, destructive cleanup, automation-level changes,
++  and materially changed scope outside this durable authorization unless a
++  separately declared project policy or explicit user instruction authorizes
++  the exact action. Repository-local dependency hydration follows ADR 0020.
+ - Keep Primary authority explicit. Conversation resumption is useful recovery,
+   not a correctness requirement: a fresh Primary may reconstruct context from
+-  the owning artifacts, operational history, and actual repository state. If
+-  no Primary is available, automatic operation stops at `Needs Primary`.
+-- Keep the durable product objective under Human Primary's product,
+-  architecture, scope, and final-completion authority. For a bounded automatic
+-  objective, assign the parent operationally to the declared native
+-  orchestrator so terminal child stages wake the coordinator that can evaluate
+-  evidence and promote the next stage. Operational assignment does not transfer
+-  Human Primary authority. The parent is a continuity and reconciliation
+-  surface, not an Implementor task. Each materially distinct implementation
+-  slice uses one child objective with its own observable terminal condition,
+-  scope, focused validation, boundaries, owning references, and parent binding.
++  the owning artifacts, operational history, and actual repository state.
++  Escalate a decision outside delegated authority to Primary; if no such
++  authority is available, pause only the dependent work.
++- Keep the durable product objective under the user's product, architecture,
++  and scope authority, with Primary carrying that context. Completion authority
++  follows the selected ticket policy and any justified scoped exception; the
++  integration must identify who may accept which candidate after its required
++  evaluation. Keep related implementation,
++  review/fix, and acceptance work on its owning issue while the outcome remains
++  coherent. Create a separate issue when it represents an independently
++  trackable outcome, genuine parallel work, a distinct owner or environment, or
++  a dependency that benefits from separate coordination. An operational
++  parent/child graph is an integration choice; operational assignment does not
++  transfer user or Primary authority.
+ - Treat provider runs as execution attempts, not milestones. Retry, recovery,
+-  interruption, and ordinary same-role continuation remain on the same
+-  slice child while its outcome stays coherent. A materially different slice
+-  uses a new child and fresh role context when the operational system
+-  provides an issue-scoped session boundary.
+-- The automatic parent owns ordered child stages: independently completable
+-  implementation slices, one reusable integration-review/fix child, and one
+-  fresh acceptance-verdict child per acceptance pass. The parent orchestrator
+-  reconciles completed slices into one coherent surface before promoting
+-  review. Review inspects the actual combined repositories, not only slice
+-  reports. A slice receives its own review only when it is independently risky,
+-  externally consumable, or difficult to reverse.
+-- Every automatic specialist child explicitly delegates only its own terminal
+-  status transition. An implementation child is complete after its criteria
+-  and focused validation pass with no separate slice-local review remaining.
+-  The reusable integration-review child is complete only when the combined
+-  surface is clean. An acceptance child is complete after it posts one valid
+-  `accepted`, `rejected`, or `blocked` verdict. The executing role posts its
+-  result, marks only that assigned child `done`, and reads it back. This does
+-  not transfer parent reconciliation, assignment, sibling or later-stage
+-  mutation, or broader Human Primary authority.
+-- Native child-stage completion is the automatic continuation signal. A finite
+-  task ending, a comment, or reassignment does not return control to a former
+-  owner. The woken parent orchestrator reads the completed child and task
+-  evidence before promoting the next stage or applying a verdict.
+-- Routine acceptance rejection reopens and reassigns the same Review Controller
+-  child so provider-session continuity can be verified. After the repaired
+-  surface is clean, create a new acceptance child so each pass has a fresh
+-  read-only issue and provider context. Proven Review Controller session loss
+-  or material Implementor rework ends the cycle and requires a new owning
+-  child from the actual surface.
++  interruption, and ordinary same-role continuation remain on the same issue
++  while its outcome stays coherent. A separate issue is appropriate when the
++  work has become a materially different outcome or needs a durable ownership
++  or coordination boundary; it is not required merely because a run ended.
++- An integration may explicitly select ordered parent/child stages when its
++  operational system provides a reliable continuation path and the work
++  benefits from that coordination. Its versioned instructions own the stage
++  graph, role assignments, wakeups, and reconciliation. A staged pattern may
++  use independently completable implementation issues, an integrated review
++  issue, and a distinct fresh acceptance context per verdict. None of those
++  separate issues is a universal requirement. Review evaluates the actual
++  candidate, not only implementation reports; focused per-slice review is
++  reserved for work that is independently risky, externally consumable, or
++  difficult to reverse.
++- Delegate only the actions and transitions explicitly granted to a role.
++  Where a project selects staged children, a child may receive narrow authority
++  to reconcile and complete only its own outcome. That does not transfer parent
++  reconciliation, assignment, sibling or later-stage mutation, or broader
++  user or Primary authority. Integrations must define their exact status and
++  read-back behavior.
++- Every automatic integration must define a durable continuation path and
++  safe recovery from ambiguous responses. A finite task ending, comment, or
++  reassignment does not by itself transfer control to a former owner. In a
++  declared staged-child pattern, child completion may be its continuation
++  signal; the coordinator reads back the child and task evidence before any
++  authorized next transition.
++- Routine in-scope review findings return to the retained review/fix context
++  while its provider-session continuity remains usable. Each required final
++  independent review uses a fresh, read-only reviewer context that evaluates
++  the exact changed candidate without a suggested verdict. Proven continuity
++  loss or material rework requires a new review/fix cycle. Separate issues may
++  represent these roles when the integration benefits from durable ownership,
++  but separate issue records do not themselves prove reviewer independence.
++- Link code handoffs and technical review evidence to exact PR commits. PR
++  reviews own findings, fixes, validation, and verdicts; tickets own status,
++  blockers, acceptance, and the links. New commits invalidate affected review
++  and acceptance, which must be renewed before delivery.
+ - Maintain one standalone canonical Codex project template. Copies packaged by
+   optional workspace tools are derived mechanically from it.
+ 
+@@ -96,10 +124,10 @@ history or turning each provider run into a separate engineering objective.
+     automatic progression;
+   - native operational identity and task history remain visible instead of
+     being projected through a parallel controller;
+-  - native child-stage completion gives every automatic transition a durable
+-    return path to the operational parent orchestrator;
+-  - product continuity remains stable while each implementation context stays
+-    bounded to one coherent slice and review covers the integrated result;
++  - integrations can select a durable continuation path that fits their native
++    operational system without imposing one issue graph on every project;
++  - product continuity remains stable while a coherent implementation context
++    can span several runs and review covers the actual resulting candidate;
+   - focused slice validation catches local defects without multiplying routine
+     review and acceptance tickets;
+   - routine authorized work does not stall on redundant permission prompts.
+@@ -108,9 +136,10 @@ history or turning each provider run into a separate engineering objective.
+   - projects depend on the declared operational system's execution semantics;
+   - native integrations still require project-owned workspace and authority
+     mapping;
+-  - the parent orchestrator must create, promote, and reconcile staged children
+-    and verify task and provider-session identity after every wake;
+-  - each acceptance pass creates a separate verdict child;
++  - projects that opt into staged children must maintain the additional graph,
++    delegated transitions, and read-back checks they declare;
++  - independent review requires a fresh evaluation context for each verdict,
++    whether or not the integration uses a separate issue for that context;
+   - defects that cross slice boundaries may be found later than they would be
+     under review-after-every-slice;
+   - external and privileged operations still require a separate approval path.
+@@ -121,14 +150,16 @@ history or turning each provider run into a separate engineering objective.
+ - Require a project-owned orchestration layer for every operational system —
+   rejected because it can duplicate native task, identity, retry, and
+   observability behavior without adding project value.
+-- Model Primary, Implementor, and Review Controller as recursive subagents —
+-  rejected because they own separate long-lived or fresh top-level contexts.
+-- Send every review finding back to Implementor — rejected because Review
+-  Controller already has the context and authority to fix routine findings.
++- Require fixed identities and a fixed hierarchy for Primary, implementation,
++  and review responsibilities — rejected because responsibility and independent
++  judgment do not require a permanent one-role-per-agent topology.
++- Send every review finding back to the original implementor — rejected
++  because the retained editing review context can fix routine findings.
+ - Infer authority from installed software or credentials — rejected because
+   installation is not project intent.
+-- Keep every milestone and run on one product issue — rejected because stale
+-  execution history grows without a useful context boundary.
++- Keep every milestone and run on one product issue — not adopted as a
++  universal rule; preserve one issue while its outcome remains coherent and
++  split work only for an independent outcome or useful coordination boundary.
+ - Create one issue per provider run — rejected because a run is an execution
+   attempt rather than a coherent engineering objective.
+ - Review and independently accept every slice by default — rejected because it
+@@ -136,9 +167,8 @@ history or turning each provider run into a separate engineering objective.
+   retain it as a risk-based exception.
+ - Replace the product issue for each phase — rejected because it fragments
+   durable product continuity and completion lineage.
+-- Reassign one integration-review issue between Review Controller and
+-  Acceptance Reviewer — rejected because neither the verdict comment nor the
+-  finite acceptance task wakes the previous orchestrator.
++- Use a task or issue ID alone as proof of review independence — rejected
++  because provider context may still be reused.
+ 
+ ## References
+ - Optional tools and project declaration: `../docs/integration-adapters.md`
+@@ -151,6 +181,12 @@ history or turning each provider run into a separate engineering objective.
+ 
+ ## Pilot amendment history
+ 
++- 2026-09-24: Scoped the staged parent/child graph to integrations that
++  explicitly select and declare it. Automatic authorization no longer implies
++  one child per implementation slice, a reusable review child, or an
++  acceptance child per verdict. Preserve the historical pilot details below as
++  evidence for projects that still use that pattern; they are not a default for
++  unrelated integrations.
+ - 2026-08-14: Under the owner's continuing pilot override, changed the default
+   from review and acceptance per implementation milestone to focused validation
+   per slice followed by one integrated review/fix and acceptance issue.
+diff --git a/decisions/0019-human-readable-operational-objectives.md b/decisions/0019-human-readable-operational-objectives.md
+index ffabd47..d7ffeb0 100644
+--- a/decisions/0019-human-readable-operational-objectives.md
++++ b/decisions/0019-human-readable-operational-objectives.md
+@@ -16,17 +16,16 @@ execution evidence; it is not interchangeable with engineering completion.
+ 
+ ## Decision
+ - Every newly authored or materially rewritten human-facing operational issue
+-  objective begins with an `Executive summary` that can be understood without
+-  opening its linked documents.
+-- The executive summary states, in plain language:
++  objective begins with a plain-language outcome that can be understood without
++  opening its linked documents. An `Executive summary` heading is optional.
++- The opening states, in plain language:
+   - the problem or opportunity;
+   - the intended outcome and why it matters;
+   - the current completion or blocking state.
+-- The remainder of the objective makes the execution contract explicit. It
+-  includes the objective, current state when work is already underway, done
+-  criteria, authority boundaries, and owning references. It includes the next
+-  executable slice when the complete objective is blocked or intentionally
+-  staged.
++- The remainder names the relevant scope, boundaries, completion evidence,
++  current state when work is already underway, and owning references. Name the
++  next actor or action when needed for a handoff. Add separate sections only
++  when they help the reader understand a complex objective.
+ - References remain authoritative for detailed product and implementation
+   truth. The summary explains the ticket; it does not copy the referenced
+   documents or create a competing specification.
+@@ -46,7 +45,7 @@ execution evidence; it is not interchangeable with engineering completion.
+   - linked specifications remain authoritative without becoming mandatory
+     reading for basic issue comprehension.
+ - Negative / trade-offs:
+-  - issue descriptions are longer than minimal agent-only handoffs;
++  - issue descriptions require some plain-language context beyond agent-only handoffs;
+   - summaries can drift if current state changes without updating the issue;
+   - authors must exercise judgment to summarize without duplicating contracts.
+ - Follow-ups:
+diff --git a/decisions/0020-workspace-local-development-authority.md b/decisions/0020-workspace-local-development-authority.md
+index 1d16b3d..aa52d3c 100644
+--- a/decisions/0020-workspace-local-development-authority.md
++++ b/decisions/0020-workspace-local-development-authority.md
+@@ -4,9 +4,10 @@
+ Accepted
+ 
+ ## Context
+-ADR 0017 keeps package installation outside durable workflow authorization so
+-an agent cannot turn a product ticket into host, system, runtime-image, or
+-deployment administration. The unqualified phrase can also be read to forbid
++ADR 0017 keeps host or system package installation outside durable workflow
++authorization so an agent cannot turn a product ticket into host, system,
++runtime-image, or deployment administration. Its former unqualified phrase
++could also be read to forbid
+ ordinary repository setup such as creating an ignored Python virtual
+ environment, hydrating declared dependencies, or preparing a disposable test
+ database. That reading repeatedly stops implementation inside an already
+diff --git a/decisions/0021-project-repositories-and-execution-targets.md b/decisions/0021-project-repositories-and-execution-targets.md
+index 264935c..6db7749 100644
+--- a/decisions/0021-project-repositories-and-execution-targets.md
++++ b/decisions/0021-project-repositories-and-execution-targets.md
+@@ -7,6 +7,11 @@ The accepted decisions below retain their existing authority. The synthetic
+ acceptance/artifact direction, dispatch/result-delivery and failed-environment
+ retention sections retain their explicit Proposed status; the record-level status
+ does not imply their remaining validation or rollout gates have passed.
++This record owns Trackself-specific execution decisions and evidence. Its lane,
++child, and completion procedures apply only while the corresponding versioned
++Trackself policy selects them; they are not provider-neutral workflow mandates.
++Changing a default requires explicit handling of unfinished tickets under their
++pinned policy, as described in [ADR 0017](0017-progressive-workflow-automation.md).
+ 
+ ## Project execution and concurrent lane isolation
+ 
+@@ -136,9 +141,10 @@ failures require distinct corrections, not removal of independent review.
+ 
+ ### Decision
+ 
+-Use the persisted issue result and reconciled criteria as required delivery;
+-comments are optional. Preserve one native terminal-child wake and read-back on
+-ambiguous transitions. Validate explicit stage capabilities and repository
++For the explicitly selected staged Trackself lane, use the persisted issue
++result and reconciled criteria as required delivery; comments are optional.
++Preserve one native terminal-child wake and read-back on ambiguous transitions.
++Validate explicit stage capabilities and repository
+ baselines before dispatch using the existing execution-target adapter. Keep
+ candidate identity separate from the declared implementation baseline.
+ 
+@@ -147,8 +153,9 @@ Recovery must distinguish code defects, missing prerequisites and communication
+ failure. Do not repeat completed engineering for transport repair. Keep fresh
+ independent acceptance for each new verdict.
+ 
+-The shared contract lives in [workflow automation](../docs/workflow-automation.md).
+-Project adapters own concrete capability declarations and dispatch checks. The
++The provider-neutral boundaries live in [workflow automation](../docs/workflow-automation.md).
++The selected Trackself integration owns this staged lifecycle and concrete
++capability declarations and dispatch checks. The
+ Trackself implementation is in workspace-control's existing project-workspace
+ guard and role instructions; it does not introduce a second scheduler.
+ 
+@@ -272,7 +279,7 @@ execution capacity were represented by the same lane marker.
+ 
+ ### Decision
+ 
+-Use the [workflow release procedure](../docs/workflow-automation.md) to remove
++Use the selected Trackself lane release procedure to remove
+ lane membership while retaining an explicit nonterminal external gate, its owner
+ and exact candidate. Separate code acceptance from user GUI QA. Named external
+ product decisions may park similarly without overstating implementation maturity.
+@@ -314,7 +321,9 @@ without inventing observations. Engineering acceptance remains independent;
+ material changes cause affected evaluation, not another permission request.
+ Optional artifacts and administrative repairs cannot silently reopen product QA.
+ 
+-The canonical procedure is [workflow automation](../docs/workflow-automation.md).
++The selected Trackself lane procedure owns this operational reconciliation;
++[workflow automation](../docs/workflow-automation.md) owns shared authority and
++evidence boundaries.
+ Scope expansion, genuine prerequisites and separately controlled external actions
+ still require their existing decisions or authority. No merge, deployment, lane
+ migration, additional data access or automatic notification capability is granted.
+diff --git a/decisions/0023-ticket-owned-work-status.md b/decisions/0023-ticket-owned-work-status.md
+index 3767381..2214d54 100644
+--- a/decisions/0023-ticket-owned-work-status.md
++++ b/decisions/0023-ticket-owned-work-status.md
+@@ -32,8 +32,12 @@ observations on an identified build. Docs and ADRs explain purpose, rationale,
+ limitations and operation; distinguish intended, implemented, observed and unknown.
+ Do not redefine requirements to match broken code or infer a pass from a test file.
+ 
+-Use tickets and PRs for assignments, discussion, individual execution, review and
+-delivery tracking. Use a plan when it helps coordinate a feature or bounded stretch
++Use tickets for assignments, scope, current owner, status, blockers, acceptance,
++and links to exact candidates and review evidence. For code handoffs, PRs and
++their reviews record the branch and commit, technical findings, fixes,
++validation, and independent verdict. A ticket links those reviews instead of
++copying their reports. One ticket may coordinate several PRs, while work without
++code need not manufacture one. Use a plan when it helps coordinate a feature or bounded stretch
+ of unfinished work. It records the outcome, current position, dependencies,
+ remaining work, decisions, owner and completion condition. Verified ticket status
+ and completed milestones may be summarized when needed to explain readiness or the
+diff --git a/decisions/README.md b/decisions/README.md
+index 1db455d..d4c6211 100644
+--- a/decisions/README.md
++++ b/decisions/README.md
+@@ -31,11 +31,10 @@ record, follow the explicit section statuses in
+ - `0015-autotracking-product-and-runtime-direction.md` — reusable plugin ownership, app-only-first runtime direction, explicit companion authority, and authenticated external Linux integration.
+ - `0016-manifest-managed-workspace-control.md` — explicit activation and composability for optional workspace and operational adapters.
+ - `0017-progressive-workflow-automation.md` — progressive automation levels,
+-  native-system-first execution, Human Primary product authority, and bounded
+-  automatic parent objectives with staged implementation, reusable review, and
+-  fresh acceptance children.
++  native-system-first execution, Primary product authority, and optional
++  integration-owned issue decomposition with independent review.
+ - `0018-logical-cross-repository-references.md` — stable repository IDs, qualified cross-repository addresses, and frozen-manifest version semantics.
+-- `0019-human-readable-operational-objectives.md` — executive-summary-first
++- `0019-human-readable-operational-objectives.md` — outcome-first
+   operational objectives whose status follows engineering completion rather
+   than individual agent runs.
+ - `0020-workspace-local-development-authority.md` — liberal non-root
+@@ -65,7 +64,7 @@ KB-internal relative-link rule and machine-path prohibition. It refines ADR
+ 0016's manifest naming convention without making workspace composition
+ mandatory.
+ 
+-ADR 0020 clarifies ADR 0017's unqualified package-installation boundary:
++ADR 0020 clarifies ADR 0017's package-installation boundary:
+ declared dependency hydration inside ignored workspace-local environments is
+ routine development, while host/system and execution-environment installation
+ remain outside durable workflow authority.
+diff --git a/docs/agent-integration-snippet.md b/docs/agent-integration-snippet.md
+index 848fb41..2f8453d 100644
+--- a/docs/agent-integration-snippet.md
++++ b/docs/agent-integration-snippet.md
+@@ -38,7 +38,9 @@ Installation or credentials do not activate an integration.
+ 
+ Use integration-specific preflight only for an adapter declared active here. Do not infer activation from installed tools, available credentials, or references copied from another context. This declaration and `project-workflow.toml` must agree.
+ 
+-Primary, Implementor, and Review Controller are top-level Codex sessions. Project `.codex/agents/` profiles are subordinate workers and read-only acceptance reviewers.
++Primary, implementation, and review are responsibilities; the active workflow
++chooses contexts for continuity and independent evaluation. Project
++`.codex/agents/` profiles are subordinate workers and read-only acceptance reviewers.
+ 
+ Read the project's adapted Primary prompt or the KB's
+ `templates/codex-project/primary.md` on fresh startup or resumption. Primary is
+diff --git a/docs/artifact-lifecycle.md b/docs/artifact-lifecycle.md
+index 5b649c3..eaab1a6 100644
+--- a/docs/artifact-lifecycle.md
++++ b/docs/artifact-lifecycle.md
+@@ -15,7 +15,7 @@ Workflow routing lives in `../skills/`; canonical shapes live in `../templates/`
+ | ADR | a durable decision, alternatives, and rationale | current work status |
+ | Code and tests | actual implementation and executable checks | intended behavior, correctness, or a passing run without evidence |
+ | QA or investigation evidence | dated observations on an identified source/build and environment | current product correctness or work status |
+-| Ticket and linked PRs | remaining work, blockers, review and delivery status | behavioral contracts or runtime proof without evidence |
++| Ticket and linked PRs | remaining work, blockers, acceptance and delivery status; PR reviews own technical findings and exact-candidate verdicts | behavioral contracts or runtime proof without evidence |
+ | Coordination plan | bounded outcome, current checkpoints, dependencies, remaining work and decisions | implementation or runtime proof merely from status prose |
+ | Inventory or runbook | asset purpose, retained contents, operating/recovery procedures and dated observations | continuously verified runtime state |
+ | Curated improvement list | unselected improvements, reasons, affected scope and evidence pointers | active execution status or automatic approval |
+diff --git a/docs/codex-project-home.md b/docs/codex-project-home.md
+index 5327ed9..0953ff0 100644
+--- a/docs/codex-project-home.md
++++ b/docs/codex-project-home.md
+@@ -23,9 +23,9 @@ A trusted project's `.codex/` owns portable project policy:
+ Never commit authentication, secrets, personal trust entries, machine-local absolute paths, sessions, memories, logs, or caches into project configuration.
+ 
+ Use the standalone project template at `../templates/codex-project/README.md`
+-whether the project uses ordinary Git checkouts or a workspace tool. Primary,
+-Implementor, and Review Controller are top-level sessions; the bundled custom
+-roles are subordinate workers and read-only acceptance reviewers.
++whether the project uses ordinary Git checkouts or a workspace tool. The
++bundled custom roles are subordinate workers and read-only acceptance reviewers;
++the active project policy chooses top-level execution contexts.
+ 
+ ## Compatibility Runtime Home
+ 
+diff --git a/docs/workflow-automation.md b/docs/workflow-automation.md
+index 2709b18..4c8f9a2 100644
+--- a/docs/workflow-automation.md
++++ b/docs/workflow-automation.md
+@@ -1,699 +1,201 @@
+ # Workflow Automation
+ 
+-Automation preserves the established engineering roles. It reduces manual task
+-launch and status handling without transferring architecture, review, product,
+-or repository authority to an operational tool.
++Automation reduces routine coordination while preserving user authority,
++engineering judgment, and the boundaries of the selected execution system. This
++document defines provider-neutral guardrails. Each integration owns its exact
++roles, status transitions, dispatch triggers, and durable handoff mechanics.
+ 
+-## User, Primary, and delegated roles
++## Authority and roles
+ 
+ The user supplies intent and grants authority. **Primary** is the interactive
+-agent carrying the user's context, not the user. It resolves questions
+-from owning sources, prior user decisions, and existing authority. It asks the
+-user only when an unresolved answer materially changes product behavior,
+-compatibility, ownership, scope, irreversible effects, or authority, or when
+-explicit approval is still required. Obvious reversible choices within the
+-assignment do not require escalation. Continue independent authorized work
+-while waiting.
+-
+-Implementors and reviewers return decisions outside their assignments to Primary.
+-An orchestrator owns automatic execution and stage progression within delegated
+-authority, and routes unresolved product decisions to Primary. Returning a
+-question to Primary does not itself require user intervention or grant new
+-authority. Where tooling cannot deliver an escalation into the interactive
+-session, user-mediated relay is a transport limitation, not the decision model.
+-
+-In older workflow records, “Human Primary” combines the user and interactive
+-agent. Interpret those references through this distinction: user-owned approvals
+-and proof remain with the user; context interpretation and delegated
+-reconciliation belong to Primary. Provider account attribution is not an agent
+-identity or additional authority. User policy exceptions follow
+-[the KB policy](../README.md#user-authority-and-exceptions).
+-
+-## Normal objective
+-
+-```text
+-The user authorizes one bounded objective
+-  -> product parent operationally assigned to the native orchestrator
+-  -> implementation stage
+-      -> slice child 1 -> Implementor task(s) -> focused validation -> done
+-      -> slice child 2 -> Implementor task(s) -> focused validation -> done
+-  -> parent wake: orchestrator declares one coherent integrated surface
+-  -> reusable integration-review child
+-      -> Review Controller task(s) and fix loop -> clean -> done
+-  -> parent wake: fresh acceptance-verdict child
+-      -> Acceptance Reviewer verdict -> done
+-  -> parent wake: accept, block, or resume the same review child
+-  -> Primary authority and final product reconciliation
+-```
+-
+-Primary carries the user-approved problem, architecture, product scope, slice
+-boundaries, integration readiness, and completion criteria within delegated
+-authority. The user retains final product and approval decisions. In a bounded
+-automatic objective, the product parent is operationally assigned to the
+-declared native orchestrator so terminal child stages wake the coordinator that
+-can evaluate evidence and promote the next stage. Operational assignment does
+-not transfer Primary's product authority, and the parent is never an
+-Implementor task.
+-
+-The selected operational task resolves one execution target for the assigned
+-role's environment. A project can expose one or many ordinary repository
+-resources; their count does not activate `git-ws`. When no local workspace is
+-bound for the target daemon, a capable runtime creates task-owned managed
+-checkouts from the project repositories and the task explicitly checks out the
+-repository or repositories named by its scope. The exact project URLs must also
+-be declared and present in the operational workspace repository registry: the
+-project resources select task context, while the registry supplies daemon
+-checkout authorization and clone-cache synchronization. When the project
+-instead binds an existing ordinary-Git or `git-ws` development workspace, the
+-integration verifies exactly one matching path and daemon resource for that
+-environment. Containerized Linux, native macOS, and future declared
+-environments are peers rather than fallbacks. Missing project resources or
+-workspace-registry coverage in managed-checkout mode, or a missing, duplicate,
+-ambiguous, wrong-path, or wrong-daemon workspace binding in bound-workspace
+-mode, fails closed. Changing a bound workspace remains a separate approved
+-external-state mutation.
+-
+-When an approved slice uses a pull request as its durable code handoff, the
+-handoff records the pull-request URL, source branch, and exact remote head
+-commit. A later editing role verifies that head before acting and updates the
+-same pull request only through a normal fast-forward push. A changed remote
+-head makes earlier review or acceptance evidence stale; reconcile the new head
+-instead of overwriting it. Force push, merge, close, or default-branch mutation
+-requires separate exact authority and is never implied by ordinary pull-request
+-delivery. Acceptance is bound to one exact live head, and any later head change
+-requires fresh evaluation. Missing or null provider check data means no current
+-passing evidence, not a green result.
+-
+-The pull request starts with the canonical title form
+-`WIP: <issue-key>: <summary>`. The Implementor creates and verifies that title;
+-the Review Controller preserves it throughout review, fixes, and validation;
+-and the Acceptance Reviewer verifies it without changing provider state. The
+-parent orchestrator is the workflow owner for the readiness prefix. It removes
+-the leading `WIP:` only after the exact live head has passed all required
+-implementation, review, acceptance, validation, platform, and user-owned runtime-proof gates. If the head changes or any gate reopens, it
+-restores `WIP:` before staged work continues. An open or mergeable pull request,
+-passing provider checks, an accepted verdict, or a completed issue does not by
+-itself mean ready. Only reconciled removal of `WIP:` means ready for the user's merge decision; it does not authorize merge.
+-
+-Implementor owns delivery and focused validation of one coherent slice child.
+-Review Controller starts the integrated review/fix cycle in fresh context,
+-judges the actual combined repository surface, and retains that context while
+-fixing, validating, and re-reviewing routine in-scope findings. A distinct
+-Acceptance Reviewer judges the final surface read-only when practical.
+-
+-## Sequential objective lanes
+-
+-A project may opt into a sequential lane for approved top-level objectives.
+-The lane is not another controller issue and does not alter the provider's task
+-scheduler. It prevents competing objectives from becoming tasks until the
+-current objective has finished or explicitly released the lane while awaiting an external gate.
+-
+-One project-owned marker identifies lane membership, and one durable
+-human-visible ordering field defines the queue. Primary enrolls an
+-approved parent by leaving it unassigned in `backlog`, attaching exactly one
+-lane marker, and placing it at the intended order. The first visible eligible
+-item executes first. New items append to the end unless Primary deliberately
+-reprioritizes them. Queue members are top-level parents with an explicit
+-operational project; children never carry lane markers. The marker remains on
+-the parent while it occupies the lane and after terminal completion. A nonterminal
+-parent waiting for user QA or an owning decision explicitly releases its marker
+-under the rule below.
+-
+-The lane's orchestrator retains its current task through terminal parent
+-reconciliation. After reading the parent back in an authorized terminal state,
+-or after the nonterminal release procedure below, it obtains a stable read-only
+-queue-head projection. The declared live marker
+-must resolve exactly once; terminal lane history is not dispatch state. If a
+-head exists, the orchestrator reads that complete parent and topology, verifies
+-approval, lane, project, development-workspace binding, unassignment, and a
+-stable task audit showing zero active parent and child tasks. It retrieves the
+-exact records named for detailed reconciliation. Terminal task history and
+-existing authoritative children are intake evidence, not blockers when no task
+-is active; after activation the new parent run reconciles and adopts them
+-through the ordinary adopt-before-create procedure. The orchestrator then
+-projects the queue once more and requires the same head before moving it
+-directly to `in_progress`
+-without launching a task, reading it back, assigning itself exactly once, and
+-verifying exactly one new task. An empty queue ends the handoff. A changing,
+-occupied, malformed, or ambiguous projection permits no promotion.
+-
+-### Release a lane while awaiting an external gate
+-
+-Lane occupancy is not product completion. After implementation, integrated
+-review and independent code/automated acceptance, user-owned GUI QA may remain
+-open on a named child and exact candidate while the parent stays `in_review`
+-and its PR retains `WIP:`. Do not require GUI capability for a code-only
+-acceptance stage or call that verdict full product acceptance. Reuse an existing
+-unstarted acceptance child for code acceptance when its GUI checks can be
+-explicitly retained on a separate user-owned gate; never discard those checks.
+-
+-A named Primary decision may also release a lane once no independently executable
+-work remains. Record the actual completed phase; this does not imply review,
+-acceptance or feature completion. Do not use release for routine defects or work
+-that the assigned agent can still perform.
+-
+-Before release, audit the complete parent/child task set: no child may be queued
+-or running, and only the releasing orchestrator's current parent task may be
+-active. Record the prior lane, exact candidate or retained work, completed gates,
+-pending gate, owner, evidence needed, and resumption condition in the parent.
+-Retain unmerged work and its identity; do not clean or overwrite a bound workspace.
+-Persist `trackself_lane_release` metadata with that record, remove the parent's
+-single queue label and verify read-back. The metadata is history, not a second
+-queue selector. The existing queue projector then excludes the parked parent
+-without weakening its checks for labeled parents. Follow ordinary queue handoff
+-immediately; neither a terminal product status nor a user response is required.
+-
+-Parking releases capacity, not the approved objective's authority. On an external
+-result, the coordinator owns completion: close when all gates pass, or re-enroll
+-the same parent on its recorded original lane for remaining in-scope fixes or
+-required evaluation. Default to the bottom of the queue; preserve an explicit
+-user priority. A busy lane delays execution, not enrollment. Use ordinary lane
+-admission, task read-back and a single launch trigger; never dispatch into an
+-occupied lane or create a duplicate product objective. Clear the release marker
+-when enrollment is verified. A routine fresh review is an executable next step,
+-not a new user approval or waiver question.
+-
+-Explicit user QA acceptance resolves the named user-owned gate for the discussed
+-candidate. Record it as user-reported acceptance, without inventing individual
+-scenario observations. Missing optional screenshots, recordings or an agent-added
+-checklist do not invalidate it. Preserve independent engineering acceptance:
+-material changes require affected evaluation automatically, while unrelated
+-administrative or documentation changes do not invalidate runtime QA. Name a
+-concrete affected behavior before reopening that QA gate.
+-
+-Repair unambiguous stale status, links or result delivery using existing evidence;
+-do not restart engineering evaluation for an administrative defect. Escalate only
+-an actual unresolved scope/authority decision or technical prerequisite, with the
+-precise owner and next action. End with verified completion, queued work, a running
+-task, or a concrete blocker. An undelivered escalation must say so; ticket prose
+-alone is not notification to Primary. No reliable asynchronous notification is
+-assumed. See [ADR 0021 — objective completion](../decisions/0021-project-repositories-and-execution-targets.md#authorized-objective-completion-after-external-gates), which
+-clarifies resumption ownership for [external gates](../decisions/0021-project-repositories-and-execution-targets.md#external-gates-and-execution-lane-occupancy).
+-
+-This ordering applies before task creation. Once a task exists, native provider
+-priority and claim order govern it; changing board position cannot reorder an
+-already queued task. Distinct lanes may progress concurrently only when each
+-has its own declared orchestrator identity, runtime, daemon, and mutable state.
+-When the provider binds an agent identity to one runtime, every specialist role
+-used by that lane is likewise an environment-local identity whose behavior is
+-projected from the shared role definition. A managed-repository lane has no
+-matching project `local_directory` on its daemon and performs implementation in
+-one task-owned checkout; a separate clean control workspace used to bootstrap
+-instructions or workflow tooling is not an implementation surface. Adding a
+-lane label does not itself create any of this runtime isolation. See
+-[ADR 0021](../decisions/0021-project-repositories-and-execution-targets.md).
+-
+-## Human-readable objectives
+-
+-An operational issue is both an agent execution input and a human status
+-surface. Every newly authored or materially rewritten human-facing operational
+-issue objective starts with a self-contained executive summary following the
+-[operational issue objective template](../templates/operational-issue-objective_template.md).
+-A human must be able to understand the problem, intended outcome, importance,
+-and current completion or blocking state without opening the linked documents.
+-
+-The objective then states its done criteria, authority boundaries, and owning
+-references. When work is already underway, it also distinguishes completed
+-work from remaining work; when blocked or staged, it names the next executable
+-slice. Summaries explain linked truth without copying or redefining it.
+-
+-Tickets and PRs own assignments, review and delivery tracking under
+-[artifact lifecycle](artifact-lifecycle.md). Maintain repository-owned intent,
+-important decisions, limitations and resumption context even when a tracker is
+-active. A bounded plan may summarize verified status to coordinate dependencies
+-and readiness; reconcile its checkpoints and replace stale directions. Do not
+-make essential context depend on a ticket provider remaining available.
+-
+-Operational history is evidence, not default startup context. A role normally
+-reads its assigned objective, the current parent objective when present, owning
+-artifacts, and actual repository state. It retrieves historical comments, task
+-lists, and transcripts only for a referenced decision, ambiguity, recovery, or
+-audit rather than ingesting the complete history on every run.
+-
+-Run or task completion does not close the objective. The operational issue
+-status follows the stated engineering outcome and done criteria:
+-
+-- `in_progress` means executable implementation or review/fix work remains;
+-- `in_review` means the current editing owner has completed its work and another
+-  role owns the next evaluation in a manually coordinated issue;
+-- `blocked` means no safe executable path exists without external resolution;
+-- `done` means that issue's own deliverable is complete. For a product parent,
+-  that includes its required review and acceptance gates; for an acceptance
+-  child, it means a valid verdict was delivered even when that verdict rejects
+-  or blocks the parent outcome.
+-
+-Severity, breadth, task completion, or the end of a bounded run does not make
+-otherwise executable work blocked.
+-
+-The objective owner that launches an editing role owns the activation status
+-transition. Before assignment, it moves the issue from `todo` or `backlog` to
+-`in_progress` and reads that state back; only then does it assign the role and
+-verify the resulting task. Assignment or a running task is not assumed to
+-change issue status. If activation or assignment is ambiguous, the owner reads
+-back both issue and task state before retrying or restoring the waiting status.
+-The executing role verifies the assigned issue on entry but does not normally
+-repair a missing startup transition. This keeps one owner responsible for the
+-issue/task invariant: an editing task that is queued or running has an
+-`in_progress` objective.
+-
+-## Implementation slices and task termination
+-
+-An engineering objective may require several coherent implementation slices.
+-Each slice is small enough for one Implementor context to understand its
+-premise, deliver one coherent outcome, run focused validation, leave an
+-inspectable checkpoint, and determine whether the slice is complete. One slice
+-may need several provider tasks after interruption or a premature checkpoint;
+-the issue and role context remain the same while its outcome stays coherent.
+-
+-When operational tracking provides parent/child objectives, Primary keeps
+-durable product authority. Under automatic staged execution, the declared
+-native orchestrator is the product parent's operational assignee and creates
+-one child for each materially distinct implementation slice. The child owns that slice's goal,
+-surface, premise, focused validation, terminal condition, boundaries, owning
+-references, and parent binding. It is not created per provider run: retries,
+-interruptions, and ordinary same-role continuations remain on the same child.
+-After a slice meets its own done criteria, its exact child contract may require
+-the Implementor to reconcile the child's current-state section and criterion
+-checkboxes against the final evidence, read the revised description back, post
+-the final evidence, mark only that child `done`, and read it back. Closing the
+-implementation-stage barrier wakes the parent orchestrator, which reconciles
+-the slice outcomes and opens the next stage only when the approved parent still
+-requires it.
+-
+-Automatic child creation is adopt-before-create and fail-closed. On every
+-parent-orchestrator intake, and before creating, promoting, or assigning any
+-child, the orchestrator reads the complete parent and obtains a complete
+-structural projection of the existing child set, every child, and every child
+-task history. When the project declares a stateless read-only context preparer,
+-that tool performs the complete native retrieval and returns a bounded summary;
+-raw descriptions, results, and histories do not enter model context by default.
+-On a stage wake, the bounded projection includes the triggering child's
+-current-state section so the orchestrator can detect a missing or contradictory
+-`done` disposition without ingesting the complete description. Cancellation
+-does not require satisfied deliverable criteria or a completed current-state
+-section; its exact cancellation evidence governs reconciliation. The
+-orchestrator then retrieves the exact triggering result and only the child or
+-task records named for ambiguity, recovery, semantic matching, status/body
+-reconciliation, or workspace-evidence verification. A malformed, truncated,
+-unstable, incomplete, or over-limit projection permits no mutation; retry the
+-read-only preparation or fall back to a complete manual audit before acting.
+-
+-A pre-created child that matches an approved parent outcome is authoritative
+-and must be adopted; an orchestrator must not create a duplicate merely because
+-it did not create that child. A compact projection never decides semantic
+-matching or supersession. It exposes stages, titles, status, assignment,
+-criterion counts, task disposition, role identity, and provider-session
+-identity so the orchestrator can select the smallest exact detail expansion.
+-The orchestrator reconciles duplicate, stale, superseded, or conflicting
+-children before dispatch and stops for Primary resolution when
+-supersession or ownership is ambiguous. Before assignment, it verifies that the
+-lowest unfinished stage contains exactly its intended children, with no
+-unintended non-terminal child holding the barrier, and that every later-stage
+-child is unassigned and parked in `backlog`. Only then may it move the selected
+-current-stage child to `in_progress`, read it back, and assign exactly one role.
+-Human-authored parents should normally contain only the approved objective and
+-proposed stage outline; if children are pre-created, the parent identifies them
+-as authoritative and they begin unassigned in `backlog`.
+-
+-Slice completion normally requires focused tests and a clean, coherent,
+-inspectable handoff, not a full independent review. Give a slice its own
+-review/fix task only when it is independently risky, externally consumable, or
+-difficult to reverse. That review remains on the slice issue unless a stronger
+-context boundary is intentionally required.
+-
+-Completion authority must be explicit. By default, Primary or the
+-operational objective owner reconciles the result and changes state. A child in
+-a bounded automatic objective instead authorizes its executing specialist to
+-reconcile that child's durable body and make only its `done` transition when
+-the child's own deliverable is complete. Before the transition, the specialist
+-evaluates every existing child-deliverable criterion against recorded evidence,
+-updates those Markdown checkboxes and the current-state section without adding
+-or redefining scope, states the exact remaining action or that none remains,
+-persists the revised description, and reads it back. It then posts the final
+-result, marks only that assigned child `done`, and reads back both description
+-and status. For an implementation child, completion means slice criteria and
+-focused validation passed with no separate slice-local review remaining. For
+-the reusable integration-review child, it means the combined surface is clean.
+-For an acceptance child, it means one valid `accepted`, `rejected`, or `blocked`
+-verdict was delivered. Acceptance-child checkbox criteria therefore describe
+-completion of the independent evaluation, evidence recording, and verdict
+-delivery; product acceptance predicates are non-checkbox evaluation inputs and
+-may fail without making a valid rejected or blocked verdict child incomplete.
+-Issue-body reconciliation is operational recordkeeping and does not authorize a
+-read-only Acceptance Reviewer to edit the reviewed surface. This narrow
+-transition activates the native parent-stage notification; it does not
+-authorize the role to change assignment, parent, siblings, later stages, or any
+-other issue. The child-context run stops after read-back, and the resulting
+-parent-context run alone interprets the evidence and advances the workflow.
+-
+-The automatic projection deliberately recognizes only the issue template's
+-mechanical form: top-level `- [ ]` and `- [x]` lines inside the exact
+-`## Done criteria` section, plus the exact top-level `## Current state`
+-section. Agents and users must preserve that form for automated reconciliation;
+-other Markdown list styles, nesting, and content outside those sections are
+-ordinary prose. Do not put checkbox-like examples in the canonical top-level
+-form inside `## Done criteria`.
+-
+-A `done` child with open child-deliverable criteria or a stale current-state
+-section is incomplete orchestration even when its result comment appears
+-credible. Cancellation does not require satisfied deliverable criteria; its
+-separate cancellation and supersession evidence governs reconciliation. A
+-missing triggering-child current-state section on a `done` child requires exact
+-detail; a projected section that contradicts the terminal status or result
+-blocks promotion even when every checkbox is closed. The parent orchestrator
+-retrieves the exact evidence and does not promote the next stage until the body
+-is reconciled. It may repair only this bookkeeping when the recorded result
+-unambiguously proves every existing criterion of a `done` child; otherwise it
+-returns reconciliation to the same specialist or escalates the ambiguity to
+-Primary. It never checks a criterion merely to remove a structural
+-warning.
+-
+-Once the completed slices form one coherent integrated surface, the woken
+-orchestrator creates or promotes one reusable integration-review child under
+-the product parent. Its objective binds the
+-included slice issues, exact repository surface, integration criteria, required
+-validation, and acceptance contract. Review Controller inspects the actual
+-combined repositories rather than accepting slice reports as proof. Routine
+-findings and fixes remain on this issue for the full cycle. When clean, the
+-Review Controller completes that child and wakes the parent orchestrator.
+-
+-Every acceptance pass uses a fresh acceptance-verdict child assigned to a
+-distinct read-only Acceptance Reviewer. The child is complete after it posts
+-one valid verdict, reconciles its verdict-delivery criteria and current state,
+-and marks itself `done`; rejection and blocked acceptance are verdicts for the
+-parent, not blocked child execution. On routine rejection, the
+-woken orchestrator reopens and reassigns the same Review Controller child,
+-verifies provider-session continuity, and creates a new acceptance child only
+-after the repaired surface is clean. Comments and finite specialist tasks are
+-evidence; they are not continuation signals.
+-
+-An Implementor does not voluntarily end a successful task while safe,
+-in-scope work toward its current slice remains and the runtime can
+-continue. Useful partial progress, a reportable checkpoint, ordinary
+-dependency or test-environment repair, validation debt, work breadth, or the
+-end of an internal phase is not a terminal result. Progress evidence may be
+-posted without ending the task.
+-
+-A normal Implementor task ends only when one of these is true:
+-
+-- the current slice's stated completion and validation condition is met;
+-- no safe executable path remains without Primary or external resolution, and
+-  the exact unresolved decision, evidence, access, or authority is reported;
+-  or
+-- the runtime is interrupted or reaches a real provider/resource boundary, in
+-  which case the report names the preserved state and exact continuation point.
+-
+-If a task nevertheless ends after partial progress while the issue remains
+-`in_progress`, orchestration treats it as a checkpoint, not a handoff to
+-review. At `launch-on-command`, Primary explicitly resumes the same role after
+-reconciling the actual workspace. At `automatic`, a project may define bounded
+-same-role continuation, but only through its declared native task/session
+-mechanics and without changing role, scope, or authority.
+-
+-## Automation levels
+-
+-Operational tracking must be active before workflow automation may be active.
+-
+-- `ticket-only`: the declared operational system may create/update tickets and
+-  attach bounded evidence. People launch top-level role sessions manually.
+-- `launch-on-command`: one explicit trigger authorizes one routine role run.
+-- `automatic`: one approved bounded parent objective may progress through its
+-  declared child stages, routine implementation, review/fix, fresh acceptance
+-  passes, orchestrator reconciliation, validation, and local commit work
+-  without a human trigger for every role run.
+-
+-The selected level is durable authorization for the declared project, ticket,
+-repository scope, development target, and lower levels. Agents do not re-ask
+-for routine actions already authorized by those boundaries.
+-
+-Workflow instructions and temporary task context affect agent behavior; they
+-do not grant filesystem, network, credential, deployment, or provider-mutation
+-capabilities. Those remain controlled by the execution environment's
+-permission configuration and isolation boundary. When an automated runtime
+-injects temporary instructions into a development workspace also used by a
+-human-started session, it must project them into runtime-private state rather
+-than changing the human-visible authoritative or root instruction file.
+-
+-That authority does not include another slice, deployment, remote host
+-mutation, host/system package installation or removal, execution-environment
+-image or service administration, privileged/system changes, destructive
+-workspace rewriting, or changing the automation level. A push also retains its
+-normal explicit approval boundary unless the project declares the selected
+-managed-repository lane to be a staged pull-request delivery lane as described
+-below.
+-
+-### Managed-repository delivery baton
+-
+-Enrollment of a user-approved parent in a project-declared staged
+-pull-request lane authorizes the minimum remote Git transport needed for that
+-parent's automatic workflow: create a task feature branch, commit the complete
+-validated slice, push it normally without rewriting remote history, and create
+-or update one issue-linked pull request. The Implementor records the pull
+-request URL, source branch, and exact remote head before its child can complete.
+-It creates the pull request with the canonical `WIP:` title prefix and verifies
+-the live title. The prefix remains present throughout implementation,
+-integration review, acceptance, and any required runtime proof.
+-The Review Controller checks out that exact remote head in its own task-managed
+-checkout, commits routine in-scope fixes, updates the same pull request only by
+-normal fast-forward push, preserves `WIP:`, and records the new remote head.
+-Each Acceptance Reviewer evaluates the exact live pull-request head and title
+-read-only and rejects stale handoff evidence.
+-
+-The parent orchestrator narrowly owns the readiness-prefix transition. It
+-removes the leading `WIP:` only when every required gate for the exact live head
+-has passed, including user-owned runtime proof when the objective
+-requires it, then reads the title and head back. That transition marks the pull
+-request ready for the user's merge decision and grants no merge authority.
+-If a head changes or a gate reopens after removal, the orchestrator restores
+-`WIP:` before continuing. Provider `open`, `mergeable`, check, verdict, and
+-issue states never substitute for this contract.
+-
+-This transport authority is supplied by deliberate lane selection and does not
+-need to be repeated in every child. It never authorizes force push, merge,
+-pull-request closure, default-branch mutation, tagging, release, publication of
+-artifacts, or deployment. A parent that intentionally forbids remote feature-
+-branch or pull-request publication is incompatible with a managed-repository
+-staged pull-request lane and must use a suitable bound workspace or remain
+-manually driven.
+-
+-Task-owned managed checkouts are isolation boundaries, not an informal source
+-exchange. A later role must not read, copy, or reconstruct implementation from
+-a sibling task checkout during normal progression. Retained task directories
+-may support orchestrator evidence reconciliation or an explicitly authorized
+-recovery, but ordinary cross-role continuity is the verified Forgejo branch,
+-pull request, exact remote commit, and operational task record. Missing
+-credentials, failed publication, a changed remote head, or an unavailable PR is
+-a real handoff failure; it is not permission to substitute shared on-disk
+-state.
+-
+-Routine development setup inside the assigned development workspace is not
+-package or system installation for this purpose. Unless project or repository
+-instructions narrow it, an authorized implementation role may hydrate declared
+-dependencies into repository-local ignored environments, use project caches,
+-run formatters and generators, create build/test artifacts, start development
+-processes, and create, migrate, reset, or remove disposable test databases. It
+-may make ordinary ticket-scoped file and Git working-tree changes without
+-requesting separate permission for each command.
+-
+-Automatic progression requires a native durable continuation path. When the
+-operational system wakes a parent assignee only after a child stage closes, the
+-declared native orchestrator is the parent's operational assignee and each
+-specialist child receives exact child-only completion authority. A comment,
+-task completion, or reassignment does not substitute for that wake. The parent
+-orchestrator reads back the terminal child and its task evidence before it
+-promotes another stage. If the operational system cannot provide this boundary,
+-the project must remain manually driven rather than claiming automatic
+-progression.
+-
+-A separately activated liveness watchdog may recover a missed native wake. It
+-detects an `in_progress` orchestrator-owned parent with no active orchestrator
+-or child task and either a non-terminal stage or an undispatched next child,
+-then wakes the orchestrator to run the same intake reconciliation. It does not
+-create, cancel, promote, assign, or change issue status itself. Repository
+-definition of this contract does not authorize installing or scheduling the
+-watchdog; that operational activation retains its project-specific approval
+-boundary.
++agent carrying the user's context. It resolves routine questions from owning
++sources and prior decisions, and asks the user when an unresolved answer
++materially changes product behavior, compatibility, ownership, scope,
++irreversible effects, or authority, or when explicit approval is required.
++Continue independent authorized work while an answer is pending.
++
++Implementors and reviewers return decisions outside their assignments to
++Primary. A coordinator may automate only actions delegated by the user or
++active project policy. Coordination mechanics do not transfer product,
++architecture, review, repository, or approval authority. Provider account
++attribution is not an agent identity or additional authority. Scoped user
++policy exceptions follow [the KB policy](../README.md#user-authority-and-exceptions).
++Execution permissions remain enforced by the runtime and repository rules.
++
++The selected policy version is pinned to each ticket across runs and retries.
++New defaults apply to new tickets; existing work changes policy only through
++explicit migration or a scoped override. Record the base policy identity and
++any user or delegated supervisor exception with its reason, scope, and
++consequences. Neither agent definitions nor generated instructions may silently
++reinterpret existing tickets or impose incompatible hidden workflow rules.
++
++## Objectives and durable records
++
++An issue should state the observable outcome, scope and relevant boundaries,
++completion evidence, and links to owning truth. Make it understandable to a
++person without requiring them to read a provider transcript. For work already
++underway, add only the current state or next owner needed to resume it. Keep
++repository-owned intent, decisions, limitations, and resumption context in the
++owning artifacts; an operational ticket is not their sole durable copy.
++
++Keep related implementation and review/fix work on its owning objective while
++its outcome remains coherent. A provider run ending, interruption, model change,
++role handoff, review pass, or status transition does not by itself require a new
++issue or subtask. A subtask is useful when it represents an independently
++trackable outcome, real parallel work, a distinct owner or environment, or a
++dependency that benefits from separate coordination. Decomposition is a choice
++about coordination, not a required workflow shape. When a parent/child
++relationship exists, completion of a child is evidence for the parent; it does
++not itself establish acceptance of the parent outcome.
++
++Tickets carry ownership, current status, scope, blockers, acceptance state, and
++links to relevant work. Code review systems carry the technical findings,
++fixes, validation, and independent verdict for the exact code candidate. Link
++these records rather than copying full technical reports into every issue.
++
++For a pull-request handoff, record the PR URL, source branch, and exact head
++commit. A later editing or reviewing role checks that identity before acting.
++A changed head invalidates any evaluation or acceptance affected by the change
++and requires reconciliation against the new candidate. One ticket may coordinate
++several PRs; acceptance identifies each relevant commit. Normal delivery does not imply
++force-push, merge, close, release, or deployment authority.
++
++Operational history is evidence, not default startup context. Read the assigned
++objective, applicable owning artifacts, and actual repository state first.
++Retrieve older comments, task lists, or transcripts only to resolve a referenced
++decision, ambiguity, recovery, or audit. Evidence stored outside the repository
++should be bounded, purpose-limited, and redacted; do not export secrets or
++unnecessary raw content.
++
++## Status, ownership, and completion
++
++The selected operational system and active project policy define the exact
++status vocabulary, assignment behavior, trigger paths, and transitions. They
++must make clear who owns the next action. A status label alone is not proof that
++a task launched, a handoff completed, or an outcome was accepted.
++
++Use these outcome distinctions when mapping a system's states:
++
++- Executable implementation, review, or in-scope correction remains active.
++- Independent review or human acceptance is pending only when a named owner
++  and exact candidate are clear. An assigned reviewer or fix owner may still
++  have executable work even if the system uses a review-related status.
++- Work is blocked only when no safe path remains without missing evidence,
++  access, authority, an external prerequisite, or an unresolved decision.
++- An issue is complete only when its own stated outcome has been accepted or
++  completed under the active policy. A task ending, valid rejection, or child
++  completion does not silently complete a different product outcome.
++
++Before dispatch, select the native trigger that will launch the intended role
++and verify the resulting task or handoff. Do not combine two launch triggers.
++Treat an ambiguous mutation response as unknown state: read back the issue,
++comment, and task state before retrying, and do not repeat work that may already
++have started. The integration owns exact recovery behavior and must prevent
++stale or duplicate dispatch.
++
++## Implementation and independent review
++
++Implementation roles own their assigned outcome and proportional focused
++validation. Before a resumed writer edits, it reconciles intervening repository
++changes, decisions, scoped exceptions, and candidate identity with the current
++ticket and owning artifacts. Retained conversation is not proof that earlier
++assumptions remain current. Routine in-scope review findings return to an
++editing context that retains useful work and repository understanding across
++fixes, validation, and re-review. If continuity is lost, reconstruct from
++owning artifacts, the exact candidate, and execution evidence; do not claim a
++replacement context continued the prior conversation.
++
++When the active policy requires independent final review, use a distinct,
++fresh, read-only reviewer context. Give it the complete exact candidate and
++relevant validation evidence without steering it toward an expected verdict.
++The reviewer reports its own findings and verdict. It does not edit the
++reviewed surface or accept delegated changes on exit status alone. In-scope
++findings return to the retained editing context; after affected code changes,
++obtain a new evaluation of the changed candidate. A new request outside the
++approved scope is a scope decision, not a defect to fold silently into the
++existing objective.
++
++Review independence is a property of the evaluation, not of issue count. A
++separate review ticket may be useful for ownership or coordination, but a new
++issue, task ID, or run ID alone does not prove a fresh context or an independent
++verdict.
++
++The active policy defines review depth and any justified scoped exceptions.
++Classifying a ticket as trivial does not alone waive required independent
++review. A review/fix agent cannot be the sole final judge of its own corrections.
++For work without a PR, retain equivalent exact-result review evidence in the
++appropriate owning record without manufacturing a code handoff.
++
++## Optional decomposition and staged workflows
++
++Projects may explicitly select a staged parent/child workflow when their
++operational system and task shape benefit from one. Its owning integration must
++declare the lifecycle, child authority, exact status transitions, dispatch and
++wake behavior, reconciliation, and recovery in its own versioned instructions.
++It must not be inferred from an automation level, a generic request for review,
++or the presence of subtasks. Projects that do not declare this pattern use the
++selected workflow on the owning issue and decompose only where coordination
++benefits from it.
++
++Do not create one child per role, provider run, review pass, or verdict as a
++general requirement. A project that deliberately adopts such a structure owns
++its extra lifecycle and must preserve the authority and review boundaries above.
+ 
+ ## Operational-system boundary
+ 
+-Use the native capabilities of the operational system selected by the project.
+-When it already provides agents or identities, tasks, comments, retries,
+-cancellation, execution history, and observability, those facilities own their
+-operational lifecycle.
+-
+-Project-owned adapters are appropriate for demonstrated gaps such as workspace
+-resolution, repository mapping, preflight, bounded context preparation, or a
+-stable compatibility seam. A context preparer may retrieve complete native
+-state, check structural invariants, and return a bounded projection plus exact
+-detail requests. It remains stateless and read-only: it does not own workflow
+-truth, infer semantic supersession, select a role, launch a task, or mutate an
+-issue. Project adapters do not automatically become a second task state
+-machine, launcher, retry engine, process supervisor, credential broker, or
+-authorship projection.
+-
+-No universal runner command, transition schema, lock design, retry protocol,
+-or session-resumption mechanism is required by this contract. Those are
+-driver-specific implementation decisions and must be justified by the selected
+-operational system and project environment.
+-
+-A project mapping must nevertheless make each top-level role transition launch
+-exactly one intended role task. Account for every native trigger path involved,
+-including assignment, reassignment, replies, mentions, and reruns. Select one
+-trigger before mutation. Handoff evidence may itself be that trigger when the
+-native system proves the parent thread is bound to the intended incoming role;
+-otherwise keep the evidence non-triggering and use assignment or another
+-declared native trigger. Never combine a task-producing handoff with a later
+-assignment. Verify the resulting task identity and attribution before workflow
+-progress.
+-Treat an ambiguous mutation response as unknown state: read back native issue,
+-comment, and task state before any retry, and never repeat a launch while its
+-first result may have committed. Compare complete before/after task-ID sets so
+-a fast terminal task cannot escape attribution. Cancel an unintended active
+-task promptly, inspect its transcript and actual workspace effects, and
+-reconcile before continuing; do not hide it in a parallel project-owned task
+-record.
+-
+-When an operational system persists role-agent definitions separately from the
+-repository contract, the consuming workspace-control repository owns a
+-versioned provider-facing desired-state projection and a read-only live drift
+-check. Shared role and workflow semantics remain canonical here and in the
+-owning KB skills; the projection contains only provider-specific identities,
+-configuration, and instruction composition required by that active runtime.
+-Changing either side requires explicit reconciliation evidence. Keep live apply
+-separate from portable repository preflight: it is an operational mutation,
+-must target an exact workspace, and must be read back before use. Existing
+-provider tasks retain the definition claimed at launch.
+-
+-## Role continuity and independence
+-
+-- Implementor normally begins in a fresh top-level context.
+-- Implementor continuations for the same objective and slice may retain
+-  their context; freshness is not required between same-role checkpoints.
+-- A materially distinct Implementor slice begins on a new child objective
+-  and fresh role context when the operational system supports issue-scoped
+-  session boundaries.
+-- A Review Controller begins each new review/fix cycle in a different fresh
+-  context and inspects the actual complete surface; it does not inherit the
+-  Implementor conversation or an earlier review cycle as authority.
+-- One review/fix cycle retains its Review Controller context across findings,
+-  fixes, validation, re-review, interruptions, and routine Acceptance Reviewer
+-  rejection.
+-- If provider-session continuity is proven lost, that cycle ends and a fresh
+-  Review Controller reconstructs a new cycle from owning artifacts and the
+-  actual surface; a replacement session is never reported as continuation.
+-- The first cycle begins when Primary declares the completed slices one coherent
+-  integration-review surface. A later cycle begins after proven Review
+-  Controller continuity loss, or after material Implementor rework changes the
+-  combined surface after a reviewer verdict and Primary hands it back for
+-  review.
+-- Every Acceptance Reviewer pass uses another fresh read-only acceptance child
+-  and returns `accepted`, `rejected` with concrete findings, or `blocked` when
+-  acceptance itself cannot proceed. The acceptance child is `done` after that
+-  verdict is delivered; the parent orchestrator owns its effect on the product
+-  objective.
+-- Routine acceptance findings resume the same Review Controller cycle when
+-  provider-session identity is preserved. Proven continuity loss or material
+-  Implementor rework ends it and requires a fresh cycle.
+-- Retrying or recovering one role may resume that role when the selected
+-  operational system supports it safely.
+-- A power loss or failed session does not require exact conversation recovery;
+-  a fresh role can reconstruct from owning artifacts, operational evidence,
+-  actual repositories, and the approved handoff.
+-- Cross-role session reuse is not a substitute for review independence.
+-- A new task ID is not proof of a fresh provider session. Operational mappings
+-  must record and verify both task and provider-session identity, and introduce
+-  an explicit native cycle boundary when their session key would otherwise
+-  resume an earlier review.
+-- Routine acceptance rejection reopens the same Review Controller child so the
+-  operational mapping can preserve and verify its `(agent, issue)` provider
+-  session. The next acceptance pass uses a new acceptance child and a non-empty
+-  provider session distinct from every review/fix and earlier acceptance pass.
+-
+-The live Primary remains the architectural owner. A fresh Primary may
+-reconstruct continuity from durable truth and actual repository state. When no
+-Primary authority is available, automatic operation stops at `needs_primary`.
+-
+-## Workspace and evidence authority
+-
+-The project-owned development workspace remains authoritative for execution
+-state. The assigned workspace may be the project's normal coherent workspace
+-for sequential work; a fresh workspace is necessary only when concurrency or
+-deliberately destructive experimentation requires isolation. An operational
+-tool does not silently choose repository
+-ownership, branches, revisions, dirty-state policy, commits, pushes, stashes,
+-resets, or cleanup.
+-
+-Operational evidence should make the selected issue, role, run/task identity,
+-result, validation, blockers, and repository state recoverable. The exact
+-fields and storage belong to the selected operational system and project
+-mapping rather than a universal shadow schema.
+-
+-Evidence exported from the development workspace must be purpose-limited,
+-bounded, and redacted. The selected operational system or project adapter owns
+-enforcement and its exact allowed-field policy; native integration does not
+-authorize exporting secrets, sensitive values, or unnecessary raw content.
+-
+-Run or task completion proves only that execution ended normally. Engineering
+-completion requires satisfaction of the issue's stated done criteria,
+-inspection of the actual work, proportional validation, review, and Primary
+-reconciliation.
+-
+-Parent reconciliation is a durable issue-body operation, not only a comment or
+-status change. Before an orchestrator moves a product parent to `in_review`,
+-`blocked`, or `done`, it evaluates every stated done criterion against recorded
+-evidence, updates each existing criterion checkbox and the parent's current-
+-state section without redefining product content, and states the exact remaining
+-human action or explicitly says that none remains. It then changes the status,
+-reads the complete parent back, and verifies both the persisted description and
+-status. `in_review` is truthful only when a named evaluation or human action
+-still owns the next decision; when all parent criteria and gates pass and no
+-action remains, the parent is `done`. The orchestrator must tell the Primary which disposition was persisted and what, if anything, remains.
+-
+-Durable discoveries move into the KB or owning repository. Tickets, comments,
+-tasks, reports, and transcripts remain operational evidence.
++Use the native capabilities of the selected operational system for agents,
++tasks, comments, retries, cancellation, execution history, and observability
++when they meet the project's needs. Add a project adapter only for a demonstrated
++gap, such as workspace resolution, repository mapping, preflight, or bounded
++context preparation. A read-only context preparer may retrieve complete native
++state and return a bounded projection with exact detail requests; it does not
++own workflow truth, infer supersession, select a role, launch work, or mutate an
++issue.
++
++Do not create a second task state machine, launcher, retry engine, process
++supervisor, credential broker, or authorship projection without a demonstrated
++requirement and a declared owner. No universal runner command, transition
++schema, lock design, retry protocol, or session-resumption mechanism is required.
++Those are integration decisions and must match the selected system and project
++environment.
++
++The project-owned development workspace is authoritative for execution state.
++An operational tool does not silently choose repository ownership, branches,
++revisions, dirty-state policy, commits, pushes, stashes, resets, or cleanup.
++Temporary workflow instructions must not overwrite authoritative instructions
++or human-visible repository files.
+ 
+ ## Activation and escalation
+ 
+-Installation, credentials, configured agents, or a running runtime do not
+-activate tracking or automation. The consuming project's `AGENTS.md` and
+-`project-workflow.toml` must agree on the active integration and level before
+-agents use it.
+-
+-Escalation remains role-based:
+-
+-- bounded-worker uncertainty returns to Implementor;
+-- routine review findings are fixed by Review Controller;
+-- routine acceptance rejection returns to the same Review Controller cycle
+-  when provider-session identity is preserved;
+-- architecture, compatibility, ownership, or material scope changes return to
+-  Primary;
+-- product decisions, new authority, or unresolved Primary issues return to the
+-  user.
++Installed tools, credentials, configured agents, and a running runtime do not
++activate tracking or automation. The consuming project must declare its active
++integration, policy version, and authorized automation level. A prepared skill
++or imported policy is not activation by itself. Existing work requires the
++migration or compatibility handling declared for that integration; changing a
++default must not silently reinterpret prior runs or tickets.
++
++Automation levels, if used, describe how much routine work may proceed without
++a new human trigger. They do not define a universal issue graph or grant actions
++outside the declared scope. Project instructions must identify the actions,
++scopes, roles, and handoffs covered by each level.
++
++If the project permits autonomous acceptance for trivial work, record the
++classification and reason, verify all policy-required checks and review, and
++return expanded risk or scope to ordinary human acceptance. Human acceptance
++or an authorized trivial acceptance binds an exact candidate. Delivery then
++follows the selected policy, including provider checks and protections. A
++failure leaves acceptance visible with delivery pending or failed; retry only
++for the same accepted candidate. Merge, publication, and deployment need the
++authority declared for that action.
++
++Escalate architecture, compatibility, ownership, or material scope changes to
++Primary. Escalate product decisions, new authority, or unresolved Primary issues
++to the user. Keep safe, authorized work moving while resolving independent
++questions. Record the recipient, decision needed, evidence, and next action in
++the owning place; ticket prose alone is not notification unless the integration
++confirms delivery.
+ 
+ ## Governing decisions
+ 
+ - [ADR 0017: Progressive Workflow Automation](../decisions/0017-progressive-workflow-automation.md)
+ - [ADR 0020: Workspace-Local Development Authority](../decisions/0020-workspace-local-development-authority.md)
+-
+-
+-## Completion and dispatch prerequisites
+-
+-The persisted operational issue result and reconciled criteria are sufficient
+-result delivery. Optional comments cannot block an otherwise authorized child
+-completion. Read back the result and terminal state; preserve a single native
+-parent wake and reconcile ambiguous responses before any retry. Integration
+-adapters must support assignment-launched work with no comment thread.
+-
+-Before dispatching a stage, resolve its repository baseline from the owning
+-declaration and compare required capabilities with the chosen execution target.
+-A later stage's missing capabilities need not block independent implementation.
+-Separate requested deliverables, required validation and optional operational
+-rehearsal at intake. Real releases, installation, credentials or a specific
+-production version are not implicit requirements of tooling development.
+-
+-Recovery follows the actual failure: fix defects and refresh affected evidence;
+-resume interrupted evaluation after prerequisites are repaired; reconcile failed
+-communication without repeating engineering work. Preserve fresh independent
+-acceptance for a new verdict. Escalation records identify recipient, question,
+-evidence, next action and delivery acknowledgement; absent delivery is an
+-integration limitation, not a user decision.
+diff --git a/skills/README.md b/skills/README.md
+index 5767133..8ea7619 100644
+--- a/skills/README.md
++++ b/skills/README.md
+@@ -20,7 +20,7 @@ Use skills for project-specific workflow and guardrails. Do not load the whole s
+ - `planning-prompt` — create a prompt for another agent to perform feature planning.
+ - `feature-planning` — author requirements and useful bounded coordination with tracker-independent context.
+ - `implementation-handoff` — prepare an implementation agent to work from KB and/or repo-local truth, including compact goal and next-slice prompts.
+-- `review-fix-cycle` — start one fresh stateful review cycle, let its controller fix and iterate, and use a distinct fresh read-only acceptance pass.
++- `review-fix-cycle` — review and fix the full requested surface, retain the editing context, and obtain a fresh independent final review when required.
+ - `plan-update` — reconcile current plans and selectively preserve lasting context before retirement.
+ - `docs-conversion` — preserve useful explanation, rationale and limitations without copying plans wholesale.
+ - `anti-drift-review` — check for duplicated or forked cross-repo truth.
+diff --git a/skills/agent-routing/SKILL.md b/skills/agent-routing/SKILL.md
+index 26bb95b..cf2efab 100644
+--- a/skills/agent-routing/SKILL.md
++++ b/skills/agent-routing/SKILL.md
+@@ -35,8 +35,8 @@ including retries and corrections.
+ 
+ Primary is the interactive agent carrying user context. Return decisions outside
+ an assignment to Primary; it resolves them from existing intent and authority
+-before asking the user. The orchestrator owns delegated stage progression, not
+-new product authority.
++before asking the user. A coordinator owns only progression delegated by the
++selected policy, never new product authority.
+ 
+ ## Handoff
+ 
+diff --git a/skills/implementation-handoff/SKILL.md b/skills/implementation-handoff/SKILL.md
+index fa64ae5..57662dc 100644
+--- a/skills/implementation-handoff/SKILL.md
++++ b/skills/implementation-handoff/SKILL.md
+@@ -26,7 +26,7 @@ Must preserve / non-goals: [task-specific invariants and exclusions]
+ Done when: [completion evidence]
+ Validation: [required checks and expected evidence]
+ Authority / escalation: [limits and decisions that return to Primary]
+-Optional completion authority: [exact delegated child-only transition]
++Optional completion authority: [exact delegated transition, if any]
+ Optional integration references: [only declared active integrations]
+ ```
+ 
+@@ -38,14 +38,13 @@ not expand authority. Resolve routine uncertainty from owning sources and make
+ obvious reversible choices within scope. Continue independent authorized work
+ while awaiting clarification.
+ 
+-For an operational issue, use the executive-summary-first
++For an operational issue, use the compact outcome-first
+ [objective template](../../templates/operational-issue-objective_template.md).
+-When authoring staged handoffs, read the applicable sections of
+-[workflow automation](../../docs/workflow-automation.md) and the active
+-integration's role instructions. In a manual workflow Primary reconciles slices;
+-in an automatic workflow the orchestrator owns stage progression. Keep
+-child-only completion authority explicit. Do not create run-shaped children or
+-require slice-local independent review unless the risk or active workflow does.
++The [workflow automation contract](../../docs/workflow-automation.md) and active
++integration instructions own any status transitions, dispatch, and delegation.
++For an explicitly selected staged pattern, make child-only completion authority
++precise. Do not create run-shaped children or require review per subtask unless
++its risk or active policy calls for it.
+ 
+ Name cross-repository owners using `repositories.toml` IDs, branches/revisions,
+ relevant paths, and commit coordination. Follow
+diff --git a/skills/review-fix-cycle/SKILL.md b/skills/review-fix-cycle/SKILL.md
+index 166614a..c814c3d 100644
+--- a/skills/review-fix-cycle/SKILL.md
++++ b/skills/review-fix-cycle/SKILL.md
+@@ -9,12 +9,11 @@ Review the whole requested surface, preserve unrelated user work, and fix root c
+ 
+ ## Cycle
+ 
+-One review/fix cycle is one stateful Review Controller context. Start it fresh
+-from the Implementor and every earlier cycle, then preserve that context across
+-findings, fixes, validation, re-review, interruptions, and routine acceptance
+-rejection. If provider-session continuity is proven lost, end the cycle and
+-start a fresh one reconstructed from owning truth and the actual surface; do
+-not describe a replacement session as continuation.
++Keep one editing context responsible for routine findings, fixes, validation,
++and re-review across turns. Start it fresh from the implementation context when
++the active policy requires that separation. If continuity is lost, reconstruct
++from owning truth and the actual surface; do not describe a replacement session
++as continuation.
+ 
+ 1. Establish the exact review surface, including staged, unstaged, and relevant untracked files or the named commit range.
+ 2. Infer intended behavior from the request, owning truth, code, tests, and commit/diff context. Report scope ambiguity before redefining success.
+@@ -22,16 +21,18 @@ not describe a replacement session as continuation.
+ 4. Fix all findings and adjacent occurrences of the same root-cause pattern without reverting unrelated edits.
+ 5. Run required repository checks and tests covering changed behavior. Broaden validation for failures, shared boundaries, or unresolved risks. After those checks pass, repeat only after relevant changes or new evidence; optional additional testing is not unfinished work.
+ 6. Re-review the resulting full surface in a fresh distinct read-only acceptance context when required by the user or active workflow, or when practical for this cycle.
+-7. Fix routine acceptance findings in the same Review Controller context and repeat with fresh acceptance until clean. Material Implementor rework or lost provider-session continuity ends this cycle and requires a fresh cycle.
++7. Fix routine acceptance findings in the retained editing context and repeat with fresh acceptance until clean. Material rework or lost provider-session continuity requires a new cycle when the active policy calls for one.
+ 
+-For mutation paths, verify that malformed, disallowed, stale, unresolved, or partially reviewed input fails before side effects. The review controller may edit the surface or delegate fixes; acceptance reviewers remain read-only. The controller must inspect every delegated patch and cannot accept it from exit status or passing tests alone.
++For mutation paths, verify that malformed, disallowed, stale, unresolved, or partially reviewed input fails before side effects. The editing reviewer may fix or delegate fixes; independent final reviewers remain read-only. The editing reviewer must inspect every delegated patch and cannot accept it from exit status or passing tests alone.
+ 
+ Resolve the review surface directly from the named repositories, branches or revisions, and paths. Use a workspace or operational-task reference only when the active project instructions declare that adapter; apply its preflight before relying on the reference. Installed tools, available credentials, or report metadata do not activate an integration.
+ 
+-For an automatic staged workflow, read the applicable review and acceptance
+-sections of `../../docs/workflow-automation.md` and the active integration's
+-role instructions. They own child completion, stage wakes, and parent
+-reconciliation; a generic review request does not activate that lifecycle.
++The active integration's declared, versioned workflow owns ticket lifecycle,
++status transitions, and dispatch. If it explicitly selects a staged-child
++pattern, follow that integration's instructions for child completion, wakes, and
++reconciliation. Otherwise, keep the review/fix cycle on the owning objective
++and decompose only when coordination needs it. A generic review request does
++not activate staged automation.
+ 
+ ## Delegation
+ 
+@@ -39,7 +40,7 @@ Delegation is optional unless the user explicitly requires an independent review
+ 
+ - give a fix worker the review surface, known findings, ownership, truth paths, and tests;
+ - give the acceptance reviewer the full current surface and validation context, without the intended verdict;
+-- use a fresh acceptance reviewer after fixes when practical;
++- use a fresh independent final reviewer after fixes when the active policy requires one, or when practical;
+ - keep fix and acceptance contexts separate.
+ 
+ Return a finding to the original implementor only when doing so preserves useful context or ownership. Return the decision to Primary, the interactive agent carrying user context, instead of fixing when the correction changes architecture, product semantics, compatibility, acceptance criteria, or the agreed slice materially.
+@@ -48,7 +49,7 @@ Primary resolves the escalation from existing context and authority and asks the
+ 
+ Finding severity, breadth, or the end of a bounded run is not itself an
+ escalation. If executable routine work remains, preserve progress and continue
+-the same cycle; operational status remains `in_progress`. Use `blocked` only
++the same cycle. The active integration owns the status label. Use `blocked` only
+ when no safe executable path exists without missing evidence, access,
+ environment, authority, or an unresolved owning decision.
+ 
+diff --git a/templates/codex-project/README.md b/templates/codex-project/README.md
+index 28ac5bf..292d8ed 100644
+--- a/templates/codex-project/README.md
++++ b/templates/codex-project/README.md
+@@ -12,9 +12,9 @@ The role files define subordinate agents only:
+ - `acceptance_reviewer` and `researcher` are read-only;
+ - `bounded_worker` and `fast_worker` perform bounded implementation work.
+ 
+-Primary, Implementor, and Review Controller are top-level Codex sessions. A
+-person or an explicitly activated project workflow execution driver starts or
+-resumes those sessions. They are not subagent profiles in this bundle.
++Primary, implementation, and review are responsibilities, not a required set
++of top-level sessions. A person or an explicitly activated project workflow
++selects contexts for continuity, capability, and independent evaluation.
+ 
+ The copy under `../workspace-control/.codex/` is derived from this canonical
+ bundle so a workspace-control repository can link it into a `git-ws` workspace
+diff --git a/templates/codex-project/primary.md b/templates/codex-project/primary.md
+index 13e5c4c..bfccd93 100644
+--- a/templates/codex-project/primary.md
++++ b/templates/codex-project/primary.md
+@@ -10,10 +10,11 @@ work while awaiting an answer.
+ 
+ A specialist's escalation returns a question to you, not automatically to the
+ user. Resolve it from existing context and authority and send the decision back
+-without inventing new permission. The orchestrator owns automatic progression
+-within delegated authority. User-mediated escalation relay is a tooling
++without inventing new permission. A coordinator owns only progression delegated
++by the selected policy. User-mediated escalation relay is a tooling
+ limitation, not the intended decision model. Follow the KB README's scoped
+-user-exception policy; identify the rule once and honor the explicit exception.
++exception policy; identify the rule once and honor a scoped user exception or
++justified supervisor exception within delegated authority.
+ 
+ Read current project guidance on fresh startup or task resumption and preserve
+ established user intent. Use owning workflow and role procedures only when the
+diff --git a/templates/operational-issue-objective_template.md b/templates/operational-issue-objective_template.md
+index 2bf848c..ace98f9 100644
+--- a/templates/operational-issue-objective_template.md
++++ b/templates/operational-issue-objective_template.md
+@@ -1,98 +1,28 @@
+ # <Outcome-oriented issue title>
+ 
+-## Executive summary
++## Outcome
+ 
+-<Explain in plain language what problem this issue solves, what outcome it
+-delivers and why that matters, and whether the objective is pending, active,
+-blocked, in review, partially complete, or complete. Use blocked only when no
+-safe executable path exists without external resolution; unfinished executable
+-work remains active or in progress. A human should understand the ticket
+-without opening the references below. Keep detailed product truth in owning
+-artifacts.>
++<Describe the problem and observable result in plain language. Make the issue
++understandable without requiring the reader to open its references.>
+ 
+-## Parent objective
++## Scope and boundaries
+ 
+-<For an implementation-slice or integration-review child, identify the durable
+-Primary-owned parent and state how this child advances it. Do not copy the
+-parent's history. Omit this section for a top-level product objective.>
++<Describe the deliverable and any relevant non-goals, repository limits,
++required approvals, or capability boundaries. Include only constraints that
++matter to this objective.>
+ 
+-## Objective
++## Completion evidence
+ 
+-<State the observable engineering or product outcome. Describe what will be
+-true when the issue is complete, not merely what activity an agent should
+-perform.>
+-
+-## Validation boundary
+-
+-<Separate the requested deliverable, mandatory validation and optional rehearsal.
+-Do not turn tooling work into a real release/install operation or an example
+-version into a fixed release requirement. Identify special runtime capabilities
+-and their intended owner before dispatching dependent work. For GUI QA, name
+-the designated environment, candidate, scenarios, and any narrower restrictions;
+-reference `kb:docs/gui-qa-authorization.md` for computer-use authority.>
++<Describe the evidence that shows the outcome is complete, including required
++validation, review, or acceptance. Link the exact candidate or result where
++needed.>
+ 
+ ## Current state
+ 
+-<List remaining work, exact blockers, and evidence links. Include completed work
+-only where needed to explain the next action; do not accumulate implementation
+-inventories or agent reports. Omit this section only for a genuinely new
+-objective with no prior execution history.>
+-
+-## Next executable slice
+-
+-<When the objective is intentionally staged, state the smallest coherent next
+-outcome that can proceed and what it unlocks. When the objective is blocked,
+-state the external resolution required and the first coherent slice that becomes
+-executable after resolution; do not claim that slice can proceed now. Omit this
+-section when the whole objective is directly executable or complete. When this
+-slice is an Implementor outcome, give it an observable terminal condition.
+-Partial progress, a useful checkpoint, ordinary environment repair, validation
+-debt, or the end of an internal phase does not satisfy that condition. Create a
+-new child objective only when the next slice is materially distinct; do not
+-create one merely because a provider run ended.>
+-
+-## Done criteria
+-
+-- [ ] <Observable completion evidence>
+-- [ ] <Required validation or review evidence>
+-- [ ] <This issue's criteria and current state reconciled against evidence>
+-
+-<Keep mechanically reconciled criteria as top-level `- [ ]` or `- [x]` lines
+-in this exact section. Other list markers and nesting are not workflow state.
+-Do not place checkbox-like examples in the canonical form inside this section.>
+-
+-<For an implementation slice, normally require focused validation and a clean,
+-inspectable handoff. Add slice-local review only when the slice is independently
+-risky, externally consumable, or difficult to reverse. For an integration
+-review, bind the included slices and exact combined repository surface.>
+-
+-<Every checkbox must describe this issue's own completable deliverable. For an
+-acceptance-verdict child, keep product acceptance predicates as non-checkbox
+-evaluation inputs and use the done checklist for independent evaluation,
+-evidence recording, delivery of exactly one accepted/rejected/blocked verdict,
+-and durable issue-body reconciliation.>
+-
+-## Completion authority
+-
+-<Omit when Primary or the objective owner retains the default reconciliation.
+-For an orchestration-owned implementation child that needs no separate slice
+-review, state explicitly whether the executing role may mark only this child
+-`done` after all criteria pass. Require the specialist first to update the
+-child's existing checkboxes and current-state section against recorded evidence,
+-state any remaining action or that none remains, persist and read back the
+-description, then make and read back the terminal transition. This issue-body
+-recordkeeping does not authorize an Acceptance Reviewer to edit the reviewed
+-surface. That authority does not extend to assignment, the parent, later
+-slices, or another issue. When child completion natively wakes the parent,
+-state that the child-context run stops after verifying the child and the
+-parent-context run owns the next transition.>
+-
+-## Boundaries
+-
+-<State task-specific non-goals, repository scope, mutation limits, and actions
+-that require separate authority. Do not repeat generic policy already inherited
+-from the project unless it materially changes this objective.>
++<Optional for work already underway: summarize what remains, the exact blocker if
++any, and the next owner or action when a handoff needs it. Omit for a new issue
++with no execution history.>
+ 
+ ## Owning references
+ 
+-- <Canonical requirement, interface, decision, implementation, or build-bound evidence; optional coordination sequence>
++- <Canonical requirement, interface, decision, implementation, or validation evidence>
