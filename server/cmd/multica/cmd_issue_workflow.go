@@ -424,8 +424,8 @@ func validateIssueWorkflowException(input *issueWorkflowExceptionInput) error {
 	if err := validateIssueWorkflowIdentity(input.CandidateID, input.ExpectedRevision); err != nil {
 		return err
 	}
-	if input.Scope != "review" && input.Scope != "acceptance" && input.Scope != "delivery" {
-		return fmt.Errorf("scope must be review, acceptance or delivery")
+	if input.Scope != "review" && input.Scope != "acceptance" && input.Scope != "delivery" && input.Scope != "external_merge" {
+		return fmt.Errorf("scope must be review, acceptance, delivery or external_merge")
 	}
 	if input.GrantDetails == nil || len(input.GrantDetails) == 0 {
 		return fmt.Errorf("grant_details must describe a scoped exception")

@@ -57,6 +57,11 @@ func normalizedWorkflowExceptionGrant(scope string, details map[string]any) (map
 			}
 		}
 		return bad()
+	case "external_merge":
+		if len(details) != 1 || details["accept_merged_head"] != true {
+			return bad()
+		}
+		return map[string]any{"accept_merged_head": true}, nil
 	default:
 		return bad()
 	}
@@ -79,7 +84,11 @@ func authorizeWorkflowExceptionActor(ctx context.Context, tx pgx.Tx, workspaceID
 		}
 		return actorID, pgtype.UUID{}, nil
 	}
-	if actor.Type != "agent" || !policy.SupervisorAgentScopes[actor.ID][scope] {
+	delegatedScope := scope
+	if scope == "external_merge" {
+		delegatedScope = "delivery"
+	}
+	if actor.Type != "agent" || !policy.SupervisorAgentScopes[actor.ID][delegatedScope] {
 		return pgtype.UUID{}, pgtype.UUID{}, ErrWorkflowAuthorityForbidden
 	}
 	agentID, taskID, err := workflowAgentTask(ctx, tx, issue, actor)
@@ -144,12 +153,19 @@ func (s WorkflowAuthorityService) GrantException(ctx context.Context, workspaceI
 	if err != nil {
 		return "", err
 	}
-	if issue.WorkflowFrozen || issue.Status != "in_review" || issue.WorkflowCandidateID != candidateID || issue.Revision != in.ExpectedRevision {
+	if issue.WorkflowFrozen || issue.WorkflowCandidateID != candidateID || issue.Revision != in.ExpectedRevision {
 		return "", ErrWorkflowAuthorityConflict
 	}
 	pinned, authority, err := workflowAuthorityPolicy(ctx, s, issue)
 	if err != nil {
 		return "", err
+	}
+	if in.Scope == "external_merge" {
+		if authority.FormatVersion != 2 || issue.Status != "in_review" && issue.Status != authority.AcceptedStatusKey {
+			return "", ErrWorkflowAuthorityConflict
+		}
+	} else if issue.Status != "in_review" {
+		return "", ErrWorkflowAuthorityConflict
 	}
 	if _, err = loadCurrentWorkflowCandidate(ctx, tx, issue, pinned.Version); err != nil {
 		return "", err
@@ -162,8 +178,11 @@ func (s WorkflowAuthorityService) GrantException(ctx context.Context, workspaceI
 	if err != nil {
 		return "", err
 	}
-	if state == "accepted" {
+	if state == "accepted" && in.Scope != "external_merge" {
 		return "", fmt.Errorf("%w: reject the accepted candidate before changing authority", ErrWorkflowAuthorityConflict)
+	}
+	if state == "requested" && in.Scope == "external_merge" {
+		return "", fmt.Errorf("%w: a newer acceptance request must resolve before external merge reconciliation", ErrWorkflowAuthorityConflict)
 	}
 	var active bool
 	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM issue_workflow_exception
@@ -188,6 +207,12 @@ func (s WorkflowAuthorityService) GrantException(ctx context.Context, workspaceI
 		id, workspaceID, issueID, candidateID, pinned.Version, in.Scope, grantJSON, actor.Type, actorID, sourceTaskID, reason, consequences)
 	if err != nil {
 		return "", err
+	}
+	if in.Scope == "external_merge" {
+		if _, err = tx.Exec(ctx, `UPDATE issue_workflow_delivery SET next_attempt_at=now(),updated_at=now()
+			WHERE issue_id=$1 AND candidate_id=$2 AND status='stale' AND merged_at IS NULL`, issueID, candidateID); err != nil {
+			return "", err
+		}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE issue SET revision=revision+1,updated_at=now() WHERE id=$1 AND workspace_id=$2`, issueID, workspaceID); err != nil {
 		return "", err
@@ -230,7 +255,7 @@ func (s WorkflowAuthorityService) RevokeException(ctx context.Context, workspace
 	if err != nil {
 		return err
 	}
-	if issue.WorkflowFrozen || issue.Status != "in_review" || issue.Revision != in.ExpectedRevision {
+	if issue.WorkflowFrozen || issue.Revision != in.ExpectedRevision {
 		return ErrWorkflowAuthorityConflict
 	}
 	pinned, authority, err := workflowAuthorityPolicy(ctx, s, issue)
@@ -256,6 +281,13 @@ func (s WorkflowAuthorityService) RevokeException(ctx context.Context, workspace
 	if revokedAt.Valid || candidateID != issue.WorkflowCandidateID || basePolicy != pinned.Version {
 		return ErrWorkflowAuthorityConflict
 	}
+	if scope == "external_merge" {
+		if authority.FormatVersion != 2 || issue.Status != "in_review" && issue.Status != authority.AcceptedStatusKey {
+			return ErrWorkflowAuthorityConflict
+		}
+	} else if issue.Status != "in_review" {
+		return ErrWorkflowAuthorityConflict
+	}
 	actorID, sourceTaskID, err := authorizeWorkflowExceptionActor(ctx, tx, workspaceID, issue, authority, pinned.Version, scope, actor)
 	if err != nil {
 		return err
@@ -267,8 +299,11 @@ func (s WorkflowAuthorityService) RevokeException(ctx context.Context, workspace
 	if err != nil {
 		return err
 	}
-	if state == "accepted" {
+	if state == "accepted" && scope != "external_merge" {
 		return fmt.Errorf("%w: reject the accepted candidate before revoking authority", ErrWorkflowAuthorityConflict)
+	}
+	if state == "requested" && scope == "external_merge" {
+		return fmt.Errorf("%w: a newer acceptance request must resolve before external merge revocation", ErrWorkflowAuthorityConflict)
 	}
 	if state == "requested" {
 		if err = blockRequestedWorkflowAcceptance(ctx, tx, issue, candidateID); err != nil {

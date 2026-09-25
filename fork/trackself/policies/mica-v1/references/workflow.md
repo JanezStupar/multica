@@ -47,14 +47,15 @@ action:
 - `in_review` assigned to the independent final reviewer means a fresh,
   read-only evaluation is due.
 - After required agent review, `in_review` assigned to a human means human
-  acceptance is due for nontrivial work.
+  acceptance is due for nontrivial work not covered by valid prior approval.
 - `PR Ready` means required review and acceptance passed for the exact candidate
   but required delivery or outcome work remains. Delivery may be pending, held
   or failed; merged work may still need deployment or validation.
 - `done` means required PRs merged and the actual ticket outcome is complete.
   No-PR work may finish directly after acceptance when its outcome is complete.
 
-These semantics require format-2 completion support. Resolve the workspace
+These semantics require format-2 completion and external-merge reconciliation
+support; `v0.5.1-janez.2` cannot run this policy revision. Resolve the workspace
 status identifier from its configuration, not by guessing from the `PR Ready`
 display name. The configured status must have the `started` category.
 
@@ -74,8 +75,8 @@ marker is `handoff_completed_at`, while `last_task_id` remains null.
 Read current server authority, blockers and delivery progress with
 `multica issue workflow get <issue-id>`. An agent reviewer records the exact
 candidate, `pass` or `changes_requested`, and PR review URLs using
-`multica issue workflow review <issue-id> --file <json>`. Human acceptance or
-rejection uses `multica issue workflow accept|reject <issue-id> --file <json>`
+`multica issue workflow review <issue-id> --file <json>`. Human acceptance not already established by recorded approval, or
+rejection, uses `multica issue workflow accept|reject <issue-id> --file <json>`
 with the exact `candidate_id` and `expected_revision` from that read. For a
 defect rejection, choose any `resume_task_id` from the returned retained
 context options; do not substitute an unrelated task or infer a verdict.
@@ -85,7 +86,7 @@ retargeting the action.
 
 An authorized agent requests autonomous trivial acceptance with the same
 `workflow accept` command while its task is running. Include
-`classification_reason` describing how this candidate meets the pinned policy,
+`classification_reason` describing how this candidate meets the triviality criteria,
 in addition to `candidate_id` and `expected_revision`. For multiple PRs, include
 `merge_order_pr_urls` in the explicit delivery order. Use `workflow accept
 --help` for the human and autonomous JSON shapes. A successful request is pending
@@ -104,11 +105,58 @@ edits or already-agreed labels are eligible; altered meaning/interaction is a
 UX change. Record a short classification reason, without numeric size thresholds.
 Honor existing scoped approval without asking for it again.
 
+Human acceptance covers the approved outcome, behavior, scope, risk and stated
+conditions, not a frozen commit identifier. Before asking again, compare the
+current candidate with the approved one. Carry approval forward when the delta
+is in scope and nonmaterial and required independent evaluation covers the
+current code. Record the approval source, old/current heads, delta, review
+links and short rationale in the existing work record. Metadata corrections,
+review fixes and integration changes do not by themselves require repeated
+human acceptance or GUI QA. Ask only for a material change to approved behavior,
+scope, risk or conditions, conflicting evidence, or unresolved relevant judgment;
+explain the difference. Never treat a rejection or an explicit request to withhold acceptance as
+approval. Approval with a delivery hold remains approval. Never relabel a
+substantive feature as trivial.
+
+A normal parent/base-branch merge into an approved feature is not by itself a
+reason to revoke acceptance, repeat review or move back to `in_review`. Preserve
+approval and existing evidence, recording the integration. Evaluate substantive
+feature changes or material conflict resolutions, rather than treating the new
+SHA as an offense. Agent delivery may pause for reconciliation of its expected
+head without creating a new human decision.
+
+A user-directed provider merge, including Primary acting through the service
+account, records acceptance and actual delivery. Reconcile that completed merge
+before stale-head handling, then close once every required PR and actual outcome
+is complete. An agent delivery hold does not undo the user's completed merge.
+Do not request another acceptance or review solely because parent integration
+changed the SHA. External-merge authority follows the configured policy: `external_merged_head:
+"accepted"` explicitly delegates the completion signal to the provider-authorized
+merge of the already accepted, bound PR. Record the provider actor without
+claiming it identifies a human. This does not authorize an agent to initiate an
+otherwise forbidden merge.
+
+Exact-head review and delivery guards for agent-initiated merges still apply. For a new candidate, a
+supervisor with delegated acceptance scope records a candidate-scoped acceptance
+exception naming the accepting agent, with the prior approval and evaluated
+delta as its reason and consequences. The agent then records acceptance for
+the current candidate through the normal guarded API. This records delegated
+carry-forward, not a fresh human verdict. The current agent API calls this
+route `trivial` and requires `classification_reason`; those legacy names do not
+classify the work as trivial. State delegated carry-forward, the exception ID,
+prior approval and nonmaterial delta in that field. This route uses the
+autonomous delivery plan: compare it with the approved delivery conditions
+before requesting acceptance and set a hold if they differ. Existing tickets without that scope
+need an explicitly authorized scoped exception or migration; a changed default
+alone grants nothing. Preserve no-merge conditions and delivery holds, including
+`hold_delivery: true` when recording acceptance. A tooling limitation returns
+to Primary for technical reconciliation, not to the user to repeat approval.
+
 Mica may clear an overcautious procedural block within already-granted authority,
 such as repeated permission requests, optional checks treated as mandatory or
 needless escalation of routine choices. Briefly record scope, reason and
-consequences. This does not delegate waiver of the explicit user-approval
-categories; the user can grant a scoped exception to user-owned policy.
+consequences. This does not delegate approval of new substantive work in those categories;
+carrying documented approval forward under the rule above is permitted; the user can grant a scoped exception to user-owned policy.
 
 Implementation normally receives independent review, including work that may
 qualify as trivial. The first reviewer starts a fresh context from
@@ -158,8 +206,8 @@ remaining scope, evidence, context and ownership, then records the new policy
 version before deliberate continuation. Preparing or importing this bundle
 does not begin cutover or freeze currently active tickets.
 
-Nontrivial work follows the active policy's human acceptance path after
-required agent review. A human rejection of a defect within agreed scope
+Nontrivial work requires human approval after required agent review, unless
+recorded approval already covers it under the carry-forward rule above. A human rejection of a defect within agreed scope
 continues the existing objective in the appropriate retained context and
 preserves useful evidence. Invalidate the affected acceptance and pending
 delivery authority. A changed request is an explicit scope change or
@@ -177,13 +225,16 @@ Card movement alone does not create acceptance. Remove a `WIP:`
 PR title prefix and, where supported, mark a draft PR ready for review. After
 human acceptance under this policy, merge automatically unless explicitly held.
 For policy-authorized trivial work, merge after required
-checks and branch protections permit it. A later commit invalidates authority
-to merge that changed candidate and requires the applicable review and
-acceptance again. Delivery failures preserve acceptance and remain visible
+checks and branch protections permit it. A changed head pauses an agent-initiated
+merge until its delivery authority is reconciled. Parent integration alone does
+not require repeated review or acceptance; substantive feature changes require
+affected evaluation. Recognize a configured authorized completed provider merge
+before applying changed-head handling. Delivery failures preserve acceptance and remain visible
 with a retry tied to those same authorized commits. Keep `PR Ready` while
 required merges remain and expose partial delivery in explicit merge order.
 Preserve an intentional hold across retries/restarts until authorized release.
-New commits invalidate affected review, acceptance and readiness. Mark `done`
+Preserve prior acceptance and unaffected evidence across integration changes.
+Mark `done`
 only when required merges and the actual objective are complete, including any
 required deployment or runtime validation. Work without a PR does not need one
 manufactured for completion.

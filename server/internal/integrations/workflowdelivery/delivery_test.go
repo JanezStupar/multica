@@ -50,6 +50,30 @@ func decodeRequest(t *testing.T, r *http.Request) map[string]any {
 	return payload
 }
 
+func TestReadPRPreservesProviderMergerAuditIdentity(t *testing.T) {
+	for _, kind := range []Kind{GitHub, Forgejo, Gitea} {
+		t.Run(string(kind), func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Fatalf("read PR attempted %s", r.Method)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"title": "Accepted work", "head": map[string]string{"sha": changedHead},
+					"draft": false, "merged": true, "state": "closed", "merge_commit_sha": acceptedHead,
+					"merged_by": map[string]any{"id": 5, "login": "Multica", "type": "User"},
+				})
+			}))
+			defer server.Close()
+			provider, ref := testProvider(t, kind, server)
+			pr, err := provider.ReadPR(context.Background(), ref, "token")
+			if err != nil || !pr.Merged || pr.State != "closed" || pr.MergedBy.ID != 5 ||
+				pr.MergedBy.Login != "Multica" || pr.MergedBy.Type != "User" {
+				t.Fatalf("merger identity lost: PR=%+v err=%v", pr, err)
+			}
+		})
+	}
+}
+
 func TestPrepareReadyReconcilesMergedAndStopsClosedPR(t *testing.T) {
 	for _, kind := range []Kind{GitHub, Forgejo, Gitea} {
 		for _, state := range []string{"merged", "closed", "changed_head"} {

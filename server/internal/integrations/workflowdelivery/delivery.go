@@ -88,6 +88,15 @@ type PullRequest struct {
 	MergeCommitSHA string
 	NodeID         string // GitHub GraphQL identity, never a credential.
 	ContentVersion int64  // Forgejo/Gitea edit concurrency token when returned.
+	MergedBy       ProviderActor
+}
+
+// ProviderActor is provider-supplied audit identity. It does not prove that
+// the account maps to a Multica member (or that a service account is human).
+type ProviderActor struct {
+	ID    int64  `json:"id,omitempty"`
+	Login string `json:"login,omitempty"`
+	Type  string `json:"type,omitempty"`
 }
 
 type MergeMethod string
@@ -293,13 +302,14 @@ func (a *adapter) ReadPR(ctx context.Context, ref Ref, token string) (PullReques
 		return PullRequest{}, readStatusError("read PR", status)
 	}
 	var payload struct {
-		Title          *string `json:"title"`
-		State          *string `json:"state"`
-		Draft          *bool   `json:"draft"`
-		Merged         *bool   `json:"merged"`
-		MergeCommitSHA string  `json:"merge_commit_sha"`
-		NodeID         string  `json:"node_id"`
-		ContentVersion int64   `json:"content_version"`
+		Title          *string        `json:"title"`
+		State          *string        `json:"state"`
+		Draft          *bool          `json:"draft"`
+		Merged         *bool          `json:"merged"`
+		MergeCommitSHA string         `json:"merge_commit_sha"`
+		NodeID         string         `json:"node_id"`
+		ContentVersion int64          `json:"content_version"`
+		MergedBy       *ProviderActor `json:"merged_by"`
 		Head           *struct {
 			SHA string `json:"sha"`
 		} `json:"head"`
@@ -307,9 +317,13 @@ func (a *adapter) ReadPR(ctx context.Context, ref Ref, token string) (PullReques
 	if json.Unmarshal(body, &payload) != nil || payload.Title == nil || payload.State == nil || payload.Draft == nil || payload.Merged == nil || payload.Head == nil || !validSHA(payload.Head.SHA) {
 		return PullRequest{}, deliveryError(ErrAmbiguous, "decode PR", status)
 	}
-	return PullRequest{Title: *payload.Title, State: *payload.State, Draft: *payload.Draft, Merged: *payload.Merged,
+	pr := PullRequest{Title: *payload.Title, State: *payload.State, Draft: *payload.Draft, Merged: *payload.Merged,
 		HeadSHA: strings.ToLower(payload.Head.SHA), MergeCommitSHA: payload.MergeCommitSHA,
-		NodeID: payload.NodeID, ContentVersion: payload.ContentVersion}, nil
+		NodeID: payload.NodeID, ContentVersion: payload.ContentVersion}
+	if payload.MergedBy != nil {
+		pr.MergedBy = *payload.MergedBy
+	}
+	return pr, nil
 }
 
 func currentHead(pr PullRequest, expectedSHA string) error {

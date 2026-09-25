@@ -63,6 +63,7 @@ func workflowCandidateStale(ctx context.Context, tx pgx.Tx, issue db.Issue, cand
 	var stale bool
 	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM issue_workflow_delivery d
 		WHERE d.workspace_id=$1 AND d.issue_id=$2 AND d.candidate_id=$3
+		AND d.merged_at IS NULL
 		AND (d.status='stale' OR EXISTS (
 			SELECT 1 FROM issue_workflow_delivery_attempt attempt
 			WHERE attempt.workspace_id=d.workspace_id AND attempt.issue_id=d.issue_id

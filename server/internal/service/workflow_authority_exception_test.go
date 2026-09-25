@@ -24,6 +24,9 @@ func TestWorkflowExceptionGrantShapesAreClosed(t *testing.T) {
 		{"ready method", "delivery", map[string]any{"action": "ready", "merge_method": "squash"}, false},
 		{"merge", "delivery", map[string]any{"action": "merge", "merge_method": "squash"}, true},
 		{"merge missing method", "delivery", map[string]any{"action": "merge"}, false},
+		{"external merged head", "external_merge", map[string]any{"accept_merged_head": true}, true},
+		{"external merge false", "external_merge", map[string]any{"accept_merged_head": false}, false},
+		{"external merge extra", "external_merge", map[string]any{"accept_merged_head": true, "action": "merge"}, false},
 		{"other scope", "runtime", map[string]any{"action": "merge", "merge_method": "squash"}, false},
 	}
 	for _, tc := range cases {

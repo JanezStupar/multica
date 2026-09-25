@@ -16,10 +16,14 @@
     ],
     "delivery": "merge"
   },
-  "delivery": {"merge_method": "squash", "multi_pr_merge_order": "explicit"},
+  "delivery": {
+    "merge_method": "squash",
+    "multi_pr_merge_order": "explicit",
+    "external_merged_head": "accepted"
+  },
   "supervisors": [
-    {"agent_id": "4fb41861-65ad-415c-98bd-b2b51eab68fb", "scopes": ["review", "delivery"]},
-    {"agent_id": "bf691398-8cd1-4181-94f2-217315c8b66a", "scopes": ["review", "delivery"]},
-    {"agent_id": "533882c9-5cdc-48cc-98f8-9effe6002f81", "scopes": ["review", "delivery"]}
+    {"agent_id": "4fb41861-65ad-415c-98bd-b2b51eab68fb", "scopes": ["review", "acceptance", "delivery"]},
+    {"agent_id": "bf691398-8cd1-4181-94f2-217315c8b66a", "scopes": ["review", "acceptance", "delivery"]},
+    {"agent_id": "533882c9-5cdc-48cc-98f8-9effe6002f81", "scopes": ["review", "acceptance", "delivery"]}
   ]
 }

@@ -22,7 +22,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
-func workflowFormat2DeliveryFixture(t *testing.T, server *httptest.Server, count int, action string, held, outcomeComplete bool) (issueID, candidateID, acceptanceID string, deliveryIDs []string) {
+func workflowFormat2DeliveryFixture(t *testing.T, server *httptest.Server, count int, action string, held, outcomeComplete bool, externalMergedHead ...string) (issueID, candidateID, acceptanceID string, deliveryIDs []string) {
 	t.Helper()
 	if testHandler == nil {
 		t.Skip("handler test fixture unavailable")
@@ -63,11 +63,15 @@ func workflowFormat2DeliveryFixture(t *testing.T, server *httptest.Server, count
 	if source.ID == "" || source.Content == "" {
 		t.Fatal("platform workflow skill unavailable for format-2 test policy")
 	}
+	externalMergeConfig := ""
+	if len(externalMergedHead) > 0 {
+		externalMergeConfig = fmt.Sprintf(`,"external_merged_head":%q`, externalMergedHead[0])
+	}
 	source.Files = append(source.Files, service.AgentSkillFileData{
 		Path: "runtime/issue-workflow.md", Content: "Follow the pinned workflow for this test issue.",
 	}, service.AgentSkillFileData{
 		Path:    "runtime/policy.json",
-		Content: fmt.Sprintf(`{"format_version":2,"accepted_status_key":"pr_ready","outcome_agent_id":%q,"human":{"accept_roles":["owner","admin"],"delivery":%q},"review":{"required":true},"delivery":{"merge_method":"merge","multi_pr_merge_order":"explicit"}}`, outcomeAgentID, action),
+		Content: fmt.Sprintf(`{"format_version":2,"accepted_status_key":"pr_ready","outcome_agent_id":%q,"human":{"accept_roles":["owner","admin"],"delivery":%q},"review":{"required":true},"delivery":{"merge_method":"merge","multi_pr_merge_order":"explicit"%s}}`, outcomeAgentID, action, externalMergeConfig),
 	})
 	pinned, err := testHandler.TaskService.NewIssueWorkflowPolicy(source)
 	if err != nil {
@@ -651,7 +655,7 @@ func TestWorkflowFormat2OrderedPartialMergeRetriesExactHeadWithoutRepeatingDeliv
 	}
 }
 
-func TestWorkflowFormat2ChangedHeadRevokesAcceptanceAndRequiresExplicitRejection(t *testing.T) {
+func TestWorkflowFormat2ChangedOpenHeadPausesWithoutRevokingAcceptance(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("handler test fixture unavailable")
 	}
@@ -667,7 +671,7 @@ func TestWorkflowFormat2ChangedHeadRevokesAcceptanceAndRequiresExplicitRejection
 			"draft": false, "merged": false, "state": "open"})
 	}))
 	defer server.Close()
-	issueID, candidateID, acceptanceID, ids := workflowFormat2DeliveryFixture(t, server, 2, "merge", false, true)
+	issueID, candidateID, acceptanceID, ids := workflowFormat2DeliveryFixture(t, server, 2, "merge", false, true, "accepted")
 	dbfx.Exec(t, `UPDATE issue_workflow_delivery SET status='delivered',merged_at=now(),merge_commit_sha=$2
 		WHERE id=$1`, ids[0], workflowDeliveryChangedHead)
 	dbfx.Exec(t, `UPDATE issue_workflow_delivery SET readiness_done_at=now() WHERE id=$1`, ids[1])
@@ -695,7 +699,7 @@ func TestWorkflowFormat2ChangedHeadRevokesAcceptanceAndRequiresExplicitRejection
 	staleWorker.client = server.Client()
 	worked, err = staleWorker.ProcessNext(context.Background())
 	if err != nil || worked {
-		t.Fatalf("revoked stale candidate was automatically redispatched: worked=%v err=%v", worked, err)
+		t.Fatalf("paused changed head was automatically redispatched: worked=%v err=%v", worked, err)
 	}
 	var issueStatus string
 	var currentCandidate, acceptanceState, acceptanceError string
@@ -704,8 +708,8 @@ func TestWorkflowFormat2ChangedHeadRevokesAcceptanceAndRequiresExplicitRejection
 		Scan(&issueStatus, &currentCandidate, &acceptanceState, &acceptanceError); err != nil {
 		t.Fatal(err)
 	}
-	if issueStatus != "in_review" || currentCandidate != candidateID || acceptanceState != "revoked" || acceptanceError != "stale_head" {
-		t.Fatalf("stale candidate issue=%s candidate=%s acceptance=%s error=%s", issueStatus, currentCandidate, acceptanceState, acceptanceError)
+	if issueStatus != "pr_ready" || currentCandidate != candidateID || acceptanceState != "accepted" || acceptanceError != "" {
+		t.Fatalf("changed head revoked approval: issue=%s candidate=%s acceptance=%s error=%s", issueStatus, currentCandidate, acceptanceState, acceptanceError)
 	}
 	var mergedAt pgtype.Timestamptz
 	if err := testPool.QueryRow(context.Background(), `SELECT merged_at FROM issue_workflow_delivery WHERE id=$1`, ids[0]).Scan(&mergedAt); err != nil || !mergedAt.Valid {

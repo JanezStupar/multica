@@ -1,4 +1,5 @@
-This policy requires format-2 completion support; v0.5.1-janez.1 is insufficient.
+This policy requires format-2 completion and `delivery.external_merged_head`
+support; do not activate this revision on `v0.5.1-janez.2`.
 Use the workflow commands below for acceptance, persistent holds and completion.
 Existing tickets follow their pinned version until explicitly migrated at the
 authorized workspace boundary.
@@ -35,6 +36,29 @@ multiple PRs, `merge_order_pr_urls`; inspect `workflow accept --help` for the
 request shape and finish successfully after requesting acceptance. For an in-scope defect, select `resume_task_id` only from the
 returned retained context options. Put technical findings and verdict details
 in the PR review, then link it from the ticket.
+
+Before returning work for human acceptance, reconcile prior approval using the
+carry-forward rule in `references/workflow.md`. A different SHA or corrected
+candidate metadata alone is not a new human decision. Delegated supervisors
+use a candidate-scoped `acceptance` exception naming `agent_actor_id`, with
+approval provenance and delta evaluation in reason/consequences, then the
+ordinary guarded acceptance action. The current agent route uses the legacy
+`trivial` mode and mandatory `classification_reason` field: explicitly describe
+delegated carry-forward, the exception ID, prior approval and evaluated delta
+there; do not falsely classify substantive work as trivial. Inspect its
+autonomous delivery plan against the approved delivery conditions and hold
+delivery if they differ. Do not waive engineering review or discard
+holds. An existing pin without delegated scope requires an authorized scoped
+exception or migration, not invented authority.
+
+Normal parent/base integration does not itself revoke human approval or require
+another review. A user-directed provider merge is acceptance and delivery; read
+back the bound PR's actual merged state before applying stale-head rules, and
+close when all required merges and outcome work are complete. This includes
+Primary acting through the service account. Preserve the distinction between
+observing the user's merge and permission for an agent to initiate a merge.
+If the runtime cannot reconcile this, report a technical limitation to Primary
+instead of asking the user to approve again or claiming a fresh review is due.
 
 For this format-2 policy, acceptance must state `outcome_complete`: true only
 when the requested outcome is already established, otherwise false. Human

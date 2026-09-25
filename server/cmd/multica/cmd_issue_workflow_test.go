@@ -119,6 +119,16 @@ func TestIssueWorkflowAcceptanceDispositionRequiresCandidateRevisionAndReason(t 
 	}
 }
 
+func TestIssueWorkflowExternalMergeExceptionPassesCLIValidation(t *testing.T) {
+	const input = `{"candidate_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","expected_revision":4,` +
+		`"scope":"external_merge","grant_details":{"accept_merged_head":true},` +
+		`"reason":"Provider merged the bound PR","consequences":"Observe delivery without issuing Merge"}`
+	decoded, err := decodeIssueWorkflowInput([]byte(input), "exception")
+	if err != nil || decoded.(*issueWorkflowExceptionInput).Scope != "external_merge" {
+		t.Fatalf("CLI rejected candidate-scoped external merge grant: %#v, %v", decoded, err)
+	}
+}
+
 func TestIssueWorkflowCLIActions(t *testing.T) {
 	const issueID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	const candidateID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"

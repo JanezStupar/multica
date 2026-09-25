@@ -74,9 +74,9 @@ independent verdict. Tickets coordinate owner, status, scope, blockers and
 acceptance, linking to those PR reviews instead of duplicating their reports.
 
 One ticket may coordinate several PRs, including PRs in different repositories.
-Its candidate identifies each relevant PR and commit. Acceptance applies to
-those exact commits; new commits require renewed evaluation and acceptance for
-affected work. Coordinated merge ordering and partial delivery follow the selected
+Its candidate identifies each relevant PR and commit. Human acceptance covers the approved outcome, scope and conditions. Delivery
+authority identifies exact commits; changed commits require evaluation of the
+affected delta, not automatic repetition of human acceptance. Coordinated merge ordering and partial delivery follow the selected
 project policy. Important lasting decisions remain in the owning repositories.
 Work without code or a PR need not manufacture one to complete its objective.
 
@@ -150,7 +150,7 @@ the delegated deliverable boundary above.
 | `in_progress`, Mica or implementation agent | Clarification, coordination or implementation is executable within the assignment. |
 | `in_review`, review/fix agent | The agent has executable review work, including routine in-scope corrections. |
 | `in_review`, independent final reviewer | A fresh context evaluates the current resulting surface. |
-| `in_review`, human | Required engineering work and agent review are complete; human acceptance is needed. |
+| `in_review`, human | Required engineering work and agent review are complete; a human decision is needed only when valid prior approval or an authorized completed merge does not already establish acceptance. |
 | `PR Ready`, accepted work with delivery or outcome work remaining | Required review and acceptance passed for the exact candidate; delivery may be pending, held or failed, or merged work may still require deployment or validation. |
 | `done`, completed work | All required PRs have merged and the ticket’s actual outcome is complete; work requiring no PR may finish directly after acceptance. |
 
@@ -223,9 +223,10 @@ hardcoding a fixed set of agent identities.
 
 ### Acceptance, triviality and PR delivery
 
-For work requiring human approval, successful required agent review leads to
-`in_review` assigned to the human. Acceptance records the actor, authority and
-exact candidate. With required PRs still unmerged, it moves the ticket to
+For work requiring human approval that has not already been given, successful
+required agent review leads to `in_review` assigned to the human. Before asking,
+reconcile existing approval with the current outcome, scope and conditions.
+Acceptance records the actor, authority and exact delivery candidate. With required PRs still unmerged, it moves the ticket to
 `PR Ready` and initiates the authorized delivery policy. A card movement alone
 does not manufacture acceptance or authority for unseen commits.
 
@@ -257,9 +258,48 @@ Acceptance initiates deterministic delivery bookkeeping:
   for it; otherwise leave the PR ready. No repeat approval is needed for a
   delivery action already authorized by that policy and acceptance.
 
-Acceptance and pending merge authority are tied to identified revisions. A new
-commit after acceptance invalidates authority to merge the changed candidate;
-it must receive the applicable evaluation and acceptance again.
+Human approval is not revoked merely because a commit, branch, repository URL
+spelling or candidate identifier changes. Mica carries it forward when the
+subsequent delta preserves the approved behavior, scope, risk and stated
+conditions, and the required independent evaluation covers the current code.
+Record the original approval, old and current heads, delta, evaluation evidence
+and a brief reason in the existing work record. Metadata-only corrections,
+review fixes and integration changes require proportionate evaluation, not
+repeat GUI QA or another human decision by default.
+
+Ask again only when the delta materially changes approved behavior, scope,
+risk or conditions, conflicts with prior approval, or leaves relevant judgment
+unresolved. Explain that specific difference. Do not relabel a substantive
+feature as trivial to reuse approval. A rejection or explicit request to withhold acceptance
+cannot be treated as approval.
+
+Normal integration of the parent/base branch into an approved feature is not,
+by itself, a reason to revoke approval, repeat review or return the ticket to
+`in_review`. Keep existing evidence and record the integration; evaluate actual
+new feature changes or material conflict resolutions proportionately. A stale
+SHA may pause an agent's merge operation without undoing the user's approval.
+
+An actual user-directed merge of a bound PR, including one performed through
+Primary or the service account at the user's direction, is acceptance and
+delivery evidence. Observe the provider's completed merge before applying
+changed-head rules. It does not require another acceptance action and an agent
+no-merge hold does not invalidate a merge already performed by the user. Close
+when all required PRs are merged and the requested outcome is complete; preserve
+separately agreed deployment or other outcome work when it remains. The policy
+makes external-merge authority configurable through format-2
+`delivery.external_merged_head`: `exact` (default for existing bundles) or
+`accepted` (explicit delegation to the provider-authorized completed merge of
+the already accepted, bound PR as acceptance/delivery even after a head change). Existing tickets can receive a candidate-scoped `external_merge`
+exception with `accept_merged_head: true` without changing their policy pin.
+Record observed head, merge commit and provider actor; a service-account actor
+is not itself evidence of which human instructed it. Observing an authorized
+merge never grants an agent permission to perform a different merge.
+
+Delivery remains bound to the exact evaluated commits for agent-initiated merges. A changed commit pauses
+stale delivery authority until evaluation and an explicit current-candidate
+acceptance record reconcile it. The authorized coordinator may record that
+acceptance under carried-forward human approval; it is not a new human verdict.
+Preserve delivery holds and no-merge instructions independently of acceptance.
 
 Delivery failure does not erase acceptance. While required merges remain, the
 ticket stays `PR Ready` and shows acceptance, pending/failed delivery, reason
@@ -275,14 +315,16 @@ are complete. If deployment or runtime validation is part of the objective,
 merging alone is not completion. Work with no PR may finish directly after
 acceptance when its outcome is complete; do not manufacture a PR.
 
-A changed candidate invalidates affected review, acceptance and readiness and
-returns to the applicable work/review phase. Preserve already delivered facts
-and evaluate the new commits before authorizing further delivery.
+Substantive feature changes require affected engineering evaluation. Parent/base
+integration alone does not. Reconcile the current head before an agent-initiated
+merge while preserving approval, and recognize authorized completed provider
+merges under the external-merge rule without reopening review.
 
 ### Agreed production policy
 
-These settings were agreed on 2026-09-25 and encoded in the activated Linux
-policy. Runtime proof and its limits are linked in the release record.
+These settings were agreed on 2026-09-25. The release record distinguishes
+activated settings from the subsequent external-merge correction awaiting its
+backend implementation and activation.
 
 - Autonomous acceptance and merge may cover bounded non-feature work that does
   not change intended user flow or UX: mechanical refactors, targeted bug fixes
@@ -301,7 +343,10 @@ policy. Runtime proof and its limits are linked in the release record.
   repeated requests for already-granted permission, optional checks treated as
   mandatory, or routine execution choices escalated unnecessarily. Record the
   reason, scope and consequences briefly on the existing work record. This is
-  not delegated authority to waive the explicit user-approval categories above.
+  not authority to invent approval for the explicit user-approval categories above.
+  Mica may record candidate-scoped acceptance under documented prior human
+  approval after the carry-forward evaluation; no new human decision is needed
+  solely because the candidate identity changed.
   The user may grant a scoped exception to any user-owned project policy;
   platform-enforced limits remain in force.
 - After human acceptance, merge automatically unless the actor explicitly holds
@@ -406,9 +451,11 @@ merges automatically unless explicitly held; format 2 keeps accepted work in
 PR Ready until delivery and the actual outcome are complete.
 
 The selected [runtime policy](policies/mica-v1/runtime/policy.json) binds the
-three Linux Mica identities as autonomous acceptors and review/delivery
+three Linux Mica identities as autonomous acceptors and review/acceptance/delivery
 supervisors, owner/admin human acceptance, and main Linux Mica for outstanding
-outcome work. Supervisor acceptance waiver is not delegated. Workspace-control
+outcome work. Supervisor acceptance scope is limited by this policy to carrying
+forward documented human approval after the required delta evaluation. It does
+not delegate approval of new or materially changed substantive work. Workspace-control
 owns actual agent/runtime identities, model/effort selection and review routes
 in `config/mica-agent-desired-state.json`; its source manifest and imported
 skill identity must match. Native macOS/Windows agent rollout and targeted host
@@ -438,13 +485,13 @@ and ownership. No blanket migration accompanies activation.
 | Handoff recovery | Duplicate events, an ambiguous response or interruption does not produce duplicate recipient execution or review of a still-changing outgoing surface. |
 | Code handoff | A handoff identifies the draft PR, repository, branch and exact commit; technical review evidence stays in PR reviews, linked from the coordinating ticket. |
 | Cross-repository work | One ticket coordinates several PRs and identifies their candidate commits; acceptance and subsequent delivery cannot silently cover changed commits. |
-| Human acceptance | Work requiring approval reaches the human in `in_review`; acceptance records actor, authority and exact candidate, then enters `PR Ready` while required PRs remain unmerged. |
+| Human acceptance | Work not covered by valid prior approval reaches the human in `in_review`; eligible prior approval carries forward with delta evidence. Acceptance records actor, authority and exact candidate, then enters `PR Ready` while required PRs remain unmerged. |
 | Accept but hold | Acceptance with an explicit hold leaves the ticket `PR Ready`; retries and restarts preserve it until authorized release. |
 | Outcome completion | `done` requires all required PRs merged and the actual objective complete; no-PR work can finish directly after acceptance. Partial delivery and outstanding deployment/QA remain visible. |
 | Human rejection | An in-scope defect resumes the appropriate retained context, preserves evidence and invalidates affected acceptance; a new request is explicitly distinguished. |
 | Autonomous trivial work | A policy-qualified trivial ticket completes required checks/review, is accepted by an agent and merges without a human acceptance step. |
 | Classification change | Work that ceases to qualify as trivial loses autonomous acceptance eligibility and follows the human path. |
-| Revision change | New commits after acceptance prevent merging under the stale acceptance; the new candidate is evaluated under the applicable policy. |
+| Revision change | Changed commits require affected evaluation and exact-head delivery authority; documented human approval carries forward for a verified nonmaterial delta without repeat approval or GUI QA. |
 | Delivery recovery | A provider failure remains visible alongside acceptance and retries the same authorized action safely. Already completed delivery is not repeated. |
 | Machines and workspace | Scheduled representative jobs execute on the declared Linux, native Mac and native Windows environments, including scoped cross-repository work; their traces and machine identity are inspectable. |
 | Policy override | An authorized configuration override changes behavior without rebuilding Multica, and generated instructions do not contradict it. |

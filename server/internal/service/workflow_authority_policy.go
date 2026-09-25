@@ -26,6 +26,7 @@ type WorkflowAuthorityPolicy struct {
 	AutonomousDelivery    string // ready or merge
 	MergeMethod           string // merge, squash, rebase; required for merge
 	MultiPRMergeOrder     string // explicit; absent denies multi-PR merge
+	ExternalMergedHead    string // format 2: exact or accepted; never authorizes a merge POST
 	SupervisorAgentScopes map[string]map[string]bool
 }
 
@@ -33,6 +34,7 @@ func defaultWorkflowAuthorityPolicy() WorkflowAuthorityPolicy {
 	return WorkflowAuthorityPolicy{
 		FormatVersion: 1, HumanAcceptRoles: []string{"owner", "admin", "member"},
 		ReviewRequired: true, HumanDelivery: "ready", AutonomousDelivery: "ready",
+		ExternalMergedHead:    "exact",
 		SupervisorAgentScopes: map[string]map[string]bool{},
 	}
 }
@@ -54,8 +56,9 @@ type workflowAuthorityFile struct {
 		Delivery         string   `json:"delivery"`
 	} `json:"autonomous_trivial"`
 	Delivery *struct {
-		MergeMethod       string `json:"merge_method"`
-		MultiPRMergeOrder string `json:"multi_pr_merge_order"`
+		MergeMethod        string `json:"merge_method"`
+		MultiPRMergeOrder  string `json:"multi_pr_merge_order"`
+		ExternalMergedHead string `json:"external_merged_head"`
 	} `json:"delivery"`
 	Supervisors []struct {
 		AgentID string   `json:"agent_id"`
@@ -143,6 +146,15 @@ func ParseWorkflowAuthorityPolicy(bundle AgentSkillData) (WorkflowAuthorityPolic
 	if input.Delivery != nil {
 		policy.MergeMethod = input.Delivery.MergeMethod
 		policy.MultiPRMergeOrder = input.Delivery.MultiPRMergeOrder
+		if input.Delivery.ExternalMergedHead != "" {
+			if policy.FormatVersion != 2 {
+				return WorkflowAuthorityPolicy{}, errors.New("runtime/policy.json external_merged_head requires format 2")
+			}
+			policy.ExternalMergedHead = input.Delivery.ExternalMergedHead
+		}
+	}
+	if policy.ExternalMergedHead != "exact" && policy.ExternalMergedHead != "accepted" {
+		return WorkflowAuthorityPolicy{}, errors.New("runtime/policy.json external_merged_head must be exact or accepted")
 	}
 	if policy.HumanDelivery != "ready" && policy.HumanDelivery != "merge" ||
 		policy.AutonomousDelivery != "ready" && policy.AutonomousDelivery != "merge" {

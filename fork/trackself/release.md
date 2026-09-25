@@ -42,8 +42,9 @@ The prepared policy is `trackself-platform-4ea20d203a893dc2`, content identity
 `4ea20d203a893dc2610d93fbd1c47cce11013e2e0a79b837ea29a465759ca6cb`.
 It includes the agreed production authority and format-2 completion semantics.
 The imported Trackself UUID is `3dd9bba6-81b2-425c-8361-377a9a1acbe8`;
-read-back matched the root and all 12 supporting files byte-for-byte. It is
-the active default after the separately approved cutover described below.
+read-back matched the root and all 12 supporting files byte-for-byte. It was
+the initial default at the separately approved cutover described below; current
+policy-only revisions are recorded in workspace-control `docs/multica-workflow.md`.
 Import alone did not change agents, defaults or existing tickets.
 
 Local retained artifacts are under ignored `dist/releases/v0.5.1-janez.2/`.
@@ -135,8 +136,8 @@ imported skill; container reads independently confirmed both hashes. This was
 an actual agent execution, distinct from the scripted format-2 delivery trial.
 The chat was archived with its transcript retained; no probe issue was created.
 Production read-back confirmed all 632 prior tickets frozen, zero migrated, and
-`pr_ready` in the `started` category. Main and branch-2 resumed; branch-1 remains
-stopped. A protected pre-cutover database snapshot is retained at
+`pr_ready` in the `started` category. Main and branch-2 resumed at cutover; branch-1 was left
+stopped at that boundary and subsequently restarted under separate authorization. A protected pre-cutover database snapshot is retained at
 `utility-server:/opt/multica/config-backups/before-mica-cutover-20260925`.
 
 The consumed preparation patches and completed implementation plan were retired.
@@ -159,3 +160,28 @@ After explicit approval, the workstation shell CLI at
 Version/commit and authenticated workflow-default read-back passed. The old
 operator binary was removed without a rollback copy at the user's request.
 Desktop, container and operator CLIs now all use `.2`.
+
+## Current delivery limitation
+
+Observed 2026-09-25 on `v0.5.1-janez.2` (source
+`0f23313676b0fcc66f197dd9dffef7c4feb10d09`): TRA-626 PR27 readiness retried
+with `ambiguous` while its accepted head remained
+`dccab86dda3bfe0f79da205993df9c0a325a9042` and its title still had `WIP:`.
+A direct supported Forgejo title PATCH removed the prefix and returned
+`draft: false`; Multica then recorded `readiness_done_at` at
+`2026-09-25T11:31:44.679203Z`. Acceptance and the persistent merge hold were
+preserved. This repaired the ticket without a release. The automatic title
+update failure has not been isolated; do not claim its recurrence is fixed.
+Remove this diagnosis when the provider mutation path is explained or repaired.
+
+The same deployed revision also revoked TRA-609 acceptance after its feature
+branch integrated `develop` (`21ba139e5533eaf4fb752da73325d295492f192a` to
+`b6f8e28b77f0f20ff434cfbd8537ab17bb5419f4`), then failed to observe the completed
+provider merge `d9bd237722ec8b5d51cb205fba4772aaca12e3c7`. The user clarified
+that parent integration alone is not grounds for rereview and their merge is
+acceptance/delivery. The prepared backend correction retains acceptance while
+pausing stale agent merge authority, recognizes policy-authorized completed
+external merges first, and recovers only stale-head revocations. Source policy
+now requires `delivery.external_merged_head` support and must not be activated
+on `.2`. Until that backend is deployed and the old ticket receives its scoped
+`external_merge` exception, TRA-609 remains unreconciled in the live workflow.

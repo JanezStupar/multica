@@ -28,6 +28,7 @@ func TestWorkflowAuthorityPolicyRejectsMalformedOrImplicitGrants(t *testing.T) {
 		`{"format_version":1,"human":{"delivery":"merge"}}`,
 		`{"format_version":1,"autonomous_trivial":{"enabled":true}}`,
 		`{"format_version":1,"delivery":{"merge_method":"fast-forward"}}`,
+		`{"format_version":1,"delivery":{"external_merged_head":"accepted"}}`,
 		`{"format_version":1,"supervisors":[{"agent_id":"bad","scopes":["delivery"]}]}`,
 		`{"format_version":1}{"format_version":1}`,
 		`{"format_version":2,"accepted_status_key":" pr_ready ","outcome_agent_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}`,
@@ -40,5 +41,25 @@ func TestWorkflowAuthorityPolicyRejectsMalformedOrImplicitGrants(t *testing.T) {
 				t.Fatalf("accepted malformed policy %q", content)
 			}
 		})
+	}
+}
+
+func TestWorkflowAuthorityPolicyExternalMergedHeadIsExplicitFormat2Authority(t *testing.T) {
+	base := `{"format_version":2,"accepted_status_key":"pr_ready","outcome_agent_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"`
+	for _, tc := range []struct {
+		suffix, want string
+	}{
+		{`}`, "exact"},
+		{`,"delivery":{"external_merged_head":"exact"}}`, "exact"},
+		{`,"delivery":{"external_merged_head":"accepted"}}`, "accepted"},
+	} {
+		policy, err := ParseWorkflowAuthorityPolicy(AgentSkillData{Files: []AgentSkillFileData{{Path: "runtime/policy.json", Content: base + tc.suffix}}})
+		if err != nil || policy.ExternalMergedHead != tc.want {
+			t.Fatalf("external merged head %q: policy=%+v err=%v", tc.suffix, policy, err)
+		}
+	}
+	_, err := ParseWorkflowAuthorityPolicy(AgentSkillData{Files: []AgentSkillFileData{{Path: "runtime/policy.json", Content: base + `,"delivery":{"external_merged_head":"any"}}`}}})
+	if err == nil {
+		t.Fatal("unsupported external merge authority was accepted")
 	}
 }

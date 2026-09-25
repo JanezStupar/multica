@@ -8,7 +8,8 @@ allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 
 This policy requires the format-2 completion implementation: accepted work
 remains `PR Ready` until required merges and the ticket outcome are complete.
-Activate it only at the coordinated workspace cutover on a compatible server.
+It also requires `delivery.external_merged_head` support; do not activate this
+revision on `v0.5.1-janez.2`. Activate only after the compatible backend update.
 Existing tickets keep their pinned policy until explicitly migrated.
 
 This bundle defines the Trackself workflow for every role working on an
