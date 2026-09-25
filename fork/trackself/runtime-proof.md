@@ -1,9 +1,9 @@
 # Mica runtime proof in an isolated test workspace
 
 This runbook also records the bounded Linux trial below. The local Go,
-TypeScript, importer and disposable-database checks in the [implementation
-plan](implementation_plan.md) do not prove provider session continuity, real
-repository access, host routing or PR delivery. Continue the remaining plan
+TypeScript, importer and disposable-database checks described in the
+[release record](release.md) do not prove provider session continuity, real
+repository access, host routing or PR delivery. Run further trials
 only with scoped authorization for the named test workspace, provider accounts,
 disposable repositories, agents, runtimes and possible test PR merges.
 Real-agent smoke execution is separate from ordinary tests:
@@ -552,8 +552,8 @@ container passed.
 Mark each [observable scenario](workflow_spec.md#acceptance-criteria) with
 its issue/run IDs, provider trace/PR links, expected and actual result, and
 unresolved gaps. A clean compiler/local test run is a prerequisite, not this
-proof. The proposed Linux default/cutover remains off until real provider and
-cross-repository evidence, independent acceptance, explicit policy choices and the
-[consumer map](cutover-consumers.md) are all ready. A later activation needs
-its own exact workspace, command, affected issue and rollback review; this
-runbook does not authorize it.
+proof. The Linux activation recorded in [release.md](release.md) followed the
+provider/cross-repository trials, independent acceptance and coordinated
+consumer reconciliation in the owning KB and workspace-control repositories. Future activation changes need
+their own exact workspace, command, affected issue and reversal scope; this
+test runbook does not authorize them.

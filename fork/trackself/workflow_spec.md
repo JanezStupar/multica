@@ -14,21 +14,17 @@ where necessary to support the selected workflow. Agent behavior must be
 configurable and overridable rather than inseparable from compiled prompts.
 
 This spec records the workflow agreed on 2026-09-24, with production policy
-settings and completion semantics refined on 2026-09-25. Its core mechanics are
-implemented in the source published as `v0.5.1-janez.1` and have Linux provider
-and cross-repository trial evidence. Those trials used identified source
-snapshots and are not a deployed-environment canary; see [release.md](release.md)
-and [runtime-proof.md](runtime-proof.md) for the exact source and evidence
-boundaries. The Trackself workflow cutover remains inactive, and native macOS
-and Windows runtime checks remain deferred until deployment to those hosts.
-The revised `PR Ready`/`Done` and durable hold requirements below are not
-implemented by that release: acceptance currently writes `done`, and delivery
-expects it. See the [implementation boundary](README.md#candidate-review-and-acceptance).
-Prove these revised semantics before activating the updated policy.
+settings and completion semantics refined on 2026-09-25. Its format-2 mechanics
+are implemented in `v0.5.1-janez.2`; Linux provider, cross-repository and
+completion trials have distinct recorded source/evidence boundaries. Trackself's
+Linux cutover completed on 2026-09-25 with a branch task canary and configuration
+read-back. See [release.md](release.md) and [runtime-proof.md](runtime-proof.md)
+for exact evidence and limits. Native macOS and Windows policy/runtime checks
+remain deferred until deployment to those hosts.
 This spec does not itself activate automation, merge PRs, freeze live tickets,
 or migrate existing work.
 
-This file owns the proposed Multica fork behavior. Changes to shared Trackself
+This file owns the agreed Multica fork behavior. Changes to shared Trackself
 protocol belong in canonical KB; provider configuration belongs in
 `workspace-control`. Their consumers must be reconciled before activation.
 This spec does not silently replace their currently active instructions.
@@ -285,8 +281,8 @@ and evaluate the new commits before authorizing further delivery.
 
 ### Agreed production policy
 
-These settings were agreed on 2026-09-25. They describe the intended policy;
-encoding them and proving the revised status/hold behavior remain cutover work.
+These settings were agreed on 2026-09-25 and encoded in the activated Linux
+policy. Runtime proof and its limits are linked in the release record.
 
 - Autonomous acceptance and merge may cover bounded non-feature work that does
   not change intended user flow or UX: mechanical refactors, targeted bug fixes
@@ -398,36 +394,34 @@ merely to retain resolved diagnoses.
 - A spec, successful unit test or completed agent run is not proof of the full
   workflow on the deployed environments.
 
-## Remaining policy parameters
+## Configuration ownership and rollout limits
 
-The released implementation supplies the handoff, context, policy and delivery
-mechanisms. Source behavior and bounded Linux/provider evidence are recorded
-in the [README](README.md), [implementation plan](implementation_plan.md), and
-[runtime proof](runtime-proof.md). The [agreed production policy](#agreed-production-policy)
-settles the classification, ordinary review requirement, supervisor boundary
-and default merge method. The disposable proof policy is not production configuration.
-Remaining configuration and implementation work is:
+The [README](README.md) describes the released handoff, context, policy and
+completion mechanisms. The [release record](release.md) identifies the active
+Linux deployment and links the owning configuration evidence;
+[runtime-proof.md](runtime-proof.md) records bounded provider trials and limits.
+The [agreed production policy](#agreed-production-policy) settles classification,
+ordinary review, supervisor authority and squash merging. Human acceptance
+merges automatically unless explicitly held; format 2 keeps accepted work in
+PR Ready until delivery and the actual outcome are complete.
 
-| Parameter or gap | Remaining work |
-| --- | --- |
-| Authority bindings | The inactive [runtime policy](policies/mica-v1/runtime/policy.json) binds the three Linux Mica identities as autonomous acceptors and review/delivery supervisors, owner/admin human acceptance, and main Linux Mica for post-merge outcome work. No supervisor acceptance waiver is granted. Verify those identities and the status mapping at activation. |
-| Capability | Finalize model/effort mappings in workspace-control and escalation when a review cycle cannot converge. |
-| Delivery selection | Human acceptance defaults to automatic merge unless explicitly held (confirmed 2026-09-25); deploy the proven durable hold/release controls before activation. |
-| Completion mechanics | Format-2 implementation and bounded proof passed; deploy it before activation. Map the existing workspace status explicitly to the `started` category; do not invent an API status identifier from its display name. See the runtime proof for validation limits. |
+The selected [runtime policy](policies/mica-v1/runtime/policy.json) binds the
+three Linux Mica identities as autonomous acceptors and review/delivery
+supervisors, owner/admin human acceptance, and main Linux Mica for outstanding
+outcome work. Supervisor acceptance waiver is not delegated. Workspace-control
+owns actual agent/runtime identities, model/effort selection and review routes
+in `config/mica-agent-desired-state.json`; its source manifest and imported
+skill identity must match. Native macOS/Windows agent rollout and targeted host
+proof remain deferred until those deployments. The desktop client upgrade does
+not activate native agent policy.
 
-The [implementation plan](implementation_plan.md) owns the current release,
-remaining coordination and activation boundary. The [fork README](README.md)
-describes available customization and its limits. Neither a released build nor
-the bounded runtime trials establish that the Trackself workflow is active or
-that deferred native-host behavior has been proven.
-
-Shared integration references to reconcile in the Trackself workspace are
-`kb/docs/workflow-automation.md`, `kb/skills/review-fix-cycle/SKILL.md`,
-`kb/templates/operational-issue-objective_template.md`,
-`workspace-control/docs/multica-workflow.md`,
-`workspace-control/config/multica-agents.toml`, and their instruction/skill
-consumers. Keep shared requirements in KB and provider mappings in
-`workspace-control`; do not maintain competing active workflow contracts.
+Shared guidance lives in `kb/docs/workflow-automation.md`, the matching KB
+skills and operational objective template. Workspace-control owns provider
+mappings and its `docs/multica-workflow.md` activation record. Keep shared
+requirements in KB and provider configuration in workspace-control; do not
+maintain competing active workflow contracts. Existing frozen tickets require
+explicit individual migration that preserves remaining work, evidence, context
+and ownership. No blanket migration accompanies activation.
 
 ## Acceptance criteria
 
@@ -462,9 +456,9 @@ consumers. Keep shared requirements in KB and provider mappings in
 
 Validate state, authorization, concurrency, session and provider boundaries with
 focused automated tests, then use the recorded Linux provider and
-cross-repository trials as the initial runtime evidence. Before activating
-Trackself, reconcile the consumers and prove the cutover-specific state against
-its exact workspace. Native macOS and Windows receive targeted
+cross-repository trials as the initial runtime evidence. Any later policy
+change must reconcile consumers and verify workspace-specific state before
+activation. Native macOS and Windows receive targeted
 dispatch, repository access and fresh/retained-context checks when deployed;
 their checks do not block Linux activation or repeat server-side delivery proof.
 Distinguish code-level evidence from

@@ -1,9 +1,9 @@
 # Trackself Mica policy bundle
 
 The [workflow spec](workflow_spec.md) records the agreed target for ticket
-execution, review, acceptance and delivery. The [implementation plan](implementation_plan.md)
-coordinates the engineering work. The policy archive built here is a prepared
-input, not an activated workflow.
+execution, review, acceptance and delivery. Trackself activated the reviewed
+Linux workflow on 2026-09-25; [release.md](release.md) identifies its source and
+owning deployment record. Building another archive does not activate it.
 
 The builder only reads repository sources and writes a `.skill` archive. It
 does not import a workspace skill, change agent or ticket bindings, enroll or
@@ -35,8 +35,8 @@ Migration `536_agent_builtin_skill_policy` adds replacement storage while
 preserving the nullable built-in allowlist, including its inheritance and
 exact-list behavior. Existing exact allowlists with old granular built-in IDs
 are not automatically changed to `builtin:multica-platform`. Keep current
-bindings as they are until the coordinated cutover reconciles the active
-agents, all-role policy and ticket enrollment.
+bindings unless an authorized coordinated change reconciles the active
+agents, all-role policy and ticket enrollment. Existing tickets retain their pin.
 
 ## Build a versioned archive
 
@@ -208,8 +208,8 @@ migration is not a substitute for invalidating its acceptance.
 Format 2 separates acceptance, delivery and outcome completion. Its independent
 code review, database regressions and guarded Forgejo delivery trial passed;
 [runtime-proof.md](runtime-proof.md#2026-09-25-format-2-completion-trial) records
-the evidence and limits. Deployment and coordinated cutover remain required:
-`v0.5.1-janez.1` writes `done` at acceptance and cannot run this policy.
+the evidence and limits. The deployed `v0.5.1-janez.2` supports this policy;
+`v0.5.1-janez.1` wrote `done` at acceptance and has been withdrawn.
 Use the workflow operations for acceptance rather than moving the status card.
 
 The format-2 authority file adds `accepted_status_key` (an existing custom
@@ -299,6 +299,9 @@ returned in the workflow record.
 
 ## Coordinated cutover
 
+The initial Linux cutover is complete; [release.md](release.md) links its owning
+record. These requirements also govern future policy changes.
+
 Binding the Mica policy requires coordinated review of shared Trackself
 workflow guidance, provider configuration, Multica instructions and ticket
 policy snapshots. Importing or preparing a candidate bundle alone does not
@@ -310,7 +313,7 @@ they are not reclassified as unfinished. Reopening one requires an explicit
 migration target and does not dispatch work. Do not bind only the former parent
 orchestrators as a substitute for the agreed all-role workflow.
 
-Before cutover, verify the generated archive with Multica's actual
+Before a future cutover or default change, verify the generated archive with Multica's actual
 `parseSkillArchive` importer and review its root skill, runtime instructions,
 policy reference and source manifest. Those checks establish package
 compatibility and source identity; they do not establish live bindings,

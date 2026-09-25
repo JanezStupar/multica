@@ -1,4 +1,4 @@
-# Mica deployment candidate
+# Mica release and deployment
 
 Published 2026-09-25 as `v0.5.1-janez.2` from reviewed source commit
 `0f23313676b0fcc66f197dd9dffef7c4feb10d09` on
@@ -8,8 +8,8 @@ No GitHub release tag was pushed.
 
 Publication and the production server/Linux upgrade are complete. Main and
 branch-2 runtimes are healthy on `.2`; branch-1 has the new image and remains
-stopped. Coordinated Mica activation remains pending. Native macOS/Windows
-activation remains deferred. The
+stopped. Coordinated Linux Mica activation completed on 2026-09-25.
+Native macOS/Windows activation remains deferred. The
 private-infra record `infra/automation-server/multica/upgrade-v0.5.1-janez.2.md`
 owns deployment state; the prior `upgrade-v0.5.1-janez.1.md` owns the
 previous revision and rollback baseline.
@@ -42,8 +42,9 @@ The prepared policy is `trackself-platform-4ea20d203a893dc2`, content identity
 `4ea20d203a893dc2610d93fbd1c47cce11013e2e0a79b837ea29a465759ca6cb`.
 It includes the agreed production authority and format-2 completion semantics.
 The imported Trackself UUID is `3dd9bba6-81b2-425c-8361-377a9a1acbe8`;
-read-back matched the root and all 12 supporting files byte-for-byte. It remains
-unbound: import did not change agents, defaults or existing tickets.
+read-back matched the root and all 12 supporting files byte-for-byte. It is
+the active default after the separately approved cutover described below.
+Import alone did not change agents, defaults or existing tickets.
 
 Local retained artifacts are under ignored `dist/releases/v0.5.1-janez.2/`.
 Registry artifacts are the durable published copies.
@@ -117,3 +118,28 @@ Automatic upstream updates remain disabled. This verifies packaging and startup,
 not a full interactive UI acceptance pass or desktop-agent policy activation.
 Electron-builder emitted dependency collector warnings but completed successfully;
 the packaged app version, exact CLI checksum and running client were checked.
+
+## Coordinated Linux activation
+
+Activation completed at `2026-09-25T09:08:49.206821Z`, with ticket policy version
+`sha256:48de64f4add35c8299bb7237b5428a5ea3f3ae041f68c9261e3d9729c136f455`.
+The workspace-control repository's `docs/multica-workflow.md` owns the exact
+configuration and cutover evidence. KB commit
+`dfefa3c236cb2a66dcb4919db9e93f920fc36865` and control commit
+`d6338efb66b7e3de663d0ed5125d5ff396740e1a` were published and adopted; the
+operator KB skill projection and both branch bootstrap projections were updated.
+
+The 12 retained Linux agent configurations passed API read-back. A scoped
+branch-2 chat task verified the exact published KB checkout and task-local
+imported skill; container reads independently confirmed both hashes. This was
+an actual agent execution, distinct from the scripted format-2 delivery trial.
+The chat was archived with its transcript retained; no probe issue was created.
+Production read-back confirmed all 632 prior tickets frozen, zero migrated, and
+`pr_ready` in the `started` category. Main and branch-2 resumed; branch-1 remains
+stopped. A protected pre-cutover database snapshot is retained at
+`utility-server:/opt/multica/config-backups/before-mica-cutover-20260925`.
+
+The consumed preparation patches and completed implementation plan were retired.
+Native host dispatch/repository/context checks accompany their later deployment;
+they do not repeat server delivery proof. Old tickets remain frozen until
+explicit migration; neither this activation nor client upgrades migrate them.
