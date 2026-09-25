@@ -97,3 +97,23 @@ and cached backend/web images were removed from utility-server; the old CLI
 image was already absent. Read-back confirmed all three old package versions
 absent and all `.2` versions preserved. Protected database/configuration backups
 remain intact. Logs are retained with the release validation evidence.
+
+## Local Linux desktop client
+
+On 2026-09-25, the workstation AppImage was built from the same exact source
+commit and installed at `/home/janez/.local/opt/multica/Multica.AppImage`.
+Desktop metadata reports `0.5.1-janez.2`; the bundled CLI is byte-identical to
+published CLI SHA-256 `eb43ece3fce1467536764f22af03ae6eba3fe432ee77266a8c1a9e80dbe6fa98`.
+AppImage SHA-256 is
+`c000ece25058d67828ac5496f80b02856372f56b6b72491a4088148a541f1068`.
+The artifact and build/startup logs are retained under the ignored release
+`desktop/` and `validation/` directories.
+
+The atomic replacement preserved the launcher and desktop profile. The previous
+AppImage is `Multica.AppImage.before-v0.5.1-janez.2` beside the installed file.
+After client restart, its existing idle desktop-owned daemon upgraded from
+`v0.4.40-janez.2` to `.2`; health reported running with zero active tasks.
+Automatic upstream updates remain disabled. This verifies packaging and startup,
+not a full interactive UI acceptance pass or desktop-agent policy activation.
+Electron-builder emitted dependency collector warnings but completed successfully;
+the packaged app version, exact CLI checksum and running client were checked.
