@@ -1,7 +1,7 @@
 # Prepared Mica cutover
 
-These patches prepare the agreed Trackself workflow change. **Live cutover is
-paused.** They have been reviewed in isolated copies; they are not installed
+These patches prepare the agreed Trackself workflow change. **Live cutover has
+not occurred.** They have been reviewed in isolated copies; they are not installed
 KB instructions, agent settings, imported skills, or ticket policy.
 
 The server and Linux runtime upgrade is separate and complete. The owning
@@ -57,17 +57,19 @@ or testing these candidates.
 
 ## Remaining activation inputs
 
-- Implement and prove `PR Ready`/`Done` and persistent hold behavior before
-  activation; the release uses `done` at acceptance. Encode the
+- Deploy the proven format-2 `PR Ready`/`Done` and persistent hold implementation
+  before activation; the installed release uses `done` at acceptance. Apply the
   [agreed production policy](../workflow_spec.md#agreed-production-policy), then
   resolve its [remaining bindings and defaults](../workflow_spec.md#remaining-policy-parameters).
-  The draft bundle is not ready for activation; the disposable proof policy
-  does not supply production settings.
+  The source bundle encodes the agreed production settings; its exact imported
+  identity and coordinated activation still require verification.
 - Finalize the policy archive and verify its actual imported identity. Generate
   and review the agent handoff with that identity; do not reuse the legacy skill
   UUID or invent a new one.
-- Resolve the supported agent update/read-back path, inspect current tasks and
-  dispatch sources, and prepare the exact workspace cutover. New tickets then
+- Prove the prepared Linux agent update/read-back path against the selected
+  production bundle, inspect current tasks and dispatch sources, stop the
+  three Linux daemons for quiescent multi-call agent reconciliation, and prepare
+  the exact workspace cutover. New tickets then
   use the selected policy; old unfinished work stays frozen until explicitly
   migrated. Preserve its agent records, contexts, evidence and remaining work.
 

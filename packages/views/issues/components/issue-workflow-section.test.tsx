@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   retryDelivery: vi.fn(),
   retryDeliveryPending: false,
   retryDeliveryError: null as unknown,
+  updateAcceptance: vi.fn(),
+  updateAcceptanceError: null as unknown,
 }));
 
 vi.mock("@multica/core/issues/workflow", () => ({
@@ -24,6 +26,7 @@ vi.mock("@multica/core/issues/workflow", () => ({
   useAcceptIssueWorkflow: () => ({ mutate: mocks.accept, isPending: false, error: mocks.acceptError }),
   useRejectIssueWorkflow: () => ({ mutate: mocks.reject, isPending: false, error: null }),
   useRetryIssueWorkflowDelivery: () => ({ mutate: mocks.retryDelivery, isPending: mocks.retryDeliveryPending, error: mocks.retryDeliveryError }),
+  useUpdateIssueWorkflowAcceptance: () => ({ mutate: mocks.updateAcceptance, isPending: false, error: mocks.updateAcceptanceError }),
 }));
 
 function makeWorkflow(overrides: Partial<IssueWorkflow> = {}): IssueWorkflow {
@@ -76,9 +79,22 @@ beforeEach(() => {
   mocks.retryDelivery.mockReset();
   mocks.retryDeliveryPending = false;
   mocks.retryDeliveryError = null;
+  mocks.updateAcceptance.mockReset();
+  mocks.updateAcceptanceError = null;
 });
 
 describe("IssueWorkflowSection", () => {
+  it("explains a changed candidate PR head to a read-only viewer", () => {
+    mocks.workflow = makeWorkflow({
+      acceptance_blockers: ["candidate_head_changed"],
+      available_actions: { accept_human: false, reject: false, request_trivial_acceptance: false, waive_review: false },
+    });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+
+    expect(screen.getByText("The candidate PR head changed. Reject this candidate and evaluate a new one.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reject candidate" })).not.toBeInTheDocument();
+  });
+
   it("shows exact candidate commits, independent reviews, and mixed delivery outcomes", () => {
     renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
 
@@ -133,6 +149,155 @@ describe("IssueWorkflowSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Accept and mark done" }));
 
     expect(mocks.accept).toHaveBeenCalledWith({ candidate_id: "candidate-42", expected_revision: 19 });
+  });
+
+  it("requires an explicit outcome choice and hold choice for the completion contract", () => {
+    mocks.workflow = makeWorkflow({ accepted_status_key: "pr_ready" });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept candidate" }));
+    expect(mocks.accept).toHaveBeenLastCalledWith({ candidate_id: "candidate-42", expected_revision: 19, outcome_complete: false, hold_delivery: false });
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "The actual outcome is complete" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Hold PR delivery until released" }));
+    fireEvent.click(screen.getByRole("button", { name: "Accept candidate" }));
+    expect(mocks.accept).toHaveBeenLastCalledWith({ candidate_id: "candidate-42", expected_revision: 19, outcome_complete: true, hold_delivery: true });
+  });
+
+  it("keeps no-PR acceptance separate from outcome completion", () => {
+    const candidate = makeWorkflow().candidate!;
+    mocks.workflow = makeWorkflow({ accepted_status_key: "pr_ready", candidate: { ...candidate, prs: [] }, delivery_preview: null, delivery: [] });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+
+    expect(screen.getByText("Accept this candidate. The issue is done only when its actual outcome is complete.")).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Hold PR delivery until released" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Accept candidate" }));
+    expect(mocks.accept).toHaveBeenCalledWith({ candidate_id: "candidate-42", expected_revision: 19, outcome_complete: false, hold_delivery: false });
+  });
+
+  it("shows accepted incomplete and held work, and binds release to the displayed revision", () => {
+    mocks.workflow = makeWorkflow({
+      accepted_status_key: "pr_ready",
+      acceptance: { id: "accept-1", candidate_id: "candidate-42", state: "accepted", mode: "human", requested_at: "2026-09-24T12:30:00Z", accepted_at: "2026-09-24T12:31:00Z", hold_delivery: true, outcome_complete: false, outcome_completed_at: null },
+      available_actions: { accept_human: false, reject: false, request_trivial_acceptance: false, waive_review: false, release_delivery: true, complete_outcome: true },
+    });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+
+    expect(screen.getByText(/actual outcome is still pending/)).toBeInTheDocument();
+    expect(screen.getByText("PR delivery is on hold.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry PR 2" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Release delivery" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Reason" }), { target: { value: "Ready for merge" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Release delivery" }).at(-1)!);
+    expect(mocks.updateAcceptance).toHaveBeenCalledWith({
+      acceptanceId: "accept-1", action: "release", input: { candidate_id: "candidate-42", expected_revision: 19, reason: "Ready for merge" },
+    }, expect.any(Object));
+  });
+
+  it("does not present a historical hold as active after the PR is verified merged", () => {
+    const workflow = makeWorkflow();
+    mocks.workflow = makeWorkflow({
+      accepted_status_key: "pr_ready",
+      acceptance: { id: "accept-1", candidate_id: "candidate-42", state: "accepted", mode: "human", requested_at: "2026-09-24T12:30:00Z", accepted_at: "2026-09-24T12:31:00Z", hold_delivery: true, outcome_complete: true, outcome_completed_at: "2026-09-24T13:00:00Z" },
+      delivery: [{ ...workflow.delivery[1]!, pr_url: workflow.candidate!.prs[0]!.pr_url, status: "delivered", merged_at: "2026-09-24T12:50:00Z" }],
+      available_actions: { accept_human: false, reject: false, request_trivial_acceptance: false, waive_review: false, release_delivery: true },
+    });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+
+    expect(screen.getByText("The actual outcome is complete.")).toBeInTheDocument();
+    expect(screen.queryByText("PR delivery is on hold.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Release delivery" })).not.toBeInTheDocument();
+  });
+
+  it("shows a pending outcome run without claiming completion", () => {
+    mocks.workflow = makeWorkflow({
+      accepted_status_key: "pr_ready",
+      acceptance: { id: "accept-1", candidate_id: "candidate-42", state: "accepted", mode: "human", requested_at: "2026-09-24T12:30:00Z", accepted_at: "2026-09-24T12:31:00Z", outcome_pending: true, outcome_task_id: "task-5", outcome_task_active: true },
+      available_actions: { accept_human: false, reject: false, request_trivial_acceptance: false, waive_review: false, complete_outcome: true },
+    });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+    expect(screen.getByText("Outcome confirmation is pending.")).toBeInTheDocument();
+    expect(screen.getByText("Outcome run is queued or running.")).toBeInTheDocument();
+    expect(screen.getByText("task-5")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Confirm outcome complete" })).not.toBeInTheDocument();
+  });
+
+  it("offers outcome completion only when authorized and records the displayed revision", () => {
+    mocks.workflow = makeWorkflow({
+      accepted_status_key: "pr_ready",
+      acceptance: { id: "accept-1", candidate_id: "candidate-42", state: "accepted", mode: "human", requested_at: "2026-09-24T12:30:00Z", accepted_at: "2026-09-24T12:31:00Z", outcome_complete: false },
+      available_actions: { accept_human: false, reject: false, request_trivial_acceptance: false, waive_review: false, hold_delivery: true, complete_outcome: true },
+    });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+
+    expect(screen.getByRole("button", { name: "Hold delivery" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm outcome complete" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Reason" }), { target: { value: "Acceptance QA passed" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Confirm outcome complete" }).at(-1)!);
+    expect(mocks.updateAcceptance).toHaveBeenCalledWith({
+      acceptanceId: "accept-1", action: "complete", input: { candidate_id: "candidate-42", expected_revision: 19, reason: "Acceptance QA passed" },
+    }, expect.any(Object));
+  });
+
+  it("offers recovery for a failed outcome run without showing it as active", () => {
+    mocks.workflow = makeWorkflow({
+      accepted_status_key: "pr_ready",
+      acceptance: { id: "accept-1", candidate_id: "candidate-42", state: "accepted", mode: "human", requested_at: "2026-09-24T12:30:00Z", accepted_at: "2026-09-24T12:31:00Z", outcome_complete: false, outcome_pending: false, outcome_task_id: "failed-run", outcome_task_active: false, blocker: "outcome_task_failed" },
+      available_actions: { accept_human: false, reject: false, request_trivial_acceptance: false, waive_review: false, retry_outcome: true },
+    });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+
+    expect(screen.getByText(/actual outcome is still pending/)).toBeInTheDocument();
+    expect(screen.queryByText("Outcome run is queued or running.")).not.toBeInTheDocument();
+    expect(screen.getByText("Outcome run stopped before completion.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry outcome run" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Reason" }), { target: { value: "Recover from failed run" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Retry outcome run" }).at(-1)!);
+    expect(mocks.updateAcceptance).toHaveBeenCalledWith({
+      acceptanceId: "accept-1", action: "retry-outcome", input: { candidate_id: "candidate-42", expected_revision: 19, reason: "Recover from failed run" },
+    }, expect.any(Object));
+  });
+
+  it("shows a failed outcome run to viewers without recovery permission", () => {
+    mocks.workflow = makeWorkflow({
+      accepted_status_key: "pr_ready",
+      acceptance: { id: "accept-1", candidate_id: "candidate-42", state: "accepted", mode: "human", requested_at: "2026-09-24T12:30:00Z", accepted_at: "2026-09-24T12:31:00Z", outcome_complete: false, outcome_pending: false, outcome_task_id: "failed-run", outcome_task_active: false, blocker: "outcome_task_failed" },
+      available_actions: { accept_human: false, reject: false, request_trivial_acceptance: false, waive_review: false, retry_outcome: false },
+    });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+
+    expect(screen.getByText("Outcome run stopped before completion.")).toBeInTheDocument();
+    expect(screen.queryByText("Acceptance is not ready. Refresh the workflow details.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry outcome run" })).not.toBeInTheDocument();
+  });
+
+  it("shows a failed outcome dispatch to viewers without retry permission", () => {
+    mocks.workflow = makeWorkflow({
+      accepted_status_key: "pr_ready",
+      acceptance: { id: "accept-1", candidate_id: "candidate-42", state: "accepted", mode: "human", requested_at: "2026-09-24T12:30:00Z", accepted_at: "2026-09-24T12:31:00Z", outcome_complete: false, outcome_pending: false, outcome_task_active: false, blocker: "outcome_dispatch_failed" },
+      available_actions: { accept_human: false, reject: false, request_trivial_acceptance: false, waive_review: false, retry_outcome: false },
+    });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+
+    expect(screen.getByText("The outcome run could not be queued. It will retry automatically.")).toBeInTheDocument();
+    expect(screen.queryByText("Outcome run stopped before completion.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry outcome run" })).not.toBeInTheDocument();
+  });
+
+  it("explains a delayed Done transition after verified delivery to a viewer", () => {
+    const workflow = makeWorkflow();
+    mocks.workflow = makeWorkflow({
+      accepted_status_key: "pr_ready",
+      acceptance: { id: "accept-1", candidate_id: "candidate-42", state: "accepted", mode: "human", requested_at: "2026-09-24T12:30:00Z", accepted_at: "2026-09-24T12:31:00Z", outcome_complete: true, blocker: "completion_reconcile_failed" },
+      delivery: [{ ...workflow.delivery[1]!, pr_url: workflow.candidate!.prs[0]!.pr_url, status: "delivered", merged_at: "2026-09-24T12:50:00Z" }],
+      available_actions: { accept_human: false, reject: false, request_trivial_acceptance: false, waive_review: false, retry_outcome: false },
+    });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+
+    expect(screen.getByText("The actual outcome is complete.")).toBeInTheDocument();
+    expect(screen.getByText("The issue could not be marked done after delivery. The workflow will retry automatically.")).toBeInTheDocument();
+    expect(screen.queryByText("Acceptance is not ready. Refresh the workflow details.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry outcome run" })).not.toBeInTheDocument();
   });
 
   it("uses the refreshed candidate and revision after a candidate change", () => {

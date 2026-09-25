@@ -9,6 +9,7 @@ import {
   useIssueWorkflow,
   useRejectIssueWorkflow,
   useRetryIssueWorkflowDelivery,
+  useUpdateIssueWorkflowAcceptance,
 } from "@multica/core/issues/workflow";
 import {
   Dialog,
@@ -83,6 +84,7 @@ function mergeMethodKey(method: string): "merge_method_merge" | "merge_method_sq
 function blockerKey(code: string):
   | "blocker_candidate_missing"
   | "blocker_scope_changed"
+  | "blocker_candidate_head_changed"
   | "blocker_source_incomplete"
   | "blocker_review_missing"
   | "blocker_review_not_independent"
@@ -95,10 +97,14 @@ function blockerKey(code: string):
   | "blocker_merge_order_required"
   | "blocker_acceptance_pending"
   | "blocker_already_accepted"
+  | "outcome_run_not_queued"
+  | "outcome_run_stopped"
+  | "completion_status_retry"
   | "blocker_unknown" {
   switch (code) {
     case "candidate_missing": return "blocker_candidate_missing";
     case "scope_changed": return "blocker_scope_changed";
+    case "candidate_head_changed": return "blocker_candidate_head_changed";
     case "source_incomplete": return "blocker_source_incomplete";
     case "review_missing": return "blocker_review_missing";
     case "review_not_independent": return "blocker_review_not_independent";
@@ -111,6 +117,9 @@ function blockerKey(code: string):
     case "merge_order_required": return "blocker_merge_order_required";
     case "acceptance_pending": return "blocker_acceptance_pending";
     case "already_accepted": return "blocker_already_accepted";
+    case "outcome_dispatch_failed": return "outcome_run_not_queued";
+    case "outcome_task_failed": return "outcome_run_stopped";
+    case "completion_reconcile_failed": return "completion_status_retry";
     default: return "blocker_unknown";
   }
 }
@@ -354,6 +363,56 @@ function WorkflowRejectionDialog({
   );
 }
 
+function WorkflowAcceptanceActionDialog({ workflow, workspaceId, issueId, action }: {
+  workflow: IssueWorkflow;
+  workspaceId: string;
+  issueId: string;
+  action: "hold" | "release" | "complete" | "retry-outcome";
+}) {
+  const { t } = useT("issues");
+  const mutation = useUpdateIssueWorkflowAcceptance(workspaceId, issueId);
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const label = action === "hold" ? t(($) => $.detail.workflow.hold_delivery) : action === "release" ? t(($) => $.detail.workflow.release_delivery) : action === "retry-outcome" ? t(($) => $.detail.workflow.retry_outcome) : t(($) => $.detail.workflow.complete_outcome);
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!workflow.candidate || !workflow.acceptance || workflow.candidate.id !== workflow.acceptance.candidate_id || !reason.trim()) return;
+    mutation.mutate({
+      acceptanceId: workflow.acceptance.id,
+      action,
+      input: { candidate_id: workflow.candidate.id, expected_revision: workflow.issue_revision, reason: reason.trim() },
+    }, {
+      onSuccess: () => { setOpen(false); setReason(""); },
+    });
+  };
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger render={<Button type="button" variant="outline" size="xs" disabled={mutation.isPending} />}>
+        {label}
+      </DialogTrigger>
+      <DialogContent>
+        <form onSubmit={submit}>
+          <DialogHeader>
+            <DialogTitle>{label}</DialogTitle>
+            <DialogDescription>{t(($) => $.detail.workflow.acceptance_action_description)}</DialogDescription>
+          </DialogHeader>
+          <label className="mt-4 block space-y-1.5 text-caption font-medium" htmlFor={`workflow-${action}-reason-${issueId}`}>
+            {t(($) => $.detail.workflow.reason_label)}
+            <Textarea id={`workflow-${action}-reason-${issueId}`} value={reason} onChange={(event) => setReason(event.target.value)} rows={3} maxLength={500} required />
+          </label>
+          {mutation.error ? <p role="alert" className="mt-3 text-caption text-destructive">{isConflict(mutation.error) ? t(($) => $.detail.workflow.candidate_changed) : t(($) => $.detail.workflow.acceptance_action_failed)}</p> : null}
+          <DialogFooter className="mt-5">
+            <DialogClose render={<Button type="button" variant="outline" disabled={mutation.isPending} />}>{t(($) => $.detail.workflow.cancel)}</DialogClose>
+            <Button type="submit" disabled={!reason.trim() || mutation.isPending} aria-busy={mutation.isPending}>
+              {mutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}{label}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function IssueWorkflowSection({ workspaceId, issueId, enabled, frozen: issueFrozen = false, focusAccept = false, acceptAction }: IssueWorkflowSectionProps) {
   const { t } = useT("issues");
   const { data: workflow, isPending, isError, refetch } = useIssueWorkflow(workspaceId, issueId, enabled);
@@ -361,11 +420,14 @@ export function IssueWorkflowSection({ workspaceId, issueId, enabled, frozen: is
   const retryDelivery = useRetryIssueWorkflowDelivery(workspaceId, issueId);
   const accept = acceptAction ?? localAccept;
   const [mergeOrder, setMergeOrder] = useState<{ candidateId: string; ranks: Record<string, string> } | null>(null);
+  const [outcomeComplete, setOutcomeComplete] = useState(false);
+  const [holdDelivery, setHoldDelivery] = useState(false);
   const acceptButtonRef = useRef<HTMLButtonElement>(null);
   const sectionRef = useRef<HTMLElement>(null);
   const candidate = workflow?.candidate ?? null;
   const frozen = workflow?.frozen ?? false;
   const preview = workflow?.delivery_preview ?? null;
+  const hasCompletionContract = !!workflow?.accepted_status_key;
   const requiresMergeOrder = preview?.action === "merge" && preview.requires_order && (candidate?.prs.length ?? 0) > 1;
   const currentRanks = mergeOrder && mergeOrder.candidateId === candidate?.id ? mergeOrder.ranks : {};
   const orderedPRs = candidate
@@ -391,6 +453,8 @@ export function IssueWorkflowSection({ workspaceId, issueId, enabled, frozen: is
 
   useEffect(() => {
     setMergeOrder(null);
+    setOutcomeComplete(false);
+    setHoldDelivery(false);
   }, [candidate?.id]);
 
   if (!enabled && !issueFrozen) return null;
@@ -422,6 +486,7 @@ export function IssueWorkflowSection({ workspaceId, issueId, enabled, frozen: is
 
   const deliveredCount = workflow.delivery.filter((item) => item.status === "delivered").length;
   const partialDelivery = deliveredCount > 0 && deliveredCount < workflow.delivery.length;
+  const activeDeliveryHold = !!workflow.acceptance?.hold_delivery && workflow.delivery.some((item) => item.action === "merge" && !item.merged_at);
   const acceptError = accept.error;
 
   return (
@@ -505,12 +570,14 @@ export function IssueWorkflowSection({ workspaceId, issueId, enabled, frozen: is
 
       {candidate ? (
         <p className="mt-3 text-caption text-muted-foreground">
-          {preview?.action === "ready"
+          {hasCompletionContract && holdDelivery && !workflow.acceptance
+            ? t(($) => $.detail.workflow.preview_hold)
+            : preview?.action === "ready"
             ? t(($) => $.detail.workflow.preview_ready)
             : preview?.action === "merge"
               ? t(($) => $.detail.workflow.preview_merge, { method: t(($) => $.detail.workflow[mergeMethodKey(preview.merge_method ?? "")]) })
               : candidate.prs.length === 0
-                ? t(($) => $.detail.workflow.accept_action_no_pr)
+                ? t(($) => $.detail.workflow[hasCompletionContract ? "accept_action_no_pr_format2" : "accept_action_no_pr"])
                 : t(($) => $.detail.workflow.preview_unavailable)}
         </p>
       ) : null}
@@ -527,8 +594,35 @@ export function IssueWorkflowSection({ workspaceId, issueId, enabled, frozen: is
                   ? t(($) => $.detail.workflow.acceptance_revoked)
                   : t(($) => $.detail.workflow.acceptance_blocked)}
             {workflow.acceptance.classification_reason ? ` · ${workflow.acceptance.classification_reason}` : ""}
-            {workflow.acceptance.blocker ? ` · ${t(($) => $.detail.workflow[blockerKey(workflow.acceptance!.blocker!)])}` : ""}
+            {workflow.acceptance.blocker && workflow.acceptance.blocker !== "outcome_task_failed" && workflow.acceptance.blocker !== "outcome_dispatch_failed" && workflow.acceptance.blocker !== "completion_reconcile_failed" ? ` · ${t(($) => $.detail.workflow[blockerKey(workflow.acceptance!.blocker!)])}` : ""}
           </p>
+        </div>
+      ) : null}
+
+      {hasCompletionContract && workflow.acceptance?.state === "accepted" ? (
+        <div className="mt-2 space-y-1 text-caption" role="status">
+          <p>{workflow.acceptance.outcome_complete
+            ? t(($) => $.detail.workflow.outcome_complete_status)
+            : workflow.acceptance.outcome_task_active
+              ? t(($) => $.detail.workflow.outcome_run_active)
+              : workflow.acceptance.outcome_pending
+              ? t(($) => $.detail.workflow.outcome_confirmation_pending)
+              : t(($) => $.detail.workflow.outcome_incomplete_status)}</p>
+          {workflow.acceptance.outcome_task_active && workflow.acceptance.outcome_pending ? <p>{t(($) => $.detail.workflow.outcome_confirmation_pending)}</p> : null}
+          {workflow.acceptance.blocker === "outcome_task_failed" ? <p className="text-warning">{t(($) => $.detail.workflow.outcome_run_stopped)}</p> : null}
+          {workflow.acceptance.blocker === "outcome_dispatch_failed" ? <p className="text-warning">{t(($) => $.detail.workflow.outcome_run_not_queued)}</p> : null}
+          {workflow.acceptance.blocker === "completion_reconcile_failed" ? <p className="text-warning">{t(($) => $.detail.workflow.completion_status_retry)}</p> : null}
+          {activeDeliveryHold ? <p className="text-warning">{t(($) => $.detail.workflow.delivery_held_status)}</p> : null}
+          {workflow.acceptance.outcome_task_id ? <p>{t(($) => $.detail.workflow.outcome_task_status)} <code className="break-all font-mono">{workflow.acceptance.outcome_task_id}</code></p> : null}
+        </div>
+      ) : null}
+
+      {hasCompletionContract && workflow.acceptance?.state === "accepted" && candidate?.id === workflow.acceptance.candidate_id && !frozen ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {workflow.available_actions.hold_delivery && !workflow.acceptance.hold_delivery ? <WorkflowAcceptanceActionDialog workflow={workflow} workspaceId={workspaceId} issueId={issueId} action="hold" /> : null}
+          {workflow.available_actions.release_delivery && activeDeliveryHold ? <WorkflowAcceptanceActionDialog workflow={workflow} workspaceId={workspaceId} issueId={issueId} action="release" /> : null}
+          {workflow.available_actions.complete_outcome && !workflow.acceptance.outcome_complete && !workflow.acceptance.outcome_pending ? <WorkflowAcceptanceActionDialog workflow={workflow} workspaceId={workspaceId} issueId={issueId} action="complete" /> : null}
+          {workflow.available_actions.retry_outcome && !workflow.acceptance.outcome_task_active && !workflow.acceptance.outcome_complete ? <WorkflowAcceptanceActionDialog workflow={workflow} workspaceId={workspaceId} issueId={issueId} action="retry-outcome" /> : null}
         </div>
       ) : null}
 
@@ -544,9 +638,9 @@ export function IssueWorkflowSection({ workspaceId, issueId, enabled, frozen: is
                 key={item.id}
                 delivery={item}
                 retryPending={retryDelivery.isPending}
-                canRetry={!frozen && !!candidate}
+                canRetry={!frozen && !!candidate && !(activeDeliveryHold && item.action === "merge")}
                 onRetry={() => {
-                  if (frozen || !candidate || item.retryable !== true || item.status !== "blocked") return;
+                  if (frozen || !candidate || (activeDeliveryHold && item.action === "merge") || item.retryable !== true || item.status !== "blocked") return;
                   retryDelivery.mutate({
                     deliveryId: item.id,
                     input: { candidate_id: candidate.id, expected_revision: workflow.issue_revision },
@@ -607,6 +701,21 @@ export function IssueWorkflowSection({ workspaceId, issueId, enabled, frozen: is
           ) : null}
           {canAccept ? (
             <div className="min-w-0 flex-1">
+              {hasCompletionContract ? (
+                <fieldset className="mb-3 space-y-2 text-caption">
+                  <legend className="font-medium">{t(($) => $.detail.workflow.acceptance_options)}</legend>
+                  <label className="flex items-start gap-2">
+                    <input type="checkbox" checked={outcomeComplete} onChange={(event) => setOutcomeComplete(event.target.checked)} />
+                    <span>{t(($) => $.detail.workflow.outcome_complete_label)}</span>
+                  </label>
+                  {candidate.prs.length > 0 ? (
+                    <label className="flex items-start gap-2">
+                      <input type="checkbox" checked={holdDelivery} onChange={(event) => setHoldDelivery(event.target.checked)} />
+                      <span>{t(($) => $.detail.workflow.hold_delivery_label)}</span>
+                    </label>
+                  ) : null}
+                </fieldset>
+              ) : null}
               <Button
                 ref={acceptButtonRef}
                 type="button"
@@ -616,11 +725,12 @@ export function IssueWorkflowSection({ workspaceId, issueId, enabled, frozen: is
                 onClick={() => candidate && accept.mutate({
                   candidate_id: candidate.id,
                   expected_revision: workflow.issue_revision,
+                  ...(hasCompletionContract ? { outcome_complete: outcomeComplete, hold_delivery: holdDelivery } : {}),
                   ...(requiresMergeOrder ? { merge_order_pr_urls: orderedPRs } : {}),
                 })}
               >
                 {accept.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
-                {t(($) => $.detail.workflow.accept_and_done)}
+                {hasCompletionContract ? t(($) => $.detail.workflow.accept_candidate) : t(($) => $.detail.workflow.accept_and_done)}
               </Button>
             </div>
           ) : null}

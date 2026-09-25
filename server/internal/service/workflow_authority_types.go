@@ -47,6 +47,12 @@ type WorkflowAcceptanceView struct {
 	RequestedAt          time.Time  `json:"requested_at"`
 	AcceptedAt           *time.Time `json:"accepted_at"`
 	Blocker              string     `json:"blocker,omitempty"`
+	HoldDelivery         bool       `json:"hold_delivery"`
+	OutcomeComplete      bool       `json:"outcome_complete"`
+	OutcomeCompletedAt   *time.Time `json:"outcome_completed_at"`
+	OutcomeTaskID        string     `json:"outcome_task_id,omitempty"`
+	OutcomeTaskActive    bool       `json:"outcome_task_active"`
+	OutcomePending       bool       `json:"outcome_pending"`
 }
 
 type WorkflowDeliveryView struct {
@@ -77,6 +83,10 @@ type WorkflowAvailableActions struct {
 	Reject                   bool `json:"reject"`
 	RequestTrivialAcceptance bool `json:"request_trivial_acceptance"`
 	WaiveReview              bool `json:"waive_review"`
+	HoldDelivery             bool `json:"hold_delivery"`
+	ReleaseDelivery          bool `json:"release_delivery"`
+	CompleteOutcome          bool `json:"complete_outcome"`
+	RetryOutcome             bool `json:"retry_outcome"`
 }
 
 type WorkflowDeliveryPreview struct {
@@ -108,6 +118,7 @@ type WorkflowState struct {
 	IssueRevision          int64                           `json:"issue_revision"`
 	Frozen                 bool                            `json:"frozen"`
 	PolicyVersion          string                          `json:"policy_version"`
+	AcceptedStatusKey      string                          `json:"accepted_status_key,omitempty"`
 	Candidate              *WorkflowCandidateView          `json:"candidate"`
 	Reviews                []WorkflowReviewView            `json:"reviews"`
 	Acceptance             *WorkflowAcceptanceView         `json:"acceptance"`
@@ -130,6 +141,8 @@ type WorkflowAcceptanceInput struct {
 	ExpectedRevision     int64    `json:"expected_revision"`
 	ClassificationReason string   `json:"classification_reason,omitempty"`
 	MergeOrderPRURLs     []string `json:"merge_order_pr_urls,omitempty"`
+	OutcomeComplete      *bool    `json:"outcome_complete,omitempty"`
+	HoldDelivery         bool     `json:"hold_delivery,omitempty"`
 }
 
 type WorkflowRejectionInput struct {

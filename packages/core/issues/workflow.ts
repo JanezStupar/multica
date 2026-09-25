@@ -1,15 +1,16 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
-import type { AcceptIssueWorkflowRequest, IssueWorkflow, RejectIssueWorkflowRequest, RevokeIssueWorkflowExceptionRequest, RetryIssueWorkflowDeliveryRequest } from "../types";
+import type { AcceptIssueWorkflowRequest, IssueWorkflow, RejectIssueWorkflowRequest, RevokeIssueWorkflowExceptionRequest, RetryIssueWorkflowDeliveryRequest, UpdateIssueWorkflowAcceptanceRequest } from "../types";
 import { issueKeys } from "./queries";
 
 export const ISSUE_WORKFLOW_PROGRESS_MIN_REFETCH_MS = 5_000;
 export const ISSUE_WORKFLOW_PROGRESS_MAX_REFETCH_MS = 30_000;
 
-/** Poll only while an autonomous acceptance or provider delivery can advance. */
+/** Poll only while acceptance, an outcome run, or provider delivery can advance. */
 export function issueWorkflowProgressRefetchInterval(workflow: IssueWorkflow | undefined, now = Date.now()): number | false {
   if (!workflow) return false;
   if (workflow.acceptance?.state === "requested") return ISSUE_WORKFLOW_PROGRESS_MIN_REFETCH_MS;
+  if (workflow.acceptance?.outcome_pending || workflow.acceptance?.outcome_task_active) return ISSUE_WORKFLOW_PROGRESS_MIN_REFETCH_MS;
   const nextRetry = workflow.delivery
     .filter((item) => item.status === "pending" || item.status === "retry")
     .map((item) => Date.parse(item.next_attempt_at))
@@ -57,6 +58,14 @@ export function useAcceptIssueWorkflow(workspaceId: string, issueId: string) {
   const client = useQueryClient();
   return useMutation<IssueWorkflow, Error, AcceptIssueWorkflowRequest>({
     mutationFn: (input) => api.acceptIssueWorkflow(issueId, input),
+    onSettled: () => invalidateIssueWorkflow(client, workspaceId, issueId),
+  });
+}
+
+export function useUpdateIssueWorkflowAcceptance(workspaceId: string, issueId: string) {
+  const client = useQueryClient();
+  return useMutation<IssueWorkflow, Error, { acceptanceId: string; action: "hold" | "release" | "complete" | "retry-outcome"; input: UpdateIssueWorkflowAcceptanceRequest }>({
+    mutationFn: ({ acceptanceId, action, input }) => api.updateIssueWorkflowAcceptance(issueId, acceptanceId, action, input),
     onSettled: () => invalidateIssueWorkflow(client, workspaceId, issueId),
   });
 }

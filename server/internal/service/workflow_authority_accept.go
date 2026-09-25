@@ -21,6 +21,8 @@ type workflowAcceptanceRequest struct {
 	ExpectedRevision     int64    `json:"expected_revision"`
 	ClassificationReason string   `json:"classification_reason,omitempty"`
 	MergeOrderPRURLs     []string `json:"merge_order_pr_urls"`
+	OutcomeComplete      *bool    `json:"outcome_complete,omitempty"`
+	HoldDelivery         bool     `json:"hold_delivery,omitempty"`
 }
 
 func normalizeWorkflowAcceptanceInput(in WorkflowAcceptanceInput) (workflowAcceptanceRequest, error) {
@@ -270,9 +272,24 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 	if err != nil {
 		return "", err
 	}
+	if authority.FormatVersion == 2 {
+		if request.OutcomeComplete == nil {
+			return "", fmt.Errorf("%w: outcome_complete is required for format 2", ErrWorkflowAuthorityInput)
+		}
+		if err := ValidateWorkflowCompletionConfig(ctx, tx, issue, authority); err != nil {
+			return "", err
+		}
+	} else if request.OutcomeComplete != nil || request.HoldDelivery {
+		return "", fmt.Errorf("%w: completion controls require format 2", ErrWorkflowAuthorityInput)
+	}
 	candidate, err := loadCurrentWorkflowCandidate(ctx, tx, issue, pinned.Version)
 	if err != nil {
 		return "", err
+	}
+	if stale, err := workflowCandidateStale(ctx, tx, issue, candidate.ID); err != nil {
+		return "", err
+	} else if stale {
+		return "", fmt.Errorf("%w: candidate PR head changed; reject and evaluate a new candidate", ErrWorkflowAuthorityConflict)
 	}
 	actorID, err := workflowAuthorityUUID(actor.ID)
 	if err != nil {
@@ -366,23 +383,37 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 		state = "accepted"
 		acceptedRevision = issue.Revision + 1
 	}
+	completionVersion := authority.FormatVersion
+	var acceptedStatus, outcomeAgent any
+	if completionVersion == 2 {
+		acceptedStatus, outcomeAgent = authority.AcceptedStatusKey, mustAuthorityUUID(authority.OutcomeAgentID)
+	}
+	outcomeComplete := request.OutcomeComplete != nil && *request.OutcomeComplete
 	_, err = tx.Exec(ctx, `INSERT INTO issue_workflow_acceptance
 		(id,workspace_id,issue_id,candidate_id,mode,actor_type,actor_id,source_task_id,state,issue_revision,
-		policy_version,authority_snapshot,classification_reason,accepted_at)
+		policy_version,authority_snapshot,classification_reason,accepted_at,completion_version,accepted_status_key,
+		outcome_agent_id,hold_delivery,held_at,outcome_complete,outcome_completed_at)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-		CASE WHEN $9='accepted' THEN now() ELSE NULL END)`, acceptanceID, workspaceID, issueID, candidateID,
+		CASE WHEN $9='accepted' THEN now() ELSE NULL END,$14,$15,$16,$17,
+		CASE WHEN $17 THEN now() ELSE NULL END,$18,CASE WHEN $9='accepted' AND $18 THEN now() ELSE NULL END)`, acceptanceID, workspaceID, issueID, candidateID,
 		mode, actor.Type, actorID, sourceTaskID, state, acceptedRevision, pinned.Version, authorityJSON,
-		pgtype.Text{String: request.ClassificationReason, Valid: request.ClassificationReason != ""})
+		pgtype.Text{String: request.ClassificationReason, Valid: request.ClassificationReason != ""},
+		completionVersion, acceptedStatus, outcomeAgent, request.HoldDelivery, outcomeComplete)
 	if err != nil {
 		return "", err
 	}
+	var outcomeTask *db.AgentTaskQueue
 	if mode == "human" {
-		if err := finalizeWorkflowAcceptance(ctx, tx, q, issue, acceptanceID, actor, ordered, bindings, action, method); err != nil {
+		outcomeTask, err = finalizeWorkflowAcceptance(ctx, tx, q, issue, acceptanceID, actor, ordered, bindings, action, method, authority, request)
+		if err != nil {
 			return "", err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
+	}
+	if outcomeTask != nil {
+		s.Tasks.NotifyTaskEnqueued(ctx, *outcomeTask)
 	}
 	s.PublishWorkflowIssueChange(ctx, issue, actor)
 	return state, nil
@@ -390,29 +421,33 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 
 func finalizeWorkflowAcceptance(ctx context.Context, tx pgx.Tx, q *db.Queries, issue db.Issue,
 	acceptanceID pgtype.UUID, actor WorkflowActor, ordered []HandoffCandidate, bindings []workflowDeliveryBinding,
-	action, method string,
-) error {
+	action, method string, authority WorkflowAuthorityPolicy, request workflowAcceptanceRequest,
+) (*db.AgentTaskQueue, error) {
 	// The issue row lock also fences native enqueue paths. Retire unstarted
 	// plans before the done transition; started runs are rejected by caller.
 	if _, err := tx.Exec(ctx, `UPDATE agent_task_queue SET status='cancelled',completed_at=now(),
 		error='Issue accepted; queued work retired',prepare_lease_expires_at=NULL,
 		cancelled_by_type='system' WHERE issue_id=$1 AND status IN ('queued','deferred')
 		AND started_at IS NULL`, issue.ID); err != nil {
-		return err
+		return nil, err
+	}
+	targetStatus := "done"
+	if authority.FormatVersion == 2 && (len(ordered) > 0 || request.OutcomeComplete == nil || !*request.OutcomeComplete) {
+		targetStatus = authority.AcceptedStatusKey
 	}
 	updated, err := q.UpdateIssue(ctx, db.UpdateIssueParams{
 		ID: issue.ID, ExpectedRevision: pgtype.Int8{Int64: issue.Revision, Valid: true},
 		Title: pgtype.Text{String: issue.Title, Valid: true}, Description: issue.Description,
-		Status: pgtype.Text{String: "done", Valid: true}, Priority: pgtype.Text{String: issue.Priority, Valid: true},
+		Status: pgtype.Text{String: targetStatus, Valid: true}, Priority: pgtype.Text{String: issue.Priority, Valid: true},
 		AssigneeType: issue.AssigneeType, AssigneeID: issue.AssigneeID,
 		StartDate: issue.StartDate, DueDate: issue.DueDate, ParentIssueID: issue.ParentIssueID,
 		ProjectID: issue.ProjectID, Stage: issue.Stage,
 	})
 	if err != nil || updated.Revision != issue.Revision+1 {
-		return fmt.Errorf("%w: issue completion failed: %v", ErrWorkflowAuthorityConflict, err)
+		return nil, fmt.Errorf("%w: issue completion failed: %v", ErrWorkflowAuthorityConflict, err)
 	}
 	if err := q.DisableIssueWakeups(ctx, issue.ID); err != nil {
-		return err
+		return nil, err
 	}
 	byURL := make(map[string]workflowDeliveryBinding, len(bindings))
 	for _, b := range bindings {
@@ -421,7 +456,7 @@ func finalizeWorkflowAcceptance(ctx context.Context, tx pgx.Tx, q *db.Queries, i
 	for ordinal, pr := range ordered {
 		b, ok := byURL[pr.PRURL]
 		if !ok {
-			return fmt.Errorf("%w: provider binding changed", ErrWorkflowAuthorityConflict)
+			return nil, fmt.Errorf("%w: provider binding changed", ErrWorkflowAuthorityConflict)
 		}
 		var mergeMethod any
 		if action == "merge" {
@@ -434,14 +469,21 @@ func finalizeWorkflowAcceptance(ctx context.Context, tx pgx.Tx, q *db.Queries, i
 			dbid.NewV7(), issue.WorkspaceID, issue.ID, acceptanceID, issue.WorkflowCandidateID, ordinal,
 			b.Provider, b.BindingID, pr.RepositoryURL, pr.PRURL, b.Owner, b.Repo, b.Number, pr.CommitSHA, action, mergeMethod)
 		if err != nil {
-			return err
+			return nil, err
+		}
+	}
+	var outcomeTask *db.AgentTaskQueue
+	if authority.FormatVersion == 2 && len(ordered) == 0 && request.OutcomeComplete != nil && !*request.OutcomeComplete {
+		outcomeTask, _, err = ReconcileWorkflowCompletion(ctx, tx, q, updated, acceptanceID)
+		if err != nil {
+			return nil, err
 		}
 	}
 	actorID, _ := workflowAuthorityUUID(actor.ID)
 	activityDetails, _ := json.Marshal(map[string]string{"candidate_id": util.UUIDToString(issue.WorkflowCandidateID),
-		"acceptance_id": util.UUIDToString(acceptanceID), "from": issue.Status, "to": "done"})
+		"acceptance_id": util.UUIDToString(acceptanceID), "from": issue.Status, "to": targetStatus})
 	_, err = q.CreateActivity(ctx, db.CreateActivityParams{ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID,
 		IssueID: issue.ID, ActorType: pgtype.Text{String: actor.Type, Valid: true}, ActorID: actorID,
 		Action: "status_changed", Details: activityDetails})
-	return err
+	return outcomeTask, err
 }

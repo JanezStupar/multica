@@ -20,6 +20,49 @@ the repository's exact gate with one chosen test name, not a broad tag run:
 (cd server && MULTICA_RUN_REAL_AGENT_SMOKE=1 go test -tags=agentintegration ./pkg/agent -run '<test-name>' -count=1 -v)
 ```
 
+## 2026-09-25 format-2 completion trial
+
+The guarded `TestWorkflowFormat2RealForgejoHeldMergeAndOutcome` passed against
+`Janez/test` and a disposable loopback PostgreSQL database. It ran the working
+source based on `b729295f17f95fecb46def8068d5889d7b6bcb05` with the format-2
+implementation committed alongside this record. The sorted SHA-256 manifest
+of 2,089 server production Go, SQL and module files had SHA-256
+`aefdaf7165d3a5631c4c95630c802cfd391cd3dfdb2325a05b2fb14fe476c10f`.
+This is source-level provider proof, not a deployed-release canary.
+
+- [PR 10](https://git.thn.janezstupar.com/Janez/test/pulls/10) became ready while
+  held, remained open across worker reconstruction, and merged only after
+  explicit release. Its accepted head was
+  `085e7ac1d431447727b3c85fa71eb9d62ec4c3a9`; Forgejo reports merge commit
+  `d6d34163a1bb9b6c1ae1d2455c72cb92f2ca1ed4`.
+- The ticket stayed `pr_ready` after merge. The actual task service claimed and
+  started bound outcome task `01a0d78b-0a8a-7c79-a501-222a6c0363fa`; an exact-task
+  acknowledgment followed by successful completion moved the ticket to Done.
+  Outcome execution was scripted. This did not invoke a model or prove a new
+  daemon/native-host session path.
+- Independent read-back found PR 10 closed and merged at the accepted head,
+  its unique marker absent from `main` (HTTP 404), and no trial branches.
+  Preliminary PRs 8 and 9 were closed without merging after test-fixture and
+  observer-assertion failures. Their branches were also removed.
+- Compose projects `multica-completion-tests` (15439) and
+  `multica-completion-clean` (15440), their containers, volumes and networks
+  were removed and absence verified. No production or runtime database changed.
+
+Fresh migrations through 578 passed. The full service suite passed; the full
+handler suite exposed only two outdated test expectations, both corrected and
+verified in the final service/handler regression run. Earlier full backend
+coverage passed outside the corrected archive/template checks. Independent
+code acceptance found no remaining correctness issue. Source `govulncheck`
+reported no vulnerabilities.
+
+Frontend typecheck and lint passed. Core tests and all 24 focused workflow-view
+tests passed. Broader suites retain unrelated HEAD failures: one web contrast
+assertion (`skills-tab.tsx` opacity), 11 missing French agent locale keys, and
+an intermittent Mermaid teardown timer error. The isolated Mermaid suite
+passed 17/17. Desktop packaging passed 30/30 with local process permissions;
+its sandboxed Git subprocess checks returned EPERM. These limitations are not
+a claim that the whole frontend suite is green.
+
 ## 2026-09-24 isolated Linux trial
 
 This trial ran a detached test checkout built from base commit

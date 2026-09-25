@@ -432,6 +432,42 @@ func (h *Handler) ArchiveIssueStatus(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// A format-2 policy can depend on PR Ready while no issue is currently on
+	// that status. The same catalog lock serializes this census with policy
+	// admission, which takes the shared side before validating the status key.
+	var policyUsesStatus bool
+	err = tx.QueryRow(r.Context(), `SELECT
+		EXISTS (
+			SELECT 1 FROM workspace workspace_policy
+			CROSS JOIN LATERAL jsonb_array_elements(COALESCE(
+				workspace_policy.workflow_default_policy->'bundle'->'files','[]'::jsonb)) file
+			WHERE workspace_policy.id=$1 AND workspace_policy.workflow_cutover_at IS NOT NULL
+			AND CASE WHEN file->>'path'='runtime/policy.json' THEN
+				(file->>'content')::jsonb->>'format_version'='2' AND
+				(file->>'content')::jsonb->>'accepted_status_key'=$2
+			ELSE false END
+		) OR EXISTS (
+			SELECT 1 FROM issue pinned_issue
+			CROSS JOIN LATERAL jsonb_array_elements(COALESCE(
+				pinned_issue.workflow_policy->'bundle'->'files','[]'::jsonb)) file
+			WHERE pinned_issue.workspace_id=$1 AND NOT pinned_issue.workflow_frozen
+			AND CASE WHEN file->>'path'='runtime/policy.json' THEN
+				(file->>'content')::jsonb->>'format_version'='2' AND
+				(file->>'content')::jsonb->>'accepted_status_key'=$2
+			ELSE false END
+		)`, wsUUID, entry.Key).Scan(&policyUsesStatus)
+	if err != nil {
+		slog.Warn("ArchiveIssueStatus workflow policy check failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to check workflow policies using status")
+		return
+	}
+	if policyUsesStatus {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "cannot archive status: active issue workflow policy uses it",
+			"code":  "issue_status_workflow_policy_in_use",
+		})
+		return
+	}
 
 	archived, err := qtx.ArchiveIssueStatusEntry(r.Context(), db.ArchiveIssueStatusEntryParams{
 		ID:          entry.ID,

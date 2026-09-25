@@ -168,6 +168,63 @@ it("retries only the displayed delivery candidate and rejects malformed retry re
   expect(mocked).toHaveBeenCalledTimes(2);
 });
 
+it("reads format-2 acceptance state and sends explicit outcome and hold choices", async () => {
+  const state = {
+    ...issueWorkflow,
+    accepted_status_key: "pr_ready",
+    acceptance: {
+      id: "accept-1", candidate_id: issueWorkflow.candidate.id, state: "accepted", mode: "human",
+      requested_at: "2026-09-24T10:05:00Z", accepted_at: "2026-09-24T10:06:00Z",
+      hold_delivery: true, outcome_complete: false, outcome_completed_at: null, outcome_pending: true, outcome_task_id: "task-outcome", outcome_task_active: true,
+    },
+    available_actions: { ...issueWorkflow.available_actions, hold_delivery: false, release_delivery: true, complete_outcome: true },
+  };
+  const mocked = vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify(state)))
+    .mockResolvedValueOnce(new Response(JSON.stringify(state)));
+  vi.stubGlobal("fetch", mocked);
+  const client = new ApiClient("https://api.example.test");
+
+  await expect(client.getIssueWorkflow(issueID)).resolves.toEqual(state);
+  await expect(client.acceptIssueWorkflow(issueID, {
+    candidate_id: issueWorkflow.candidate.id, expected_revision: 8, outcome_complete: false, hold_delivery: true,
+  })).resolves.toEqual(state);
+  expect(mocked.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ method: "POST", body: JSON.stringify({
+    candidate_id: issueWorkflow.candidate.id, expected_revision: 8, outcome_complete: false, hold_delivery: true,
+  }) }));
+});
+
+it("rejects a malformed completion capability instead of treating it as a legacy response", async () => {
+  const mocked = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ...issueWorkflow, accepted_status_key: 12 })));
+  vi.stubGlobal("fetch", mocked);
+  const client = new ApiClient("https://api.example.test");
+  await expect(client.getIssueWorkflow(issueID)).rejects.toThrow("Could not load issue workflow");
+});
+
+it("binds hold, release, completion, and outcome retry to an acceptance and validates their reason", async () => {
+  const acceptanceID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const input = { candidate_id: issueWorkflow.candidate.id, expected_revision: 8, reason: "Delivery is ready" };
+  const mocked = vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify(issueWorkflow)))
+    .mockResolvedValueOnce(new Response(JSON.stringify(issueWorkflow)))
+    .mockResolvedValueOnce(new Response(JSON.stringify(issueWorkflow)))
+    .mockResolvedValueOnce(new Response(JSON.stringify(issueWorkflow)))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ...issueWorkflow, issue_revision: "bad" })));
+  vi.stubGlobal("fetch", mocked);
+  const client = new ApiClient("https://api.example.test");
+
+  for (const action of ["hold", "release", "complete", "retry-outcome"] as const) {
+    await expect(client.updateIssueWorkflowAcceptance(issueID, acceptanceID, action, input)).resolves.toEqual(issueWorkflow);
+  }
+  expect(mocked.mock.calls.slice(0, 4).map(([url]) => url)).toEqual(["hold", "release", "complete", "retry-outcome"].map(
+    (action) => `https://api.example.test/api/issues/${issueID}/workflow/acceptances/${acceptanceID}/${action}`,
+  ));
+  expect(mocked.mock.calls.slice(0, 4).map(([, init]) => init)).toEqual(Array(4).fill(expect.objectContaining({ method: "POST", body: JSON.stringify(input) })));
+  await expect(client.updateIssueWorkflowAcceptance(issueID, acceptanceID, "hold", input)).rejects.toThrow("Could not hold issue workflow acceptance");
+  await expect(client.updateIssueWorkflowAcceptance(issueID, acceptanceID, "release", { ...input, reason: " " })).rejects.toThrow();
+  expect(mocked).toHaveBeenCalledTimes(5);
+});
+
 it("defaults a missing delivery retry affordance to unavailable", async () => {
   const legacy = {
     ...issueWorkflow,

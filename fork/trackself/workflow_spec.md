@@ -155,7 +155,7 @@ the delegated deliverable boundary above.
 | `in_review`, review/fix agent | The agent has executable review work, including routine in-scope corrections. |
 | `in_review`, independent final reviewer | A fresh context evaluates the current resulting surface. |
 | `in_review`, human | Required engineering work and agent review are complete; human acceptance is needed. |
-| `PR Ready`, accepted work with unmerged PRs | Required review and acceptance passed for the exact candidate; required PRs are ready, with delivery pending, held or failed. |
+| `PR Ready`, accepted work with delivery or outcome work remaining | Required review and acceptance passed for the exact candidate; delivery may be pending, held or failed, or merged work may still require deployment or validation. |
 | `done`, completed work | All required PRs have merged and the ticket’s actual outcome is complete; work requiring no PR may finish directly after acceptance. |
 
 Routine corrections remain within the review/fix cycle. Material work that must
@@ -308,6 +308,9 @@ encoding them and proving the revised status/hold behavior remain cutover work.
   not delegated authority to waive the explicit user-approval categories above.
   The user may grant a scoped exception to any user-owned project policy;
   platform-enforced limits remain in force.
+- After human acceptance, merge automatically unless the actor explicitly holds
+  delivery. A hold persists until an authorized release; it is not cleared by
+  retries or restarts.
 - Use squash and merge by default, with a meaningful commit title/message and
   ticket and PR references. This keeps routine development history readable.
   A separate merge commit is a justified explicit exception for an integration
@@ -407,10 +410,10 @@ Remaining configuration and implementation work is:
 
 | Parameter or gap | Remaining work |
 | --- | --- |
-| Authority bindings | Select concrete autonomous acceptor and supervisor identities/scopes and human acceptance roles; encode the agreed boundaries in the bundle. |
+| Authority bindings | The inactive [runtime policy](policies/mica-v1/runtime/policy.json) binds the three Linux Mica identities as autonomous acceptors and review/delivery supervisors, owner/admin human acceptance, and main Linux Mica for post-merge outcome work. No supervisor acceptance waiver is granted. Verify those identities and the status mapping at activation. |
 | Capability | Finalize model/effort mappings in workspace-control and escalation when a review cycle cannot converge. |
-| Delivery selection | Select the default after human acceptance (automatic merge or ready/hold); preserve a deliberate hold until authorized release. |
-| Completion mechanics | Implement and prove `PR Ready`, revision invalidation, durable holds, multi-PR partial failure and completion only after required delivery and outcome. Map the existing workspace status explicitly; do not invent an API status identifier from its display name. |
+| Delivery selection | Human acceptance defaults to automatic merge unless explicitly held (confirmed 2026-09-25); deploy the proven durable hold/release controls before activation. |
+| Completion mechanics | Format-2 implementation and bounded proof passed; deploy it before activation. Map the existing workspace status explicitly to the `started` category; do not invent an API status identifier from its display name. See the runtime proof for validation limits. |
 
 The [implementation plan](implementation_plan.md) owns the current release,
 remaining coordination and activation boundary. The [fork README](README.md)

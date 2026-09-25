@@ -89,13 +89,16 @@ func (s WorkflowAuthorityService) RetryDelivery(ctx context.Context, workspaceID
 	if err != nil {
 		return false, err
 	}
-	if issue.WorkflowFrozen || issue.Status != "done" || issue.WorkflowCandidateID != candidateID ||
-		issue.Revision != in.ExpectedRevision {
+	if issue.WorkflowFrozen || issue.WorkflowCandidateID != candidateID || issue.Revision != in.ExpectedRevision {
 		return false, ErrWorkflowAuthorityConflict
 	}
 	pinned, authority, err := workflowAuthorityPolicy(ctx, s, issue)
 	if err != nil {
 		return false, err
+	}
+	if authority.FormatVersion == 2 && issue.Status != authority.AcceptedStatusKey ||
+		authority.FormatVersion == 1 && issue.Status != "done" {
+		return false, ErrWorkflowAuthorityConflict
 	}
 	candidate, err := loadCurrentWorkflowCandidate(ctx, tx, issue, pinned.Version)
 	if err != nil {

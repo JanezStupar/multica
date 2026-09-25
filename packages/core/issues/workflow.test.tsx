@@ -71,6 +71,33 @@ it("polls only while acceptance or delivery can still advance, with bounded inte
   }, now)).toBe(5_000);
   expect(issueWorkflowProgressRefetchInterval({
     ...workflow,
+    accepted_status_key: "pr_ready",
+    acceptance: {
+      id: "acceptance", candidate_id: "candidate", state: "accepted", mode: "human",
+      requested_at: "2026-09-24T00:00:00Z", accepted_at: "2026-09-24T00:00:01Z",
+      outcome_task_active: true, outcome_task_id: "outcome-run",
+    },
+  }, now)).toBe(5_000);
+  expect(issueWorkflowProgressRefetchInterval({
+    ...workflow,
+    accepted_status_key: "pr_ready",
+    acceptance: {
+      id: "acceptance", candidate_id: "candidate", state: "accepted", mode: "human",
+      requested_at: "2026-09-24T00:00:00Z", accepted_at: "2026-09-24T00:00:01Z",
+      outcome_task_active: false, outcome_pending: false, outcome_task_id: "failed-outcome-run",
+    },
+  }, now)).toBe(false);
+  expect(issueWorkflowProgressRefetchInterval({
+    ...workflow,
+    accepted_status_key: "pr_ready",
+    acceptance: {
+      id: "acceptance", candidate_id: "candidate", state: "accepted", mode: "human",
+      requested_at: "2026-09-24T00:00:00Z", accepted_at: "2026-09-24T00:00:01Z",
+      outcome_pending: true, outcome_task_id: "pending-acknowledgment-run",
+    },
+  }, now)).toBe(5_000);
+  expect(issueWorkflowProgressRefetchInterval({
+    ...workflow,
     delivery: [{
       id: "delivery", ordinal: 1, pr_url: "https://example.test/pr/1", expected_head_sha: "abc",
       action: "merge", status: "retry", attempt_count: 1,

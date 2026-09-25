@@ -61,6 +61,7 @@ func TestParseSkillArchive_TrackselfPolicyBuilderOutput(t *testing.T) {
 
 	wantPaths := map[string]bool{
 		"runtime/issue-workflow.md":  true,
+		"runtime/policy.json":        true,
 		"references/workflow.md":     true,
 		"source-manifest.json":       true,
 		"references/agents.md":       true,
@@ -126,7 +127,7 @@ func TestParseSkillArchive_TrackselfPolicyBuilderOutput(t *testing.T) {
 	if manifest.PolicyVersion != "mica-v1" || manifest.SkillName != imported.name {
 		t.Fatalf("manifest policy/name = %q/%q, want mica-v1/%q", manifest.PolicyVersion, manifest.SkillName, imported.name)
 	}
-	if len(manifest.BundleIdentitySHA256) != 64 || len(manifest.SourceHashes) != 11 {
-		t.Fatalf("manifest does not contain full source identity and all 11 inputs: %#v", manifest)
+	if len(manifest.BundleIdentitySHA256) != 64 || len(manifest.SourceHashes) != 12 {
+		t.Fatalf("manifest does not contain full source identity and all 12 inputs: %#v", manifest)
 	}
 }

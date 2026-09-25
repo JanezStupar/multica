@@ -15,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/integrations/workflowdelivery"
+	"github.com/multica-ai/multica/server/internal/service"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 const (
@@ -67,13 +69,30 @@ func (w *WorkflowDeliveryWorker) Run(ctx context.Context) {
 		if finalizeErr != nil && !errors.Is(finalizeErr, context.Canceled) {
 			slog.Error("workflow acceptance: finalize request", "error", finalizeErr)
 		}
+		outcomeCtx, outcomeCancel := context.WithTimeout(ctx, workflowDeliveryActionTimeout)
+		outcomeFinalized, outcomeErr := w.h.workflowAuthorityService().FinalizeNextOutcomeAcknowledgment(outcomeCtx)
+		outcomeCancel()
+		if outcomeErr != nil && !errors.Is(outcomeErr, context.Canceled) {
+			slog.Error("workflow outcome: finalize acknowledgment", "error", outcomeErr)
+		}
+		dispatchCtx, dispatchCancel := context.WithTimeout(ctx, workflowDeliveryActionTimeout)
+		outcomeDispatched, dispatchErr := w.h.workflowAuthorityService().RetryNextWorkflowCompletionDispatch(dispatchCtx)
+		dispatchCancel()
+		if dispatchErr != nil && !errors.Is(dispatchErr, context.Canceled) {
+			slog.Warn("workflow outcome: retry dispatch", "error", dispatchErr)
+		}
 		worked, err := w.ProcessNext(ctx)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			slog.Error("workflow delivery: process intent", "error", err)
 		}
+		observed, observeErr := w.ProcessNextReadyObservation(ctx)
+		if observeErr != nil && !errors.Is(observeErr, context.Canceled) {
+			slog.Error("workflow delivery: observe external merge", "error", observeErr)
+		}
 		// A failed transaction can report that it found work without having
 		// advanced it. Wait for the poll interval instead of spinning on it.
-		if (finalized || worked) && finalizeErr == nil && err == nil {
+		if (finalized || outcomeFinalized || outcomeDispatched || worked || observed) &&
+			finalizeErr == nil && outcomeErr == nil && dispatchErr == nil && err == nil && observeErr == nil {
 			continue
 		}
 		select {
@@ -100,11 +119,14 @@ func (w *WorkflowDeliveryWorker) WaitWithTimeout(timeout time.Duration) bool {
 }
 
 type workflowDeliveryIntent struct {
-	id, issueID, workspaceID, acceptanceID, candidateID, bindingID                pgtype.UUID
-	provider, repositoryURL, prURL, owner, repo, expectedSHA, action, mergeMethod string
-	prNumber                                                                      int64
-	attemptCount                                                                  int32
-	readinessDone                                                                 bool
+	id, issueID, workspaceID, acceptanceID, candidateID, bindingID                        pgtype.UUID
+	provider, repositoryURL, prURL, owner, repo, expectedSHA, action, mergeMethod, status string
+	prNumber                                                                              int64
+	attemptCount                                                                          int32
+	readinessDone                                                                         bool
+	completionVersion                                                                     int16
+	acceptedStatus                                                                        string
+	held                                                                                  bool
 }
 
 // ProcessNext claims one due intent. A transaction holds the issue lock through
@@ -121,7 +143,10 @@ func (w *WorkflowDeliveryWorker) ProcessNext(ctx context.Context) (bool, error) 
 		JOIN issue i ON i.id=d.issue_id AND i.workspace_id=d.workspace_id
 		WHERE d.status IN ('pending','retry') AND d.next_attempt_at <= now()
 		AND a.state='accepted' AND a.revoked_at IS NULL
-		AND i.workflow_candidate_id=d.candidate_id AND i.status='done'
+		AND i.workflow_candidate_id=d.candidate_id
+		AND (a.completion_version=1 AND i.status='done' OR
+		     a.completion_version=2 AND i.status=a.accepted_status_key)
+		AND NOT (a.completion_version=2 AND a.hold_delivery AND d.action='merge' AND d.readiness_done_at IS NOT NULL)
 		AND NOT EXISTS (
 			SELECT 1 FROM issue_workflow_delivery prior
 			WHERE prior.acceptance_id=d.acceptance_id AND prior.ordinal<d.ordinal
@@ -129,7 +154,7 @@ func (w *WorkflowDeliveryWorker) ProcessNext(ctx context.Context) (bool, error) 
 		)
 		ORDER BY d.next_attempt_at,d.id LIMIT 1`).Scan(&id, &issueID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		return w.ProcessNextReadyObservation(ctx)
 	}
 	if err != nil {
 		return false, fmt.Errorf("select workflow delivery intent: %w", err)
@@ -162,18 +187,21 @@ func (w *WorkflowDeliveryWorker) ProcessNext(ctx context.Context) (bool, error) 
 	err = tx.QueryRow(workCtx, `
 		SELECT d.id,d.issue_id,d.workspace_id,d.acceptance_id,d.candidate_id,d.provider_binding_id,
 		 d.provider,d.repository_url,d.pr_url,d.repo_owner,d.repo_name,d.pr_number,d.expected_head_sha,
-		 d.action,COALESCE(d.merge_method,''),d.attempt_count,d.readiness_done_at
+		 d.action,COALESCE(d.merge_method,''),d.attempt_count,d.readiness_done_at,
+		 a.completion_version,COALESCE(a.accepted_status_key,''),a.hold_delivery
 		FROM issue_workflow_delivery d
 		JOIN issue_workflow_acceptance a ON a.id=d.acceptance_id AND a.issue_id=d.issue_id AND a.workspace_id=d.workspace_id
 		WHERE d.id=$1 AND d.issue_id=$2 AND a.state='accepted' AND a.revoked_at IS NULL
 		AND a.candidate_id=d.candidate_id AND d.status IN ('pending','retry')
 		AND d.next_attempt_at<=now()
+		AND NOT (a.completion_version=2 AND a.hold_delivery AND d.action='merge' AND d.readiness_done_at IS NOT NULL)
 		AND NOT EXISTS (SELECT 1 FROM issue_workflow_delivery prior
 		 WHERE prior.acceptance_id=d.acceptance_id AND prior.ordinal<d.ordinal AND prior.status<>'delivered')
 		FOR UPDATE OF d`, id, issueID).Scan(
 		&d.id, &d.issueID, &d.workspaceID, &d.acceptanceID, &d.candidateID, &d.bindingID,
 		&d.provider, &d.repositoryURL, &d.prURL, &d.owner, &d.repo, &d.prNumber, &d.expectedSHA,
-		&d.action, &d.mergeMethod, &d.attemptCount, &readinessAt)
+		&d.action, &d.mergeMethod, &d.attemptCount, &readinessAt,
+		&d.completionVersion, &d.acceptedStatus, &d.held)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -181,7 +209,9 @@ func (w *WorkflowDeliveryWorker) ProcessNext(ctx context.Context) (bool, error) 
 		return true, fmt.Errorf("lock workflow delivery intent: %w", err)
 	}
 	d.readinessDone = readinessAt.Valid
-	if !currentCandidate.Valid || currentCandidate != d.candidateID || issueStatus != "done" {
+	validStatus := d.completionVersion == 1 && issueStatus == "done" ||
+		d.completionVersion == 2 && issueStatus == d.acceptedStatus
+	if !currentCandidate.Valid || currentCandidate != d.candidateID || !validStatus {
 		if _, err := tx.Exec(workCtx, `UPDATE issue_workflow_delivery SET status='cancelled',last_error_class='revoked',updated_at=now() WHERE id=$1 AND status IN ('pending','retry')`, d.id); err != nil {
 			return true, err
 		}
@@ -223,6 +253,21 @@ func (w *WorkflowDeliveryWorker) ProcessNext(ctx context.Context) (bool, error) 
 		if err := w.finishAttempt(workCtx, tx, d, op, status, class, observedSHA, ""); err != nil {
 			return true, err
 		}
+		if status == "stale" && d.completionVersion == 2 {
+			issue, err := w.h.Queries.WithTx(tx).GetIssueInWorkspace(workCtx,
+				db.GetIssueInWorkspaceParams{ID: d.issueID, WorkspaceID: d.workspaceID})
+			if err != nil {
+				return true, err
+			}
+			if err := w.invalidateStaleCandidate(workCtx, tx, d); err != nil {
+				return true, err
+			}
+			if err := tx.Commit(workCtx); err != nil {
+				return true, err
+			}
+			w.h.workflowAuthorityService().PublishWorkflowIssueChange(ctx, issue, service.WorkflowActor{Type: "system"})
+			return true, nil
+		}
 		return true, tx.Commit(workCtx)
 	}
 	status := "pending"
@@ -232,7 +277,191 @@ func (w *WorkflowDeliveryWorker) ProcessNext(ctx context.Context) (bool, error) 
 	if err := w.finishAttempt(workCtx, tx, d, op, status, "", observedSHA, mergeSHA); err != nil {
 		return true, err
 	}
+	if status == "delivered" && d.completionVersion == 2 {
+		q := w.h.Queries.WithTx(tx)
+		issue, err := q.GetIssueInWorkspace(workCtx, db.GetIssueInWorkspaceParams{ID: d.issueID, WorkspaceID: d.workspaceID})
+		if err != nil {
+			return true, err
+		}
+		outcomeTask, _, dispatchErr, err := service.TryReconcileWorkflowCompletion(workCtx, tx, q, issue, d.acceptanceID)
+		if err != nil {
+			return true, err
+		}
+		if err := tx.Commit(workCtx); err != nil {
+			return true, err
+		}
+		if dispatchErr != nil {
+			slog.Warn("workflow delivery merged but outcome dispatch deferred", "issue_id", d.issueID, "error", dispatchErr)
+		}
+		if outcomeTask != nil {
+			w.h.TaskService.NotifyTaskEnqueued(ctx, *outcomeTask)
+		}
+		w.h.workflowAuthorityService().PublishWorkflowIssueChange(ctx, issue, service.WorkflowActor{Type: "system"})
+		return true, nil
+	}
 	return true, tx.Commit(workCtx)
+}
+
+// ProcessNextReadyObservation watches format-2 ready-only PRs and held,
+// already-prepared merge intents for an external merge of the accepted head.
+// It never invokes Merge or releases a held merge.
+func (w *WorkflowDeliveryWorker) ProcessNextReadyObservation(ctx context.Context) (bool, error) {
+	var id, issueID pgtype.UUID
+	err := w.h.DB.QueryRow(ctx, `SELECT d.id,d.issue_id FROM issue_workflow_delivery d
+		JOIN issue_workflow_acceptance a ON a.id=d.acceptance_id AND a.issue_id=d.issue_id
+		JOIN issue i ON i.id=d.issue_id AND i.workspace_id=d.workspace_id
+		WHERE a.completion_version=2 AND a.state='accepted' AND a.revoked_at IS NULL
+		AND i.workflow_candidate_id=d.candidate_id AND i.status=a.accepted_status_key
+		AND (d.action='ready' AND d.status='delivered' OR
+		     d.action='merge' AND d.status IN ('pending','retry') AND
+		     d.readiness_done_at IS NOT NULL AND a.hold_delivery)
+		AND d.merged_at IS NULL
+		AND d.next_attempt_at<=now()
+		ORDER BY d.next_attempt_at,d.id LIMIT 1`).Scan(&id, &issueID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	workCtx, cancel := context.WithTimeout(ctx, workflowDeliveryActionTimeout)
+	defer cancel()
+	tx, err := w.h.TxStarter.Begin(workCtx)
+	if err != nil {
+		return true, err
+	}
+	defer tx.Rollback(workCtx)
+	var currentCandidate pgtype.UUID
+	var issueStatus string
+	err = tx.QueryRow(workCtx, `SELECT workflow_candidate_id,status FROM issue WHERE id=$1 FOR UPDATE SKIP LOCKED`, issueID).
+		Scan(&currentCandidate, &issueStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	var d workflowDeliveryIntent
+	var previousError pgtype.Text
+	err = tx.QueryRow(workCtx, `SELECT d.id,d.issue_id,d.workspace_id,d.acceptance_id,d.candidate_id,
+		d.provider_binding_id,d.provider,d.repository_url,d.pr_url,d.repo_owner,d.repo_name,
+		d.pr_number,d.expected_head_sha,a.accepted_status_key,d.last_error_class,d.action,d.status,a.hold_delivery
+		FROM issue_workflow_delivery d JOIN issue_workflow_acceptance a ON a.id=d.acceptance_id
+		WHERE d.id=$1 AND d.issue_id=$2 AND
+		(d.action='ready' AND d.status='delivered' OR
+		 d.action='merge' AND d.status IN ('pending','retry') AND
+		 d.readiness_done_at IS NOT NULL AND a.hold_delivery)
+		AND d.merged_at IS NULL AND d.next_attempt_at<=now() AND a.completion_version=2
+		AND a.state='accepted' AND a.revoked_at IS NULL FOR UPDATE OF d`, id, issueID).Scan(
+		&d.id, &d.issueID, &d.workspaceID, &d.acceptanceID, &d.candidateID,
+		&d.bindingID, &d.provider, &d.repositoryURL, &d.prURL, &d.owner, &d.repo,
+		&d.prNumber, &d.expectedSHA, &d.acceptedStatus, &previousError,
+		&d.action, &d.status, &d.held)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	if currentCandidate != d.candidateID || issueStatus != d.acceptedStatus {
+		return false, nil
+	}
+	q := w.h.Queries.WithTx(tx)
+	issue, err := q.GetIssueInWorkspace(workCtx, db.GetIssueInWorkspaceParams{ID: d.issueID, WorkspaceID: d.workspaceID})
+	if err != nil {
+		return true, err
+	}
+	commit := func(publish bool, outcomeTask *db.AgentTaskQueue) (bool, error) {
+		if err := tx.Commit(workCtx); err != nil {
+			return true, err
+		}
+		if outcomeTask != nil {
+			w.h.TaskService.NotifyTaskEnqueued(ctx, *outcomeTask)
+		}
+		if publish {
+			w.h.workflowAuthorityService().PublishWorkflowIssueChange(ctx, issue, service.WorkflowActor{Type: "system"})
+		}
+		return true, nil
+	}
+	provider, token, err := w.providerForIntent(workCtx, tx, d)
+	if err != nil {
+		_, updateErr := tx.Exec(workCtx, `UPDATE issue_workflow_delivery SET next_attempt_at=now()+interval '30 seconds',
+			last_error_class='provider_unavailable',updated_at=now() WHERE id=$1`, d.id)
+		if updateErr != nil {
+			return true, updateErr
+		}
+		return commit(previousError.String != "provider_unavailable", nil)
+	}
+	ref := workflowdelivery.Ref{Owner: d.owner, Repo: d.repo, Number: d.prNumber,
+		RepositoryURL: d.repositoryURL, PullURL: d.prURL}
+	pr, err := provider.ReadPR(workCtx, ref, token)
+	if err != nil {
+		_, updateErr := tx.Exec(workCtx, `UPDATE issue_workflow_delivery SET next_attempt_at=now()+interval '30 seconds',
+			last_error_class='provider_unavailable',updated_at=now() WHERE id=$1`, d.id)
+		if updateErr != nil {
+			return true, updateErr
+		}
+		return commit(previousError.String != "provider_unavailable", nil)
+	}
+	if pr.HeadSHA != d.expectedSHA {
+		if _, err := tx.Exec(workCtx, `UPDATE issue_workflow_delivery SET status='stale',last_error_class='stale_head',
+			updated_at=now() WHERE id=$1`, d.id); err != nil {
+			return true, err
+		}
+		if _, err := tx.Exec(workCtx, `INSERT INTO issue_workflow_delivery_attempt
+			(id,workspace_id,issue_id,delivery_id,attempt_number,operation,outcome,error_class,observed_head_sha)
+			VALUES(gen_random_uuid(),$1,$2,$3,
+			(SELECT attempt_count+1 FROM issue_workflow_delivery WHERE id=$3),'reconcile','stale','stale_head',$4)`,
+			d.workspaceID, d.issueID, d.id, pr.HeadSHA); err != nil {
+			return true, err
+		}
+		if err := w.invalidateStaleCandidate(workCtx, tx, d); err != nil {
+			return true, err
+		}
+		return commit(true, nil)
+	}
+	if !pr.Merged || pr.State != "closed" {
+		class := ""
+		if pr.Merged {
+			class = "provider_state_inconsistent"
+		} else if pr.State != "open" {
+			class = "closed_unmerged"
+		}
+		_, err = tx.Exec(workCtx, `UPDATE issue_workflow_delivery SET next_attempt_at=now()+interval '30 seconds',
+			last_error_class=NULLIF($2,''),updated_at=now() WHERE id=$1`, d.id, class)
+		if err != nil {
+			return true, err
+		}
+		return commit(previousError.String != class, nil)
+	}
+	if _, err := tx.Exec(workCtx, `UPDATE issue_workflow_delivery SET status='delivered',
+		merged_at=now(),merge_commit_sha=$2,last_error_class=NULL,updated_at=now()
+		WHERE id=$1 AND merged_at IS NULL`, d.id, pr.MergeCommitSHA); err != nil {
+		return true, err
+	}
+	outcomeTask, _, dispatchErr, err := service.TryReconcileWorkflowCompletion(workCtx, tx, q, issue, d.acceptanceID)
+	if err != nil {
+		return true, err
+	}
+	if dispatchErr != nil {
+		slog.Warn("workflow ready-only merge observed but outcome dispatch deferred", "issue_id", d.issueID, "error", dispatchErr)
+	}
+	return commit(true, outcomeTask)
+}
+
+func (w *WorkflowDeliveryWorker) invalidateStaleCandidate(ctx context.Context, tx pgx.Tx, d workflowDeliveryIntent) error {
+	if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET state='revoked',revoked_at=now(),
+		last_error_class='stale_head' WHERE id=$1 AND state='accepted' AND revoked_at IS NULL`, d.acceptanceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE issue_workflow_delivery SET status='cancelled',last_error_class='stale_head',updated_at=now()
+		WHERE acceptance_id=$1 AND status IN ('pending','retry','blocked')`, d.acceptanceID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE issue SET status='in_review',
+		revision=revision+1,updated_at=now(),last_activity_at=now()
+		WHERE id=$1 AND workspace_id=$2 AND workflow_candidate_id=$3`, d.issueID, d.workspaceID, d.candidateID)
+	return err
 }
 
 func classifyWorkflowDeliveryError(err error) (status, class string) {

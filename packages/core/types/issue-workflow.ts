@@ -34,6 +34,13 @@ export interface IssueWorkflowAcceptance {
   requested_at: string;
   accepted_at: string | null;
   blocker?: string;
+  hold_delivery?: boolean;
+  outcome_complete?: boolean;
+  outcome_completed_at?: string | null;
+  outcome_pending?: boolean;
+  outcome_task_id?: string;
+  /** True only while the bound outcome run can still advance. */
+  outcome_task_active?: boolean;
 }
 
 export interface IssueWorkflowDelivery {
@@ -66,6 +73,10 @@ export interface IssueWorkflowAvailableActions {
   reject: boolean;
   request_trivial_acceptance: boolean;
   waive_review: boolean;
+  hold_delivery?: boolean;
+  release_delivery?: boolean;
+  complete_outcome?: boolean;
+  retry_outcome?: boolean;
 }
 
 export interface IssueWorkflowDeliveryPreview {
@@ -96,6 +107,8 @@ export interface IssueWorkflow {
   issue_id: string;
   issue_revision: number;
   policy_version: string;
+  /** Present for workflow policies that separate accepted work from issue completion. */
+  accepted_status_key?: string;
   frozen: boolean;
   candidate: IssueWorkflowCandidate | null;
   reviews: IssueWorkflowReview[];
@@ -113,6 +126,14 @@ export interface AcceptIssueWorkflowRequest {
   expected_revision: number;
   classification_reason?: string;
   merge_order_pr_urls?: string[];
+  outcome_complete?: boolean;
+  hold_delivery?: boolean;
+}
+
+export interface UpdateIssueWorkflowAcceptanceRequest {
+  candidate_id: string;
+  expected_revision: number;
+  reason: string;
 }
 
 export type IssueWorkflowRejectionKind = "in_scope_defect" | "scope_change";

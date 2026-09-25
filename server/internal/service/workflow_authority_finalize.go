@@ -104,6 +104,9 @@ func (s WorkflowAuthorityService) FinalizeNextRequestedAcceptance(ctx context.Co
 	if err != nil || pinned.Version != acceptedPolicyVersion {
 		return block("pinned_authority_changed")
 	}
+	if err := ValidateWorkflowCompletionConfig(ctx, tx, issue, authority); err != nil {
+		return block("completion_config_changed")
+	}
 	allowed := false
 	for _, id := range authority.AutonomousAgentIDs {
 		allowed = allowed || id == util.UUIDToString(actorID)
@@ -122,6 +125,11 @@ func (s WorkflowAuthorityService) FinalizeNextRequestedAcceptance(ctx context.Co
 	candidate, err := loadCurrentWorkflowCandidate(ctx, tx, issue, pinned.Version)
 	if err != nil {
 		return block("candidate_scope_changed")
+	}
+	if stale, err := workflowCandidateStale(ctx, tx, issue, candidate.ID); err != nil {
+		return true, err
+	} else if stale {
+		return block("candidate_head_changed")
 	}
 	if stored.ScopeDigest != candidate.ScopeDigest {
 		return block("candidate_scope_changed")
@@ -179,17 +187,22 @@ func (s WorkflowAuthorityService) FinalizeNextRequestedAcceptance(ctx context.Co
 	if action != stored.DeliveryAction || method != stored.MergeMethod {
 		return block("delivery_authority_changed")
 	}
-	if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET state='accepted',issue_revision=$2,accepted_at=now()
+	if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET state='accepted',issue_revision=$2,accepted_at=now(),
+		outcome_completed_at=CASE WHEN outcome_complete THEN now() ELSE NULL END
 		WHERE id=$1 AND state='requested'`, acceptanceID, issue.Revision+1); err != nil {
 		return true, err
 	}
-	if err := finalizeWorkflowAcceptance(ctx, tx, q, issue, acceptanceID,
+	outcomeTask, err := finalizeWorkflowAcceptance(ctx, tx, q, issue, acceptanceID,
 		WorkflowActor{Type: "agent", ID: util.UUIDToString(actorID), SourceTaskID: util.UUIDToString(sourceTaskID)},
-		ordered, bindings, action, method); err != nil {
+		ordered, bindings, action, method, authority, stored.Request)
+	if err != nil {
 		return true, fmt.Errorf("finalize autonomous acceptance: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return true, err
+	}
+	if outcomeTask != nil {
+		s.Tasks.NotifyTaskEnqueued(ctx, *outcomeTask)
 	}
 	s.PublishWorkflowIssueChange(ctx, issue, WorkflowActor{Type: "agent", ID: util.UUIDToString(actorID)})
 	return true, nil

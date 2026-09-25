@@ -35,12 +35,31 @@ activation.
 
 ## Remaining coordination
 
+The 2026-09-25 working candidate extends the released acceptance contract with
+format-2 PR Ready, durable hold/release and outcome completion. Focused checks,
+clean migrations, independent code acceptance and the guarded Forgejo trial
+passed; [runtime-proof.md](runtime-proof.md#2026-09-25-format-2-completion-trial)
+records exact evidence and broader frontend baseline failures. The KB and
+workspace-control consumers remain isolated
+candidates. Human acceptance defaults to automatic merge unless explicitly
+held, and the inactive policy encodes the selected Linux authority bindings.
+This working candidate has not been released or activated; the earlier
+provider trials are supplemented by the new format-2 trial.
+
+Both disposable completion-test Compose projects, volumes and networks were
+removed after validation. The workstation and Linux-runtime databases were
+untouched. The production
+`pr_ready` status currently has terminal category `done` and no tickets;
+activation must recheck that baseline and change it to `started` before using
+the format-2 policy. Agent reconciliation also requires the three Linux daemons
+to remain stopped through configuration read-back and coordinated cutover.
+
 1. Reconcile the prepared KB and `workspace-control` candidates against their
    current owning repositories and review all consumer changes together. The
    candidate artifacts record their baselines and are not authority to apply
    them to active consumers.
-2. Implement and prove the revised `PR Ready`/`Done` and durable hold requirements;
-   the release currently marks acceptance `done`. Apply the
+2. Publish and deploy the proven `PR Ready`/`Done` and durable hold implementation;
+   the installed release currently marks acceptance `done`. Apply the
    [agreed production policy](workflow_spec.md#agreed-production-policy), then
    resolve only the [remaining bindings and defaults](workflow_spec.md#remaining-policy-parameters)
    in their owners. Classification, ordinary review, supervisor boundaries and
@@ -65,9 +84,9 @@ read-back under the owning workspace procedures.
 
 ## Completion boundary
 
-The implementation is released and the named Linux trials have passed within
-the evidence boundaries above. Cutover coordination is not complete until the consumers,
-revised completion/hold mechanics, production policy encoding, bundle identity, workspace configuration, and
+Format 1 is released and deployed; format 2 has passed source review and the
+bounded completion trial and awaits publication/deployment. Cutover coordination
+is not complete until its deployment, the consumers, bundle identity, workspace configuration, and
 live freeze/migration procedure are reconciled. Do not retire this plan before
 that boundary; after coordination ends, retain lasting operating guidance in
 the README and requirements in the spec. Git preserves prior implementation

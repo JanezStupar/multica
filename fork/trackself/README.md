@@ -205,15 +205,30 @@ migration is not a substitute for invalidating its acceptance.
 
 ## Candidate review and acceptance
 
-**Released behavior versus next policy:** the current acceptance path writes
-`done` in `server/internal/service/workflow_authority_accept.go`; the delivery
-worker and retry path require that status. The agreed
-[`PR Ready`/`Done` and hold semantics](workflow_spec.md#acceptance-triviality-and-pr-delivery)
-are a subsequent requirement, not a capability established by `v0.5.1-janez.1`
-or its recorded trials. Implement and prove the status mapping, persistent hold,
-revision invalidation and delivery-completion behavior before activating the
-updated policy source. Do not simulate acceptance by moving a card or invent
-unsupported command arguments.
+Format 2 separates acceptance, delivery and outcome completion. Its independent
+code review, database regressions and guarded Forgejo delivery trial passed;
+[runtime-proof.md](runtime-proof.md#2026-09-25-format-2-completion-trial) records
+the evidence and limits. Deployment and coordinated cutover remain required:
+`v0.5.1-janez.1` writes `done` at acceptance and cannot run this policy.
+Use the workflow operations for acceptance rather than moving the status card.
+
+The format-2 authority file adds `accepted_status_key` (an existing custom
+workspace status in the `started` category) and `outcome_agent_id` (a configured
+workspace agent). Acceptance explicitly supplies `outcome_complete` and may
+set `hold_delivery`. Held work can become ready, but cannot merge until release.
+`workflow hold|release|complete|retry-outcome` require the acceptance ID and a
+JSON body with `candidate_id`, `expected_revision` and `reason`. Read current
+`available_actions`; a visible acceptance is not authority to change it.
+
+Required merges and the actual outcome must both be complete before Done.
+When outcome work remains, the pinned agent receives a bound task; its outcome
+acknowledgment takes effect only after that task succeeds. Failed or cancelled
+outcome work preserves its history and supports an authorized explicit retry.
+If scheduling fails before an outcome task exists, the verified merge remains
+recorded and scheduling retries automatically with bounded backoff. Held PRs
+merged externally are observed without releasing the hold or issuing a merge.
+Format-1 pins retain their released semantics. The policy envelope itself
+remains format 1; this version refers to `runtime/policy.json` inside the bundle.
 
 The optional `runtime/policy.json` in a policy source directory configures
 machine-enforced authority. Its contents participate in the immutable bundle

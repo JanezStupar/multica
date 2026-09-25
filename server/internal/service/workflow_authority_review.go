@@ -142,6 +142,11 @@ func (s WorkflowAuthorityService) RegisterReview(ctx context.Context, workspaceI
 	if err != nil {
 		return err
 	}
+	if stale, err := workflowCandidateStale(ctx, tx, issue, candidate.ID); err != nil {
+		return err
+	} else if stale {
+		return fmt.Errorf("%w: candidate PR head changed; evaluate a new candidate", ErrWorkflowAuthorityConflict)
+	}
 	if len(candidate.PRs) > 0 && len(in.PRReviewURLs) == 0 || len(candidate.PRs) == 0 && len(in.PRReviewURLs) > 0 {
 		return fmt.Errorf("%w: PR review links must match candidate PR presence", ErrWorkflowAuthorityInput)
 	}

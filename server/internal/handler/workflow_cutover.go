@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -87,6 +88,16 @@ func (h *Handler) selectedWorkflowPolicy(w http.ResponseWriter, r *http.Request,
 		return nil, nil, false
 	}
 	return raw, &policy, true
+}
+
+func validateSelectedCompletionPolicy(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID,
+	policy *service.IssueWorkflowPolicy,
+) error {
+	authority, err := service.ParseWorkflowAuthorityPolicy(policy.Bundle)
+	if err != nil {
+		return err
+	}
+	return service.ValidateWorkflowCompletionConfig(ctx, tx, db.Issue{WorkspaceID: workspaceID}, authority)
 }
 
 func workflowLockConflict(err error) bool {
@@ -285,6 +296,11 @@ func (h *Handler) CutoverWorkspaceWorkflowDefault(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusOK, map[string]any{"policy": existing, "cutover_at": marker})
 		return
 	}
+	workspaceUUID, _ := util.ParseUUID(workspaceID)
+	if err := validateSelectedCompletionPolicy(r.Context(), tx, workspaceUUID, policy); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	var active bool
 	err = tx.QueryRow(r.Context(), `SELECT EXISTS (
 		SELECT 1 FROM agent_task_queue t JOIN issue i ON i.id=t.issue_id
@@ -365,6 +381,11 @@ func (h *Handler) UpdateWorkspaceWorkflowDefault(w http.ResponseWriter, r *http.
 	}
 	if marker == nil {
 		writeError(w, http.StatusConflict, "workspace workflow is not cut over")
+		return
+	}
+	workspaceUUID, _ := util.ParseUUID(workspaceID)
+	if err := validateSelectedCompletionPolicy(r.Context(), tx, workspaceUUID, policy); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	_, err = tx.Exec(r.Context(), `UPDATE workspace SET workflow_default_policy=$2 WHERE id=$1`, workspaceID, encoded)
@@ -459,6 +480,10 @@ func (h *Handler) MigrateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if !frozen {
 		writeError(w, http.StatusConflict, "issue is not frozen")
+		return
+	}
+	if err := validateSelectedCompletionPolicy(r.Context(), tx, issue.WorkspaceID, policy); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	priorEntry, err := issuestatus.Resolve(r.Context(), qtx, issue.WorkspaceID, priorStatus)

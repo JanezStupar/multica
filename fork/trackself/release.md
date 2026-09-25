@@ -8,10 +8,15 @@ workflow also publishes GHCR artifacts, outside this Forgejo publication.
 The registry bundle includes the exact source archive, so artifact recovery
 does not depend on an unpublished source branch.
 
-Publication is complete; deployment and workflow activation have not occurred.
-No utility-server service, workstation runtime, installed CLI, active KB/skill
-binding or workspace default was changed. The prepared consumer patches still
-need reconciliation against their owning repositories before cutover.
+Publication and the utility-server upgrade are complete. The backend/frontend
+run this release and production migration/configuration checks passed. All three
+Linux runtimes are upgraded and healthy, with original mounts preserved and
+authenticated CLI checks passing. The main development database was started
+with separate user approval and is healthy.
+Native agents are paused. No native installed CLI, active KB/skill workflow
+binding or workspace default was changed. The three Linux agents received only
+the platform capability skill; Mica policy activation remains separate.
+The private-infra deployment record below owns live deployment status.
 
 ## Registry artifacts
 
@@ -75,9 +80,16 @@ Registry artifacts are the durable published copies.
 
 ## Deployment boundary
 
-Next prepare the utility-server backup and migration preflight, update the exact
-backend/web artifact pins, and verify a deployed-environment canary before
-Trackself cutover. The server entrypoint runs migrations on startup, so an older
+The 2026-09-24 read-only utility-server preflight and proposed upgrade/rollback
+procedure are recorded in private-infra at
+`infra/automation-server/multica/upgrade-v0.5.1-janez.1.md`. The isolated rehearsal passed on 2026-09-24: a fresh production dump restored,
+all 120 pending migrations applied, invariant checks and a second migration run
+passed, and all temporary database resources were removed. Production retained
+its old images and migration history. The matching Linux runtime image is now built locally and its unchanged toolchain
+and exact Multica identity are verified. The same private-infra package contains
+prepared server configuration, Linux agent skill API payloads and maintenance/
+rollback commands. Production server and all three Linux-runtime health/API canaries have passed.
+Trackself workflow cutover and native-host upgrades follow separately. The server entrypoint runs migrations on startup, so an older
 image alone is not a database rollback plan. Check self-host telemetry settings
 (`DO_NOT_TRACK`) when preparing the production configuration.
 

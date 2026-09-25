@@ -10,6 +10,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
 )
@@ -245,4 +246,96 @@ func TestPinnedIssueRejectsLegacyDaemonAndOmitsLiveMikaWorkflow(t *testing.T) {
 		strings.Contains(claimed.Agent.Instructions, service.MikaSystemInstructions("pinned mika agent")) {
 		t.Fatalf("compiled Mika workflow reached pinned issue: %q", claimed.Agent.Instructions)
 	}
+}
+
+func TestFormat2OutcomeTaskPassesDaemonClaimAndProfileBinding(t *testing.T) {
+	issueID := dbfx.Issue(t, "Accepted outcome run")
+	runtimeID := createClaimReclaimRuntime(t, nil, "outcome runtime")
+	agentID := dbfx.Agent(t, "outcome agent", runtimeID)
+	dbfx.Insert(t, "issue_status", testutil.Cols{
+		"workspace_id": testWorkspaceID, "key": "pr_ready", "name": "PR Ready",
+		"category": "started", "color": "#22c55e", "position": 1,
+	})
+	skillID := insertCompleteWorkflowSkill(t, "---\nname: accepted-outcome\n---\n\nPinned outcome policy")
+	dbfx.Insert(t, "skill_file", testutil.Cols{
+		"skill_id": skillID, "path": "runtime/policy.json",
+		"content": `{"format_version":2,"accepted_status_key":"pr_ready","outcome_agent_id":"` + agentID + `"}`,
+	})
+	var pinned service.IssueWorkflowPolicy
+	enrollWorkflowPolicy(t, issueID, skillID).Want(http.StatusCreated).JSON(&pinned)
+	writerID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "issue_id": issueID,
+	})
+	writer := claimWorkflowTask(t, runtimeID, protocol.DaemonCapabilityPlatformSkillV1)
+	if writer.ID != writerID || writer.WorkflowProfileID == "" {
+		t.Fatalf("writer task did not bind a workflow profile: %+v", writer)
+	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status='completed',completed_at=now(),session_id='writer-session'
+		WHERE id=$1`, writerID)
+	candidateID := dbfx.Insert(t, "issue_workflow_candidate", testutil.Cols{
+		"id":           uuidToString(dbid.NewV7()),
+		"workspace_id": testWorkspaceID, "issue_id": issueID, "policy_version": pinned.Version,
+		"digest": "candidate", "scope_digest": "scope", "source_handoff_id": uuidToString(dbid.NewV7()),
+		"source_task_id": writerID, "writer_task_id": writerID, "pr_set": testutil.Raw("'[]'::jsonb"),
+	})
+	dbfx.Exec(t, `UPDATE issue SET workflow_candidate_id=$2 WHERE id=$1`, issueID, candidateID)
+	var revision int64
+	dbfx.QueryRow(t, `SELECT revision FROM issue WHERE id=$1`, issueID).Scan(&revision)
+	acceptanceID := dbfx.Insert(t, "issue_workflow_acceptance", testutil.Cols{
+		"id":           uuidToString(dbid.NewV7()),
+		"workspace_id": testWorkspaceID, "issue_id": issueID, "candidate_id": candidateID,
+		"mode": "human", "actor_type": "member", "actor_id": testUserID, "state": "accepted",
+		"issue_revision": revision + 1, "policy_version": pinned.Version,
+		"authority_snapshot": testutil.Raw("'{}'::jsonb"), "accepted_at": testutil.Raw("now()"),
+		"completion_version": 2, "accepted_status_key": "pr_ready", "outcome_agent_id": agentID,
+		"outcome_complete": false,
+	})
+	dbfx.Exec(t, `UPDATE issue SET status='pr_ready',assignee_type='agent',
+		assignee_id=$2,revision=revision+1 WHERE id=$1`, issueID, agentID)
+	outcomeTaskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "issue_id": issueID, "force_fresh_session": true,
+	})
+	dbfx.Exec(t, `UPDATE agent_task_queue SET context=jsonb_build_object('workflow_outcome',
+		jsonb_build_object('kind','workflow_outcome','acceptance_id',$2::text,'candidate_id',$3::text))
+		WHERE id=$1`, outcomeTaskID, acceptanceID, candidateID)
+	dbfx.Exec(t, `UPDATE issue_workflow_acceptance SET outcome_task_id=$2 WHERE id=$1`, acceptanceID, outcomeTaskID)
+	claimed := claimWorkflowTask(t, runtimeID, protocol.DaemonCapabilityPlatformSkillV1)
+	if claimed.ID != outcomeTaskID || claimed.WorkflowProfileID == "" ||
+		claimed.WorkflowPolicyVersion != pinned.Version || claimed.IssueID != issueID {
+		t.Fatalf("outcome daemon claim lost exact authority/profile: %+v", claimed)
+	}
+	var contextValue []byte
+	dbfx.QueryRow(t, `SELECT context FROM agent_task_queue WHERE id=$1`, outcomeTaskID).Scan(&contextValue)
+	if !strings.Contains(string(contextValue), acceptanceID) || !strings.Contains(string(contextValue), candidateID) {
+		t.Fatalf("outcome task lost acceptance/candidate context: %s", contextValue)
+	}
+}
+
+func TestFormat2PolicyEnrollmentRequiresStartedAcceptedStatusAndOutcomeAgent(t *testing.T) {
+	issueID := dbfx.Issue(t, "Format two configuration")
+	runtimeID := createClaimReclaimRuntime(t, nil, "format two runtime")
+	agentID := dbfx.Agent(t, "format two outcome agent", runtimeID)
+	statusID := dbfx.Insert(t, "issue_status", testutil.Cols{
+		"workspace_id": testWorkspaceID, "key": "pr_ready", "name": "PR Ready",
+		"category": "done", "color": "#22c55e", "position": 1,
+	})
+	skillID := insertCompleteWorkflowSkill(t, "---\nname: format-two\n---\n\nPinned format two")
+	dbfx.Insert(t, "skill_file", testutil.Cols{
+		"skill_id": skillID, "path": "runtime/policy.json",
+		"content": `{"format_version":2,"accepted_status_key":"pr_ready","outcome_agent_id":"` + agentID + `"}`,
+	})
+	paddedSkill := workflowCutoverTestSkill(t, testWorkspaceID, "Padded format two key")
+	dbfx.Insert(t, "skill_file", testutil.Cols{
+		"skill_id": paddedSkill, "path": "runtime/policy.json",
+		"content": `{"format_version":2,"accepted_status_key":"\tpr_ready\n","outcome_agent_id":"` + agentID + `"}`,
+	})
+	enrollWorkflowPolicy(t, issueID, paddedSkill).Want(http.StatusBadRequest)
+	enrollWorkflowPolicy(t, issueID, skillID).Want(http.StatusConflict)
+	var pinned bool
+	dbfx.QueryRow(t, `SELECT workflow_policy IS NOT NULL FROM issue WHERE id=$1`, issueID).Scan(&pinned)
+	if pinned {
+		t.Fatal("terminal PR Ready status was pinned as an accepted lifecycle state")
+	}
+	dbfx.Exec(t, `UPDATE issue_status SET category='started' WHERE id=$1`, statusID)
+	enrollWorkflowPolicy(t, issueID, skillID).Want(http.StatusCreated)
 }

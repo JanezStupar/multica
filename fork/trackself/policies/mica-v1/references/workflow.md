@@ -49,14 +49,14 @@ action:
 - After required agent review, `in_review` assigned to a human means human
   acceptance is due for nontrivial work.
 - `PR Ready` means required review and acceptance passed for the exact candidate
-  but required PRs remain unmerged. Delivery may be pending, held or failed.
+  but required delivery or outcome work remains. Delivery may be pending, held
+  or failed; merged work may still need deployment or validation.
 - `done` means required PRs merged and the actual ticket outcome is complete.
   No-PR work may finish directly after acceptance when its outcome is complete.
 
-These are next-policy requirements. The released acceptance/delivery path still
-uses `done`; do not activate this draft until status mapping and hold behavior
-are implemented and proven. Resolve the workspace status identifier from its
-configuration, not by guessing from the `PR Ready` display name.
+These semantics require format-2 completion support. Resolve the workspace
+status identifier from its configuration, not by guessing from the `PR Ready`
+display name. The configured status must have the `started` category.
 
 Prepare the outgoing result before evaluation starts, then record its owner,
 status and context with `multica issue handoff create <issue-id> --file <json>`.
@@ -175,8 +175,8 @@ classification, return to the policy's ordinary acceptance path.
 Acceptance records its actor, authority and exact reviewed commit or commits.
 Card movement alone does not create acceptance. Remove a `WIP:`
 PR title prefix and, where supported, mark a draft PR ready for review. After
-human acceptance, merge only when the selected policy calls for it; otherwise
-leave the PR ready. For policy-authorized trivial work, merge after required
+human acceptance under this policy, merge automatically unless explicitly held.
+For policy-authorized trivial work, merge after required
 checks and branch protections permit it. A later commit invalidates authority
 to merge that changed candidate and requires the applicable review and
 acceptance again. Delivery failures preserve acceptance and remain visible

@@ -3052,6 +3052,17 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			Recovery json.RawMessage `json:"workflow_recovery"`
 		}
 		_ = json.Unmarshal(task.Context, &recoveryEnvelope)
+		var outcomeEnvelope struct {
+			Outcome json.RawMessage `json:"workflow_outcome"`
+		}
+		_ = json.Unmarshal(task.Context, &outcomeEnvelope)
+		if len(outcomeEnvelope.Outcome) != 0 && string(outcomeEnvelope.Outcome) != "null" {
+			if err := h.TaskService.ValidateWorkflowOutcomeTask(r.Context(), *task); err != nil {
+				return resp, nil, nil, 0, 0, h.failClaimedTaskBeforeLaunch(r.Context(), task,
+					"The outcome task no longer matches the accepted candidate or policy.", taskfailure.ReasonInvalidTaskIdentity,
+					"workflow_outcome_invalid", http.StatusConflict, "workflow outcome is unavailable")
+			}
+		}
 		if len(recoveryEnvelope.Recovery) != 0 && string(recoveryEnvelope.Recovery) != "null" {
 			source, recoveryErr := h.TaskService.ValidateWorkflowRecoverySource(r.Context(), *task)
 			if recoveryErr != nil {

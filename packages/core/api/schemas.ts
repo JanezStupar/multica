@@ -97,6 +97,7 @@ import type {
   RejectIssueWorkflowRequest,
   RevokeIssueWorkflowExceptionRequest,
   RetryIssueWorkflowDeliveryRequest,
+  UpdateIssueWorkflowAcceptanceRequest,
 } from "../types/issue-workflow";
 
 export type {
@@ -106,6 +107,7 @@ export type {
   RejectIssueWorkflowRequest,
   RevokeIssueWorkflowExceptionRequest,
   RetryIssueWorkflowDeliveryRequest,
+  UpdateIssueWorkflowAcceptanceRequest,
 } from "../types/issue-workflow";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
@@ -3712,6 +3714,12 @@ const IssueWorkflowAcceptanceSchema = z.object({
   requested_at: z.string(),
   accepted_at: z.string().nullable(),
   blocker: z.string().optional(),
+  hold_delivery: z.boolean().optional().catch(undefined),
+  outcome_complete: z.boolean().optional().catch(undefined),
+  outcome_completed_at: z.string().nullable().optional().catch(undefined),
+  outcome_pending: z.boolean().optional().catch(undefined),
+  outcome_task_id: z.string().optional(),
+  outcome_task_active: z.boolean().optional().catch(undefined),
 }).loose();
 const IssueWorkflowDeliverySchema = z.object({
   id: z.string(),
@@ -3739,6 +3747,10 @@ const IssueWorkflowAvailableActionsSchema = z.object({
   reject: z.boolean().catch(false).default(false),
   request_trivial_acceptance: z.boolean().catch(false).default(false),
   waive_review: z.boolean().catch(false).default(false),
+  hold_delivery: z.boolean().optional().catch(undefined),
+  release_delivery: z.boolean().optional().catch(undefined),
+  complete_outcome: z.boolean().optional().catch(undefined),
+  retry_outcome: z.boolean().optional().catch(undefined),
 }).loose();
 const IssueWorkflowDeliveryPreviewSchema = z.object({
   action: z.string(),
@@ -3767,6 +3779,7 @@ export const IssueWorkflowSchema: z.ZodType<IssueWorkflow> = z.object({
   issue_id: z.string(),
   issue_revision: z.number().int().positive(),
   policy_version: z.string(),
+  accepted_status_key: z.string().min(1).optional(),
   frozen: z.boolean().catch(false).default(false),
   candidate: IssueWorkflowCandidateSchema.nullable(),
   reviews: z.array(IssueWorkflowReviewSchema),
@@ -3784,6 +3797,14 @@ export const AcceptIssueWorkflowRequestSchema: z.ZodType<AcceptIssueWorkflowRequ
   expected_revision: z.number().int().positive(),
   classification_reason: z.string().trim().min(1).optional(),
   merge_order_pr_urls: z.array(z.string().url()).optional(),
+  outcome_complete: z.boolean().optional(),
+  hold_delivery: z.boolean().optional(),
+}).strict();
+
+export const UpdateIssueWorkflowAcceptanceRequestSchema: z.ZodType<UpdateIssueWorkflowAcceptanceRequest> = z.object({
+  candidate_id: z.uuid(),
+  expected_revision: z.number().int().positive(),
+  reason: z.string().trim().min(1).max(500),
 }).strict();
 
 export const IssueWorkflowRejectionKindSchema: z.ZodType<IssueWorkflowRejectionKind> = z.enum([

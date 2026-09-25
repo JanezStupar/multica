@@ -56,11 +56,13 @@
         "docs/multica-linux-branch-lane-rollout.md": "3275fd4b8a58cfc926de21ba3a98f6b8aa70003cd17946e908eb4b3a8ac21136",
         "docs/multica-workflow.md": "6bd49c8c53231db1fedc9eecf0907c2623282d401e0d71caba96209bbedab286",
         "scripts/prepare-mica-agent-handoff": null,
+        "scripts/reconcile-mica-agent-definitions": null,
         "scripts/test_prepare_mica_agent_handoff.py": null,
+        "scripts/test_reconcile_mica_agent_definitions.py": null,
         "scripts/test_trackself_agent_definitions.py": "5851b8c891da7955eda37f1997b9f6f9883eabd1d57f2528f0ea2dc38d57b970",
         "scripts/trackself-agent-definitions": "cc36b73c516605162b4400d3b62297d5aeed370611d94f7d6ed34647a05e0ab0"
       },
-      "patch_sha256": "ae3ab88fac7b94706d3f35fbff3b3e22a67f30083094b612c1e9bc47e38b21b2"
+      "patch_sha256": "305c3f56146731c03574cb024e44b54ede24a7b72286aaba1cbf9ef920dc3220"
     }
   }
 }

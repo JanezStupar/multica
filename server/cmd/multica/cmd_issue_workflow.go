@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -28,6 +29,14 @@ type issueWorkflowAcceptanceInput struct {
 	ExpectedRevision     int64    `json:"expected_revision"`
 	ClassificationReason string   `json:"classification_reason,omitempty"`
 	MergeOrderPRURLs     []string `json:"merge_order_pr_urls,omitempty"`
+	OutcomeComplete      *bool    `json:"outcome_complete,omitempty"`
+	HoldDelivery         *bool    `json:"hold_delivery,omitempty"`
+}
+
+type issueWorkflowAcceptanceDispositionInput struct {
+	CandidateID      string `json:"candidate_id"`
+	ExpectedRevision int64  `json:"expected_revision"`
+	Reason           string `json:"reason"`
 }
 
 type issueWorkflowRejectionInput struct {
@@ -71,7 +80,7 @@ func newIssueWorkflowCommand() *cobra.Command {
 	}
 	workflow.AddCommand(get)
 	var exceptionCommand *cobra.Command
-	for _, action := range []string{"review", "accept", "reject", "exception", "delivery-retry"} {
+	for _, action := range []string{"review", "accept", "reject", "exception", "delivery-retry", "hold", "release", "complete", "retry-outcome"} {
 		action := action
 		use := action + " <issue-id>"
 		args := cobra.ExactArgs(1)
@@ -88,16 +97,26 @@ func newIssueWorkflowCommand() *cobra.Command {
 		}
 		if action == "accept" {
 			command.Long = "Accept the current workflow candidate using a revision-bound JSON request from --file or stdin. " +
-				"Use candidate.id and issue_revision from `multica issue workflow get`. " +
+				"Use candidate.id and issue_revision from `multica issue workflow get`. Format-2 policies require outcome_complete; omit it only for legacy format-1 policies. " +
 				"A human acceptor sends candidate_id and expected_revision. An authorized autonomous agent also supplies a non-empty classification_reason explaining why the change is trivial; its request is pending until the source task completes successfully. " +
+				"Set outcome_complete only when the ticket's actual requirements are complete; required PR merges remain server-gated. Set hold_delivery to true to keep accepted work in PR Ready without merging; PR readiness checks may still proceed. " +
 				"Include merge_order_pr_urls only when delivery_preview.requires_order is true, listing every candidate PR URL in the intended order. Unknown fields and trailing JSON are rejected."
 			command.Example = `  Human acceptance JSON:
-  {"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4}
+	{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"outcome_complete":false}
 
-  Autonomous acceptance JSON:
-  {"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"classification_reason":"Scoped trivial change with completed independent review"}
+	Autonomous acceptance JSON:
+	{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"classification_reason":"Scoped trivial change with completed independent review","outcome_complete":false}
 
-  Add "merge_order_pr_urls":["https://git.example.com/team/app/pulls/7","https://git.example.com/team/app/pulls/8"] when the delivery preview requires an explicit PR order.`
+	Accept and hold delivery:
+	{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"outcome_complete":false,"hold_delivery":true}
+
+	Add "merge_order_pr_urls":["https://git.example.com/team/app/pulls/7","https://git.example.com/team/app/pulls/8"] when the delivery preview requires an explicit PR order.`
+		}
+		if isIssueWorkflowAcceptanceAction(action) {
+			command.Flags().String("acceptance-id", "", "Accepted workflow record UUID")
+			_ = command.MarkFlagRequired("acceptance-id")
+			command.Long = issueWorkflowAcceptanceDispositionHelp(action)
+			command.Example = "  {\"candidate_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"expected_revision\":4,\"reason\":\"" + issueWorkflowDispositionExampleReason(action) + "\"}"
 		}
 		command.Flags().String("file", "", "Workflow request JSON file, or - to read JSON from stdin")
 		command.Flags().Bool("allow-external-file", false, "Allow --file to read a path outside the current working directory")
@@ -132,6 +151,12 @@ func runIssueWorkflow(cmd *cobra.Command, args []string, action string) error {
 				return fmt.Errorf("delivery ID must be a UUID")
 			}
 			return fmt.Errorf("exception ID must be a UUID")
+		}
+	}
+	if isIssueWorkflowAcceptanceAction(action) {
+		acceptanceID, _ := cmd.Flags().GetString("acceptance-id")
+		if _, err := util.ParseUUID(acceptanceID); err != nil {
+			return fmt.Errorf("acceptance ID must be a UUID")
 		}
 	}
 	var input any
@@ -173,6 +198,9 @@ func runIssueWorkflow(cmd *cobra.Command, args []string, action string) error {
 			path += "/reviews"
 		case "accept":
 			path += "/acceptances"
+		case "hold", "release", "complete", "retry-outcome":
+			acceptanceID, _ := cmd.Flags().GetString("acceptance-id")
+			path += "/acceptances/" + url.PathEscape(acceptanceID) + "/" + action
 		case "reject":
 			path += "/rejections"
 		case "exception":
@@ -230,6 +258,8 @@ func decodeIssueWorkflowInput(data []byte, action string) (any, error) {
 		input = &issueWorkflowReviewInput{}
 	case "accept":
 		input = &issueWorkflowAcceptanceInput{}
+	case "hold", "release", "complete", "retry-outcome":
+		input = &issueWorkflowAcceptanceDispositionInput{}
 	case "reject":
 		input = &issueWorkflowRejectionInput{}
 	case "exception":
@@ -257,6 +287,8 @@ func decodeIssueWorkflowInput(data []byte, action string) (any, error) {
 		err = validateIssueWorkflowReview(typed)
 	case *issueWorkflowAcceptanceInput:
 		err = validateIssueWorkflowAcceptance(typed)
+	case *issueWorkflowAcceptanceDispositionInput:
+		err = validateIssueWorkflowAcceptanceDisposition(typed)
 	case *issueWorkflowRejectionInput:
 		err = validateIssueWorkflowRejection(typed)
 	case *issueWorkflowExceptionInput:
@@ -314,6 +346,58 @@ func validateIssueWorkflowAcceptance(input *issueWorkflowAcceptanceInput) error 
 	}
 	if len(input.MergeOrderPRURLs) > 20 {
 		return fmt.Errorf("merge_order_pr_urls must contain at most 20 PR URLs")
+	}
+	return nil
+}
+
+func issueWorkflowAcceptanceDispositionHelp(action string) string {
+	switch action {
+	case "hold":
+		return "Place a durable delivery hold on this exact accepted candidate. This blocks merging while the issue remains PR Ready; required PR readiness checks may still proceed. Retries and restarts preserve the hold until an authorized release. Reads candidate_id, expected_revision and a reason from --file or stdin."
+	case "release":
+		return "Release the durable hold for this exact acceptance and candidate so authorized delivery can proceed. The release is bound to the acceptance ID, candidate and issue revision; it does not authorize a later candidate. Reads candidate_id, expected_revision and a reason from --file or stdin."
+	case "complete":
+		return "Acknowledge that the accepted ticket's actual outcome is complete after its requirements are satisfied. The server still gates completion on all required PR merges. Reads candidate_id, expected_revision and a reason from --file or stdin."
+	case "retry-outcome":
+		return "Retry creation or dispatch of the stored outcome task after it failed or was cancelled. This human recovery action creates exactly one new task and preserves the earlier task history; the server enforces the recovery boundary. Reads candidate_id, expected_revision and a reason from --file or stdin."
+	default:
+		return ""
+	}
+}
+
+func issueWorkflowDispositionExampleReason(action string) string {
+	switch action {
+	case "hold":
+		return "Hold delivery until the deployment window"
+	case "release":
+		return "Approved delivery can proceed"
+	case "complete":
+		return "The ticket requirements are complete"
+	case "retry-outcome":
+		return "The stored outcome task failed and needs recovery"
+	default:
+		return "Reason"
+	}
+}
+
+func isIssueWorkflowAcceptanceAction(action string) bool {
+	switch action {
+	case "hold", "release", "complete", "retry-outcome":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateIssueWorkflowAcceptanceDisposition(input *issueWorkflowAcceptanceDispositionInput) error {
+	if err := validateIssueWorkflowIdentity(input.CandidateID, input.ExpectedRevision); err != nil {
+		return err
+	}
+	if input.Reason = strings.TrimSpace(input.Reason); input.Reason == "" {
+		return fmt.Errorf("reason is required")
+	}
+	if utf8.RuneCountInString(input.Reason) > 500 {
+		return fmt.Errorf("reason must be at most 500 Unicode code points")
 	}
 	return nil
 }

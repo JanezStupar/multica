@@ -20,15 +20,48 @@ func TestIssueWorkflowAcceptHelpShowsBothRequestShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4}`,
-		`"classification_reason":"Scoped trivial change with completed independent review"`,
+		`{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"outcome_complete":false}`,
+		`"classification_reason":"Scoped trivial change with completed independent review","outcome_complete":false`,
+		`"outcome_complete":false,"hold_delivery":true`,
 		`"merge_order_pr_urls"`,
 		"delivery_preview.requires_order",
 		"pending until the source task completes successfully",
+		"Format-2 policies require outcome_complete",
+		"required PR merges remain server-gated",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("accept help lacks %q: %s", want, out.String())
 		}
+	}
+}
+
+func TestIssueWorkflowDispositionHelpExplainsStateBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		action string
+		want   []string
+	}{
+		{action: "hold", want: []string{"blocks merging", "remains PR Ready", "readiness checks may still proceed", "Retries and restarts preserve the hold"}},
+		{action: "release", want: []string{"exact acceptance and candidate", "does not authorize a later candidate"}},
+		{action: "complete", want: []string{"actual outcome is complete", "server still gates completion on all required PR merges"}},
+		{action: "retry-outcome", want: []string{"failed or was cancelled", "exactly one new task", "preserves the earlier task history", "server enforces the recovery boundary"}},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			cmd := newIssueWorkflowCommand()
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetArgs([]string{tc.action, "--help"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("%s help lacks %q: %s", tc.action, want, out.String())
+				}
+			}
+			if !strings.Contains(out.String(), "--acceptance-id") || !strings.Contains(out.String(), "--file") {
+				t.Fatalf("%s help must show acceptance and request flags: %s", tc.action, out.String())
+			}
+		})
 	}
 }
 
@@ -41,8 +74,48 @@ func TestIssueWorkflowAcceptValidationKeepsHumanShapeAndRejectsOversizedReason(t
 	if err != nil || input.(*issueWorkflowAcceptanceInput).ClassificationReason != "Narrow change" {
 		t.Fatalf("autonomous reason was not normalized: %#v, %v", input, err)
 	}
+	format2, err := decodeIssueWorkflowInput([]byte(`{"candidate_id":"`+candidateID+`","expected_revision":4,"outcome_complete":false,"hold_delivery":true}`), "accept")
+	if err != nil {
+		t.Fatalf("format-2 acceptance fields should be accepted: %v", err)
+	}
+	format2Body, err := json.Marshal(format2)
+	if err != nil || !strings.Contains(string(format2Body), `"outcome_complete":false`) || !strings.Contains(string(format2Body), `"hold_delivery":true`) {
+		t.Fatalf("format-2 acceptance fields were not preserved: %s, %v", format2Body, err)
+	}
 	if _, err := decodeIssueWorkflowInput([]byte(`{"candidate_id":"`+candidateID+`","expected_revision":4,"classification_reason":"`+strings.Repeat("x", 2001)+`"}`), "accept"); err == nil || !strings.Contains(err.Error(), "classification_reason") {
 		t.Fatalf("oversized reason should identify the field: %v", err)
+	}
+}
+
+func TestIssueWorkflowAcceptanceDispositionRequiresCandidateRevisionAndReason(t *testing.T) {
+	const candidateID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	valid := `{"candidate_id":"` + candidateID + `","expected_revision":4,"reason":" Complete the outcome "}`
+	for _, action := range []string{"hold", "release", "complete", "retry-outcome"} {
+		t.Run(action, func(t *testing.T) {
+			input, err := decodeIssueWorkflowInput([]byte(valid), action)
+			if err != nil || input.(*issueWorkflowAcceptanceDispositionInput).Reason != "Complete the outcome" {
+				t.Fatalf("valid disposition was not normalized: %#v, %v", input, err)
+			}
+			for _, invalid := range []string{
+				`{"candidate_id":"` + candidateID + `","expected_revision":4}`,
+				`{"candidate_id":"` + candidateID + `","expected_revision":4,"reason":" "}`,
+				`{"candidate_id":"` + candidateID + `","expected_revision":4,"reason":"ok","unexpected":true}`,
+			} {
+				if _, err := decodeIssueWorkflowInput([]byte(invalid), action); err == nil {
+					t.Fatalf("invalid %s disposition unexpectedly accepted: %s", action, invalid)
+				}
+			}
+			longCJKReason := strings.Repeat("界", 500)
+			validBoundary := `{"candidate_id":"` + candidateID + `","expected_revision":4,"reason":"` + longCJKReason + `"}`
+			if _, err := decodeIssueWorkflowInput([]byte(validBoundary), action); err != nil {
+				t.Fatalf("500-code-point CJK reason should be accepted for %s: %v", action, err)
+			}
+			tooLongCJKReason := strings.Repeat("界", 501)
+			invalidBoundary := `{"candidate_id":"` + candidateID + `","expected_revision":4,"reason":"` + tooLongCJKReason + `"}`
+			if _, err := decodeIssueWorkflowInput([]byte(invalidBoundary), action); err == nil || !strings.Contains(err.Error(), "500 Unicode code points") {
+				t.Fatalf("501-code-point CJK reason should be rejected for %s: %v", action, err)
+			}
+		})
 	}
 }
 
@@ -51,9 +124,11 @@ func TestIssueWorkflowCLIActions(t *testing.T) {
 	const candidateID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 	const exceptionID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 	const deliveryID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	const acceptanceID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 	workflowResponse := `{"issue_id":"` + issueID + `","issue_revision":4,"frozen":false,"policy_version":"sha256:policy","candidate":null,"reviews":[],"acceptance":null,"delivery":[],"retained_context_options":[],"available_actions":{"accept_human":true,"reject":true,"request_trivial_acceptance":false,"waive_review":false}}`
 	cases := []struct {
 		name, action, path, input string
+		acceptanceID              string
 		wantMethod                string
 		wantBody                  map[string]any
 	}{
@@ -67,6 +142,21 @@ func TestIssueWorkflowCLIActions(t *testing.T) {
 		{name: "accept", path: "/api/issues/" + issueID + "/workflow/acceptances", wantMethod: http.MethodPost,
 			input:    `{"candidate_id":"` + candidateID + `","expected_revision":4}`,
 			wantBody: map[string]any{"candidate_id": candidateID, "expected_revision": float64(4)}},
+		{name: "accept format 2", action: "accept", path: "/api/issues/" + issueID + "/workflow/acceptances", wantMethod: http.MethodPost,
+			input:    `{"candidate_id":"` + candidateID + `","expected_revision":4,"outcome_complete":false,"hold_delivery":true}`,
+			wantBody: map[string]any{"candidate_id": candidateID, "expected_revision": float64(4), "outcome_complete": false, "hold_delivery": true}},
+		{name: "hold", path: "/api/issues/" + issueID + "/workflow/acceptances/" + acceptanceID + "/hold", acceptanceID: acceptanceID, wantMethod: http.MethodPost,
+			input:    `{"candidate_id":"` + candidateID + `","expected_revision":4,"reason":" Hold delivery "}`,
+			wantBody: map[string]any{"candidate_id": candidateID, "expected_revision": float64(4), "reason": "Hold delivery"}},
+		{name: "release", path: "/api/issues/" + issueID + "/workflow/acceptances/" + acceptanceID + "/release", acceptanceID: acceptanceID, wantMethod: http.MethodPost,
+			input:    `{"candidate_id":"` + candidateID + `","expected_revision":4,"reason":" Release hold "}`,
+			wantBody: map[string]any{"candidate_id": candidateID, "expected_revision": float64(4), "reason": "Release hold"}},
+		{name: "complete", path: "/api/issues/" + issueID + "/workflow/acceptances/" + acceptanceID + "/complete", acceptanceID: acceptanceID, wantMethod: http.MethodPost,
+			input:    `{"candidate_id":"` + candidateID + `","expected_revision":4,"reason":" Outcome complete "}`,
+			wantBody: map[string]any{"candidate_id": candidateID, "expected_revision": float64(4), "reason": "Outcome complete"}},
+		{name: "retry-outcome", path: "/api/issues/" + issueID + "/workflow/acceptances/" + acceptanceID + "/retry-outcome", acceptanceID: acceptanceID, wantMethod: http.MethodPost,
+			input:    `{"candidate_id":"` + candidateID + `","expected_revision":4,"reason":" Retry outcome "}`,
+			wantBody: map[string]any{"candidate_id": candidateID, "expected_revision": float64(4), "reason": "Retry outcome"}},
 		{name: "reject", path: "/api/issues/" + issueID + "/workflow/rejections", wantMethod: http.MethodPost,
 			input:    `{"candidate_id":"` + candidateID + `","expected_revision":4,"kind":"scope_change","reason":" New work "}`,
 			wantBody: map[string]any{"candidate_id": candidateID, "expected_revision": float64(4), "kind": "scope_change", "reason": "New work"}},
@@ -113,6 +203,8 @@ func TestIssueWorkflowCLIActions(t *testing.T) {
 				args = []string{"exception", "revoke", issueID, exceptionID, "--file", writeWorkflowFixture(t, tc.input)}
 			} else if tc.name == "delivery retry" {
 				args = []string{"delivery-retry", issueID, deliveryID, "--file", writeWorkflowFixture(t, tc.input)}
+			} else if tc.acceptanceID != "" {
+				args = append(args, "--acceptance-id", tc.acceptanceID, "--file", writeWorkflowFixture(t, tc.input))
 			} else if tc.name != "get" {
 				args = append(args, "--file", writeWorkflowFixture(t, tc.input))
 			}

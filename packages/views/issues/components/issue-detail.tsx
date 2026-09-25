@@ -2126,7 +2126,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           workflowSnapshot?.available_actions.accept_human === true && !workflowSnapshot.frozen &&
           workflowSnapshot.acceptance_blockers.length === 0 &&
           !!workflowSnapshot.delivery_preview && !requiresExplicitOrder;
-        if (canAcceptDisplayedCandidate) {
+        if (canAcceptDisplayedCandidate && !workflowSnapshot.accepted_status_key) {
           acceptWorkflowCandidate({
             candidate_id: candidate.id,
             expected_revision: workflowSnapshot.issue_revision,

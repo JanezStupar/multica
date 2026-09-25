@@ -56,6 +56,9 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 	state.IssueRevision = issue.Revision
 	state.Frozen = issue.WorkflowFrozen
 	state.PolicyVersion = policy.Version
+	if authority.FormatVersion == 2 {
+		state.AcceptedStatusKey = authority.AcceptedStatusKey
+	}
 	if issue.WorkflowCandidateID.Valid {
 		var digest, scope, writer string
 		var prSet []byte
@@ -108,10 +111,15 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 	var classification pgtype.Text
 	var acceptanceBlocker pgtype.Text
 	var a WorkflowAcceptanceView
-	err = tx.QueryRow(ctx, `SELECT id,candidate_id::text,state,mode,classification_reason,requested_at,accepted_at,last_error_class
+	var outcomeAt pgtype.Timestamptz
+	var outcomeTask pgtype.UUID
+	var outcomeRequest pgtype.UUID
+	err = tx.QueryRow(ctx, `SELECT id,candidate_id::text,state,mode,classification_reason,requested_at,accepted_at,last_error_class,
+		hold_delivery,outcome_complete,outcome_completed_at,outcome_task_id,outcome_request_task_id
 		FROM issue_workflow_acceptance WHERE workspace_id=$1 AND issue_id=$2
 		ORDER BY requested_at DESC,id DESC LIMIT 1`, workspaceID, issue.ID).Scan(
-		&acceptanceID, &a.CandidateID, &a.State, &a.Mode, &classification, &a.RequestedAt, &acceptedAt, &acceptanceBlocker)
+		&acceptanceID, &a.CandidateID, &a.State, &a.Mode, &classification, &a.RequestedAt, &acceptedAt, &acceptanceBlocker,
+		&a.HoldDelivery, &a.OutcomeComplete, &outcomeAt, &outcomeTask, &outcomeRequest)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return state, err
 	}
@@ -122,6 +130,21 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 		if acceptedAt.Valid {
 			t := acceptedAt.Time
 			a.AcceptedAt = &t
+		}
+		if outcomeAt.Valid {
+			t := outcomeAt.Time
+			a.OutcomeCompletedAt = &t
+		}
+		if outcomeTask.Valid {
+			a.OutcomeTaskID = util.UUIDToString(outcomeTask)
+			var taskStatus string
+			if err := tx.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id=$1 AND issue_id=$2`,
+				outcomeTask, issue.ID).Scan(&taskStatus); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return state, err
+			}
+			a.OutcomeTaskActive = taskStatus == "queued" || taskStatus == "deferred" || taskStatus == "dispatched" ||
+				taskStatus == "running" || taskStatus == "waiting_local_directory"
+			a.OutcomePending = outcomeRequest.Valid && !a.OutcomeComplete && taskStatus != "failed" && taskStatus != "cancelled"
 		}
 		state.Acceptance = &a
 		rows, queryErr := tx.Query(ctx, `SELECT id::text,ordinal,pr_url,expected_head_sha,action,merge_method,status,
@@ -157,7 +180,7 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 		}
 		rows.Close()
 	}
-	if actor.Type == "member" && !issue.WorkflowFrozen && issue.Status == "done" &&
+	if actor.Type == "member" && !issue.WorkflowFrozen && (issue.Status == "done" || authority.FormatVersion == 2 && issue.Status == authority.AcceptedStatusKey) &&
 		state.Candidate != nil && state.Acceptance != nil && state.Acceptance.State == "accepted" &&
 		state.Acceptance.CandidateID == state.Candidate.ID && len(state.Delivery) > 0 {
 		candidate, candidateErr := loadCurrentWorkflowCandidate(ctx, tx, issue, policy.Version)
@@ -267,6 +290,13 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 			if candidateErr != nil {
 				block("scope_changed")
 			} else {
+				stale, err := workflowCandidateStale(ctx, tx, issue, candidate.ID)
+				if err != nil {
+					return state, err
+				}
+				if stale {
+					block("candidate_head_changed")
+				}
 				var writerStatus string
 				if err := tx.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id=$1 AND issue_id=$2`,
 					candidate.WriterTaskID, issue.ID).Scan(&writerStatus); err != nil || writerStatus != "completed" {
@@ -386,7 +416,8 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 			}
 			state.AvailableActions.AcceptHuman = allowed && ownsHumanHandoff && canAttempt
 			state.AvailableActions.Reject = !issue.WorkflowFrozen && !active &&
-				(issue.Status == "in_review" || issue.Status == "done") &&
+				(issue.Status == "in_review" || issue.Status == "done" ||
+					authority.FormatVersion == 2 && issue.Status == authority.AcceptedStatusKey) &&
 				(ownsHumanHandoff || role == "owner" || role == "admin")
 			state.AvailableActions.WaiveReview = !issue.WorkflowFrozen && (role == "owner" || role == "admin")
 		}
@@ -404,6 +435,52 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 		state.AvailableActions.RequestTrivialAcceptance = allowed && canAttempt &&
 			taskErr == nil && agentID == issue.AssigneeID && taskID.Valid && issue.Status == "in_review"
 		state.AvailableActions.WaiveReview = !issue.WorkflowFrozen && authority.SupervisorAgentScopes[actor.ID]["review"]
+	}
+	if authority.FormatVersion == 2 && state.Acceptance != nil && state.Acceptance.State == "accepted" &&
+		state.Candidate != nil && state.Acceptance.CandidateID == state.Candidate.ID &&
+		issue.Status == authority.AcceptedStatusKey && !issue.WorkflowFrozen {
+		if actor.Type == "member" {
+			role, memberID, roleErr := workflowMemberRole(ctx, tx, workspaceID, actor)
+			if roleErr == nil {
+				var acceptedType string
+				var acceptedID pgtype.UUID
+				if err := tx.QueryRow(ctx, `SELECT actor_type,actor_id FROM issue_workflow_acceptance WHERE id=$1`, acceptanceID).
+					Scan(&acceptedType, &acceptedID); err != nil {
+					return state, err
+				}
+				allowed := role == "owner" || role == "admin" || acceptedType == "member" && acceptedID == memberID
+				pendingMerge := false
+				for _, d := range state.Delivery {
+					pendingMerge = pendingMerge || d.Action == "merge" && (d.Status == "pending" || d.Status == "retry" || d.Status == "blocked")
+				}
+				state.AvailableActions.HoldDelivery = allowed && !state.Acceptance.HoldDelivery && pendingMerge
+				state.AvailableActions.ReleaseDelivery = allowed && state.Acceptance.HoldDelivery
+				state.AvailableActions.CompleteOutcome = allowed && !state.Acceptance.OutcomeComplete
+				state.AvailableActions.RetryOutcome = allowed && !state.Acceptance.OutcomeComplete &&
+					state.Acceptance.OutcomeTaskID == "" && state.Acceptance.Blocker == "outcome_dispatch_failed"
+				if allowed && !state.Acceptance.OutcomeComplete && state.Acceptance.OutcomeTaskID != "" {
+					var outcomeStatus string
+					if err := tx.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id=$1 AND issue_id=$2`,
+						mustAuthorityUUID(state.Acceptance.OutcomeTaskID), issue.ID).Scan(&outcomeStatus); err != nil {
+						return state, err
+					}
+					state.AvailableActions.CompleteOutcome = outcomeStatus != "dispatched" && outcomeStatus != "running" &&
+						outcomeStatus != "waiting_local_directory"
+					state.AvailableActions.RetryOutcome = outcomeStatus == "failed" || outcomeStatus == "cancelled"
+				}
+			}
+		} else if actor.Type == "agent" && state.Acceptance.OutcomeTaskID == actor.SourceTaskID {
+			var taskStatus string
+			var taskPolicy pgtype.Text
+			var taskProfile pgtype.UUID
+			if err := tx.QueryRow(ctx, `SELECT status,workflow_policy_version,workflow_profile_id
+				FROM agent_task_queue WHERE id=$1 AND issue_id=$2 AND agent_id=$3`,
+				mustAuthorityUUID(actor.SourceTaskID), issue.ID, mustAuthorityUUID(actor.ID)).Scan(
+				&taskStatus, &taskPolicy, &taskProfile); err == nil {
+				state.AvailableActions.CompleteOutcome = taskStatus == "running" && taskPolicy.Valid &&
+					taskPolicy.String == policy.Version && taskProfile.Valid && !state.Acceptance.OutcomeComplete
+			}
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return state, err

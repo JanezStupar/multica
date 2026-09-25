@@ -468,3 +468,32 @@ This disables the handoff and cancels its unstarted recipient task when
 possible. A recipient already running continues; use
 `multica issue cancel-task <run-id>` to stop that run. The durable history
 remains available from `multica issue handoff list <issue-id>`.
+
+## Candidate acceptance and completion
+
+`multica issue workflow get <issue-id>` shows the pinned workflow's candidate,
+revision, acceptance and available actions. Requests bind to that candidate and
+revision; read each command's `--help` for its JSON shape. Keep technical feedback
+in PR reviews and link them from the ticket.
+
+A workflow with `accepted_status_key` separates acceptance from completion.
+Its acceptance request includes `outcome_complete` and may set `hold_delivery`.
+Acceptance permits delivery; it does not prove merge or outcome completion.
+A durable hold blocks merge while allowing readiness. New commits need renewed evaluation.
+
+After acceptance, authorized actors can use:
+
+```bash
+multica issue workflow hold <issue-id> --acceptance-id <uuid> --file action.json
+multica issue workflow release <issue-id> --acceptance-id <uuid> --file action.json
+multica issue workflow complete <issue-id> --acceptance-id <uuid> --file action.json
+multica issue workflow retry-outcome <issue-id> --acceptance-id <uuid> --file action.json
+```
+
+Each action file supplies `candidate_id`, `expected_revision` and a nonempty `reason`.
+Reread conflicts; never silently change the revision on a stale request. Release
+permits delivery but does not itself merge. An agent's outcome acknowledgment
+remains pending until that exact task succeeds; failed or cancelled work cannot
+complete the issue. Done requires both delivery and outcome gates to pass.
+`retry-outcome` lets authorized humans retry failed outcome work without erasing
+history. Earlier pinned versions retain their original acceptance behavior.

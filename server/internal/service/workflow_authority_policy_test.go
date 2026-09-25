@@ -30,6 +30,9 @@ func TestWorkflowAuthorityPolicyRejectsMalformedOrImplicitGrants(t *testing.T) {
 		`{"format_version":1,"delivery":{"merge_method":"fast-forward"}}`,
 		`{"format_version":1,"supervisors":[{"agent_id":"bad","scopes":["delivery"]}]}`,
 		`{"format_version":1}{"format_version":1}`,
+		`{"format_version":2,"accepted_status_key":" pr_ready ","outcome_agent_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}`,
+		`{"format_version":2,"accepted_status_key":"\tpr_ready\n","outcome_agent_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}`,
+		`{"format_version":2,"accepted_status_key":"\u2003pr_ready","outcome_agent_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}`,
 	} {
 		t.Run(strings.ReplaceAll(content, "/", "_"), func(t *testing.T) {
 			_, err := ParseWorkflowAuthorityPolicy(AgentSkillData{Files: []AgentSkillFileData{{Path: "runtime/policy.json", Content: content}}})

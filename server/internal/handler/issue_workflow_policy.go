@@ -105,6 +105,11 @@ func (h *Handler) EnrollIssueWorkflowPolicy(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	authority, err := service.ParseWorkflowAuthorityPolicy(policy.Bundle)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	encoded, err := json.Marshal(policy)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to encode workflow policy")
@@ -194,6 +199,17 @@ func (h *Handler) EnrollIssueWorkflowPolicy(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		writeJSON(w, http.StatusOK, existing)
+		return
+	}
+	lockedIssue, err := qtx.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+		ID: issue.ID, WorkspaceID: issue.WorkspaceID,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load issue for policy validation")
+		return
+	}
+	if err := service.ValidateWorkflowCompletionConfig(r.Context(), tx, lockedIssue, authority); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	if _, err := qtx.PinIssueWorkflowPolicy(r.Context(), db.PinIssueWorkflowPolicyParams{

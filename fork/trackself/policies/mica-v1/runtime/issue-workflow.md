@@ -1,9 +1,7 @@
-This source is a draft for the next policy version. Do not activate it until
-`PR Ready`/`Done`, persistent holds and the concrete authority bindings are
-implemented and proven. The released workflow currently marks acceptance
-`done`; the commands below document that release's API, not proof of the revised
-completion semantics. Do not emulate the new semantics through manual status
-writes or unsupported flags. Existing tickets follow their pinned version.
+This policy requires format-2 completion support; v0.5.1-janez.1 is insufficient.
+Use the workflow commands below for acceptance, persistent holds and completion.
+Existing tickets follow their pinned version until explicitly migrated at the
+authorized workspace boundary.
 
 For a Trackself issue, whether you are Mica, an implementor, a reviewer or
 another assigned role, understand the requested outcome, current phase,
@@ -37,6 +35,22 @@ multiple PRs, `merge_order_pr_urls`; inspect `workflow accept --help` for the
 request shape and finish successfully after requesting acceptance. For an in-scope defect, select `resume_task_id` only from the
 returned retained context options. Put technical findings and verdict details
 in the PR review, then link it from the ticket.
+
+For this format-2 policy, acceptance must state `outcome_complete`: true only
+when the requested outcome is already established, otherwise false. Human
+acceptance permits automatic merge unless explicitly held. Use `hold_delivery`
+on acceptance or `workflow hold` afterwards to record a durable hold; use
+`workflow release` to lift it. These post-acceptance commands require the
+acceptance ID, exact candidate, current revision and a reason. PR readiness may
+proceed while held. Never promise that a hold succeeded until the API confirms
+it; an already executing merge may prevent the hold.
+
+Accepted work stays PR Ready until required PRs merge and the actual outcome is
+complete. If outcome work remains after merge, Multica dispatches it to the
+policy's pinned Mica. Inspect the merged revisions and required evidence before
+requesting `workflow complete`; an agent's request becomes effective only when
+that authorized outcome task succeeds. A successful implementation, acceptance
+or merge alone does not prove a deployment, migration or validation outcome.
 
 Read `references/workflow.md` and the repository-owned requirements or
 decisions relevant to the task. For Multica command effects, open only the

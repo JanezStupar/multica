@@ -11,6 +11,7 @@ import {
   RejectIssueWorkflowRequestSchema,
   RevokeIssueWorkflowExceptionRequestSchema,
   RetryIssueWorkflowDeliveryRequestSchema,
+  UpdateIssueWorkflowAcceptanceRequestSchema,
   WorkspaceWorkflowDefaultSchema,
   WorkspaceWorkflowCutoverResultSchema,
   IssueWorkflowMigrationRequestSchema,
@@ -24,6 +25,7 @@ import {
   type RejectIssueWorkflowRequest,
   type RevokeIssueWorkflowExceptionRequest,
   type RetryIssueWorkflowDeliveryRequest,
+  type UpdateIssueWorkflowAcceptanceRequest,
   type WorkspaceWorkflowDefault,
   type WorkspaceWorkflowCutoverResult,
   type IssueWorkflowMigrationRequest,
@@ -1414,6 +1416,18 @@ export class ApiClient {
       endpoint: "POST /api/issues/:id/workflow/acceptances",
     });
     if (!parsed) throw new Error("Could not accept issue workflow candidate");
+    return parsed;
+  }
+
+  async updateIssueWorkflowAcceptance(issueId: string, acceptanceId: string, action: "hold" | "release" | "complete" | "retry-outcome", input: UpdateIssueWorkflowAcceptanceRequest): Promise<IssueWorkflow> {
+    const request = UpdateIssueWorkflowAcceptanceRequestSchema.parse(input);
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/workflow/acceptances/${encodeURIComponent(acceptanceId)}/${action}`, {
+      method: "POST", body: JSON.stringify(request),
+    });
+    const parsed = parseWithFallback<IssueWorkflow | null>(raw, IssueWorkflowSchema, null, {
+      endpoint: `POST /api/issues/:id/workflow/acceptances/:acceptanceId/${action}`,
+    });
+    if (!parsed) throw new Error(`Could not ${action} issue workflow acceptance`);
     return parsed;
   }
 

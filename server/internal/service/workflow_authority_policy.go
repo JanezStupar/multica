@@ -16,6 +16,8 @@ import (
 // issue's pinned platform bundle hash.
 type WorkflowAuthorityPolicy struct {
 	FormatVersion         int
+	AcceptedStatusKey     string // format 2: active started status for accepted, unfinished work
+	OutcomeAgentID        string // format 2: coordinator for post-delivery outcome work
 	HumanAcceptRoles      []string
 	ReviewRequired        bool
 	HumanDelivery         string // ready or merge
@@ -36,8 +38,10 @@ func defaultWorkflowAuthorityPolicy() WorkflowAuthorityPolicy {
 }
 
 type workflowAuthorityFile struct {
-	FormatVersion *int `json:"format_version"`
-	Human         *struct {
+	FormatVersion     *int   `json:"format_version"`
+	AcceptedStatusKey string `json:"accepted_status_key"`
+	OutcomeAgentID    string `json:"outcome_agent_id"`
+	Human             *struct {
 		AcceptRoles []string `json:"accept_roles"`
 		Delivery    string   `json:"delivery"`
 	} `json:"human"`
@@ -92,8 +96,27 @@ func ParseWorkflowAuthorityPolicy(bundle AgentSkillData) (WorkflowAuthorityPolic
 	if err := dec.Decode(&extra); err != io.EOF {
 		return WorkflowAuthorityPolicy{}, errors.New("runtime/policy.json must contain one object")
 	}
-	if input.FormatVersion == nil || *input.FormatVersion != 1 {
+	if input.FormatVersion == nil || (*input.FormatVersion != 1 && *input.FormatVersion != 2) {
 		return WorkflowAuthorityPolicy{}, errors.New("unsupported runtime/policy.json format_version")
+	}
+	policy.FormatVersion = *input.FormatVersion
+	if policy.FormatVersion == 2 {
+		// The pinned JSON key is also compared by database lifecycle fences.
+		// Reject padded values rather than letting Go and SQL resolve different
+		// accepted statuses (including tabs and Unicode whitespace).
+		if input.AcceptedStatusKey != strings.TrimSpace(input.AcceptedStatusKey) {
+			return WorkflowAuthorityPolicy{}, errors.New("runtime/policy.json accepted_status_key must be canonical")
+		}
+		policy.AcceptedStatusKey = input.AcceptedStatusKey
+		policy.OutcomeAgentID = strings.TrimSpace(input.OutcomeAgentID)
+		if policy.AcceptedStatusKey == "" || policy.AcceptedStatusKey == "done" || policy.AcceptedStatusKey == "cancelled" {
+			return WorkflowAuthorityPolicy{}, errors.New("runtime/policy.json format 2 requires accepted_status_key")
+		}
+		if _, err := util.ParseUUID(policy.OutcomeAgentID); err != nil {
+			return WorkflowAuthorityPolicy{}, errors.New("runtime/policy.json format 2 requires outcome_agent_id UUID")
+		}
+	} else if input.AcceptedStatusKey != "" || input.OutcomeAgentID != "" {
+		return WorkflowAuthorityPolicy{}, errors.New("runtime/policy.json format 1 cannot set format 2 fields")
 	}
 	if input.Human != nil {
 		if input.Human.AcceptRoles != nil {

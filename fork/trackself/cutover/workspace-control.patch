@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index ced2ac3..34ce058 100644
+index ced2ac3..3bc39c2 100644
 --- a/README.md
 +++ b/README.md
 @@ -101,7 +101,9 @@ It never reaches into a private-infra checkout during normal Trackself work.
@@ -13,20 +13,17 @@ index ced2ac3..34ce058 100644
  model context and returns only the topmost eligible unassigned backlog parent
  for the declared lane. Lane desired state is in
  `config/multica-lanes.toml`; queue membership uses its exact label and visual
-@@ -127,16 +129,31 @@ python3 workspace-control/scripts/trackself-agent-definitions check
+@@ -127,16 +129,74 @@ python3 workspace-control/scripts/trackself-agent-definitions check
  ```
  
  `check` is read-only and requires the configured local Multica daemon or the
 -explicit native executable/profile pair. Live
 -reconciliation is deliberately separate: `apply` requires the exact workspace
 -UUID confirmation and must receive specific authority before execution. Normal
-+explicit native executable/profile pair. The old `apply` entry point is
-+disabled because its agent mutation CLI path is unproven against the current
-+provider. `config/mica-cutover-profile.toml` declares the inactive role
-+selection; `scripts/prepare-mica-agent-handoff` prints an offline update plan
-+only after receiving the final imported bundle's real skill UUID and name.
-+This plan requires a separately proven mutation path and full read-back before
-+any live use. Normal
++explicit native executable/profile pair. The old `apply` entry point remains
++disabled because it uses the removed `agent builtins` CLI. The separate Mica
++reconciler uses supported agent, skill, and built-in policy API endpoints.
++`config/mica-cutover-profile.toml` declares the inactive role selection. Normal
  workspace preflight validates the repository desired state offline; it never
  mutates or depends on live Multica state.
  
@@ -36,10 +33,56 @@ index ced2ac3..34ce058 100644
 +```sh
 +python3 workspace-control/scripts/prepare-mica-agent-handoff \
 +  --imported-skill-id <uuid-from-import> \
-+  --source-manifest <extracted-source-manifest.json> > /tmp/mica-agent-handoff.json
++  --source-manifest <extracted-source-manifest.json> \
++  --desired-state-out workspace-control/config/mica-agent-desired-state.json
 +```
 +
-+The JSON is an inactive plan, not an executable provider mutation.
++The resolved JSON is repository-owned desired state. It is created only after
++the final archive is imported, so no placeholder UUID or active binding is
++generated. It binds the complete policy bundle as the replacement for
++`builtin:multica-platform` and clears the old directly assigned skill. The
++five former Review Controllers remain untouched and are excluded from new
++routing. Review the file and commit it with the coordinated cutover.
++
++The guarded Linux reconciler requires an operator-supplied token file owned
++by the caller with mode 0600. It never reads agent environments or sends
++secrets in update bodies. Its `plan` is the preparatory call; `check`
++returns nonzero on drift; `apply` requires the exact workspace UUID. Each mode
++verifies the imported skill's name and embedded source manifest, then reads
++all 15 Linux agents before any mutation. An unexpected runtime, permission,
++credential-presence flag, direct skill, replacement, or non-idle agent stops
++the entire batch. Native hosts remain paused for their separate rollout.
++Agent edits span several API calls. For `apply`, first stop all three declared
++Linux daemons through the separately authorized runtime operation and verify
++their processes remain stopped. The reconciler requires
++`--confirm-linux-daemons-stopped` and independently reads all three exact
++runtime UUID/daemon bindings as `offline` before writes and before each agent.
++An offline heartbeat alone is not proof of a stopped daemon; the operator must
++keep them stopped until full read-back and the coordinated ticket/default
++cutover are complete, then restart them under the approved runbook.
++
++```sh
++python3 workspace-control/scripts/reconcile-mica-agent-definitions plan \
++  --desired-state workspace-control/config/mica-agent-desired-state.json \
++  --source-manifest <extracted-source-manifest.json> \
++  --api-url <multica-api-origin> --token-file <operator-token-0600>
++```
++
++At the authorized coordinated cutover, run the same command with `apply`
++plus `--confirm-workspace-id 79b97585-6d1d-43cc-a611-db7e2f4faa62` and
++`--confirm-linux-daemons-stopped` only after the daemon stop, offline runtime
++read-back and plan review. It performs a full
++read-back after each changed agent and stops on the first error; a failure can
++leave a partially reconciled batch and requires investigation before retry.
++
++```sh
++python3 workspace-control/scripts/reconcile-mica-agent-definitions apply \
++  --desired-state workspace-control/config/mica-agent-desired-state.json \
++  --source-manifest <extracted-source-manifest.json> \
++  --api-url <multica-api-origin> --token-file <operator-token-0600> \
++  --confirm-workspace-id 79b97585-6d1d-43cc-a611-db7e2f4faa62 \
++  --confirm-linux-daemons-stopped
++```
 +
  `has_custom_env` records only required presence for an operator-managed
  protected agent environment. Environment names and values remain outside
@@ -1032,7 +1075,7 @@ index 40744a3..5688e77 100644
 +bookkeeping do not establish product acceptance. Keep the user's scope and
 +external-state authority intact.
 diff --git a/docs/agent-routing.md b/docs/agent-routing.md
-index 000717a..eef5cd7 100644
+index 000717a..c264015 100644
 --- a/docs/agent-routing.md
 +++ b/docs/agent-routing.md
 @@ -38,8 +38,10 @@ detect its responsibility.
@@ -1048,7 +1091,7 @@ index 000717a..eef5cd7 100644
  Primary or the orchestrator selects Senior Implementor when substantial
  judgment is required; higher Luna effort does not compensate for unresolved
  architecture. Preserve runtime-local role identity and task/session continuity
-@@ -49,3 +51,25 @@ context-rich decisions and escalations.
+@@ -49,3 +51,27 @@ context-rich decisions and escalations.
  Measure total successful-completion cost, including retries and correction
  work, when evaluation is undertaken. The benchmark is a separate task; this
  change neither implements it nor claims comparative performance evidence.
@@ -1068,12 +1111,14 @@ index 000717a..eef5cd7 100644
 +specialist records remain present. This selection changes no current task.
 +
 +After the final `trackself-platform-*` archive is imported, use its actual
-+workspace-skill UUID with `scripts/prepare-mica-agent-handoff` to generate a
-+reviewable JSON handoff. The generator never calls Multica or guesses the UUID.
-+The legacy `trackself-agent-definitions apply` entry point is disabled until
-+its agent mutation path is proven against the current provider and a full
-+read-back is implemented. `validate` and read-only `check` remain available
-+for the existing manifest. Do not treat either as a Mica activation check.
++workspace-skill UUID with `scripts/prepare-mica-agent-handoff` to create the
++resolved `config/mica-agent-desired-state.json`. The generator never calls
++Multica or guesses the UUID. The full bundle replaces the enabled platform
++built-in; it is not also directly assigned. The separate
++`scripts/reconcile-mica-agent-definitions` uses supported API endpoints for
++Linux plan, check and explicit apply with full read-back. The legacy
++`trackself-agent-definitions apply` remains disabled. Its `validate` and
++read-only `check` still cover only the active legacy manifest.
 diff --git a/docs/multica-linux-branch-lane-rollout.md b/docs/multica-linux-branch-lane-rollout.md
 index 21efaf5..0f0cde9 100644
 --- a/docs/multica-linux-branch-lane-rollout.md
@@ -2150,10 +2195,10 @@ index cb31ab5..3510427 100644
 -checkout updates follow the separately scoped deployment authority.
 diff --git a/scripts/prepare-mica-agent-handoff b/scripts/prepare-mica-agent-handoff
 new file mode 100644
-index 0000000..ffa9ddd
+index 0000000..c38b9ee
 --- /dev/null
 +++ b/scripts/prepare-mica-agent-handoff
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,187 @@
 +#!/usr/bin/env python3
 +"""Print an offline, inactive Mica agent update handoff as JSON."""
 +
@@ -2164,6 +2209,7 @@ index 0000000..ffa9ddd
 +import importlib.machinery
 +import importlib.util
 +import json
++import os
 +import re
 +import tomllib
 +import uuid
@@ -2203,6 +2249,16 @@ index 0000000..ffa9ddd
 +        ):
 +            raise ValueError(f"source manifest has invalid {field}")
 +    skill_name = source["skill_name"]
++    # The current Multica platform combines the retired granular built-ins
++    # into these eight references. A replacement must preserve every domain.
++    required_files = {
++        "SKILL.md", "runtime/issue-workflow.md", "references/workflow.md",
++        "references/agents.md", "references/autopilots.md", "references/issues.md",
++        "references/mentions.md", "references/projects.md", "references/runtimes.md",
++        "references/skill-import.md", "references/squads.md",
++    }
++    if not required_files <= set(source["packaged_file_hashes_sha256"]):
++        raise ValueError("source manifest lacks the full platform replacement bundle")
 +    source_digest = hashlib.sha256(source_bytes).hexdigest()
 +    with PROFILE_PATH.open("rb") as stream:
 +        profile = tomllib.load(stream)
@@ -2274,10 +2330,11 @@ index 0000000..ffa9ddd
 +            "thinking_level": role_profile["thinking_level"],
 +            "service_tier": agent["service_tier"],
 +            "instructions": agent["instructions"],
-+            "skill_ids": [skill_id],
++            "skill_ids": [],
 +            "disabled_runtime_skill_ids": agent["disabled_runtime_skill_ids"],
 +            "builtin_skill_mode": "exact",
 +            "enabled_builtin_skill_ids": sorted(builtins),
++            "builtin_skill_replacements": {"builtin:multica-platform": skill_id},
 +            "max_concurrent_tasks": agent["max_concurrent_tasks"],
 +        })
 +    return {
@@ -2300,7 +2357,7 @@ index 0000000..ffa9ddd
 +        "required_before_apply": [
 +            "verify bundle source-manifest.json and importer return for this exact ID",
 +            "select and pin production policy defaults and authorized exceptions",
-+            "prove supported agent update API and full read-back, including skill and builtin bindings",
++            "verify supported agent update API and full read-back, including platform replacement",
 +            "preserve old agent records and ticket sessions; migrate old tickets explicitly",
 +        ],
 +    }
@@ -2310,9 +2367,18 @@ index 0000000..ffa9ddd
 +    parser = argparse.ArgumentParser(description=__doc__)
 +    parser.add_argument("--imported-skill-id", required=True)
 +    parser.add_argument("--source-manifest", required=True, type=Path)
++    parser.add_argument("--desired-state-out", type=Path,
++                        help="Create the persistent resolved desired state at this path")
 +    args = parser.parse_args()
 +    try:
-+        print(json.dumps(build_handoff(args.imported_skill_id, args.source_manifest), indent=2))
++        output = json.dumps(build_handoff(args.imported_skill_id, args.source_manifest), indent=2) + "\n"
++        if args.desired_state_out is None:
++            print(output, end="")
++        else:
++            descriptor = os.open(args.desired_state_out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
++            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
++                stream.write(output)
++            print(f"desired_state_written={args.desired_state_out}")
 +    except (ValueError, OSError, json.JSONDecodeError) as error:
 +        parser.error(str(error))
 +    return 0
@@ -2320,12 +2386,310 @@ index 0000000..ffa9ddd
 +
 +if __name__ == "__main__":
 +    raise SystemExit(main())
+diff --git a/scripts/reconcile-mica-agent-definitions b/scripts/reconcile-mica-agent-definitions
+new file mode 100755
+index 0000000..e05202d
+--- /dev/null
++++ b/scripts/reconcile-mica-agent-definitions
+@@ -0,0 +1,292 @@
++#!/usr/bin/env python3
++"""Check or explicitly apply the persisted Mica agent cutover on Linux."""
++
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.machinery
++import importlib.util
++import json
++import os
++import stat
++import sys
++import tomllib
++import urllib.error
++import urllib.parse
++import urllib.request
++from pathlib import Path
++from typing import Any
++
++ROOT = Path(__file__).resolve().parent.parent
++PREPARER = Path(__file__).with_name("prepare-mica-agent-handoff")
++LINUX = {"linux-container", "linux-branch", "linux-branch-2"}
++PLATFORM = "builtin:multica-platform"
++ENVIRONMENTS = ROOT / "config" / "multica-project-workspace.toml"
++
++
++class ReconcileError(Exception):
++    pass
++
++
++def load_desired(path: Path, source_manifest: Path) -> dict[str, Any]:
++    desired = json.loads(path.read_text())
++    if not isinstance(desired, dict) or desired.get("status") != "inactive_handoff_only":
++        raise ReconcileError("desired state must be a prepared inactive handoff")
++    imported = desired.get("imported_skill")
++    if not isinstance(imported, dict) or not isinstance(imported.get("id"), str):
++        raise ReconcileError("desired state lacks an imported skill ID")
++    loader = importlib.machinery.SourceFileLoader("mica_preparer", str(PREPARER))
++    spec = importlib.util.spec_from_loader(loader.name, loader)
++    assert spec is not None
++    module = importlib.util.module_from_spec(spec)
++    loader.exec_module(module)
++    if desired != module.build_handoff(imported["id"], source_manifest):
++        raise ReconcileError("desired state differs from the current profile or source manifest")
++    return desired
++
++
++def validate_url(value: str) -> str:
++    parsed = urllib.parse.urlsplit(value)
++    local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
++    if (parsed.scheme != "https" and not (parsed.scheme == "http" and local)) or not parsed.netloc or parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
++        raise ReconcileError("API URL must be an HTTPS origin or a local HTTP origin")
++    return value.rstrip("/")
++
++
++def read_token(path: Path) -> str:
++    info = path.stat()
++    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
++        raise ReconcileError("token file must be a regular file owned by this user with mode 0600")
++    token = path.read_text().strip()
++    if not token or any(ord(char) <= 32 for char in token):
++        raise ReconcileError("token file must contain one nonempty token")
++    return token
++
++
++class Client:
++    def __init__(self, origin: str, workspace_id: str, token: str):
++        self.origin = validate_url(origin)
++        self.workspace_id = workspace_id
++        self.token = token
++        class NoRedirect(urllib.request.HTTPRedirectHandler):
++            def redirect_request(self, request, fp, code, msg, headers, new_url):
++                return None
++        self.opener = urllib.request.build_opener(NoRedirect)
++
++    def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
++        data = None if body is None else json.dumps(body, separators=(",", ":")).encode()
++        request = urllib.request.Request(
++            self.origin + path,
++            data=data,
++            method=method,
++            headers={
++                "Authorization": "Bearer " + self.token,
++                "X-Workspace-ID": self.workspace_id,
++                "Content-Type": "application/json",
++            },
++        )
++        try:
++            with self.opener.open(request, timeout=20) as response:
++                raw = response.read(2_000_001)
++                if len(raw) > 2_000_000:
++                    raise ReconcileError(f"{method} {path}: response too large")
++                return json.loads(raw) if raw else None
++        except urllib.error.HTTPError as error:
++            raise ReconcileError(f"{method} {path}: HTTP {error.code}; response redacted") from error
++        except urllib.error.URLError as error:
++            raise ReconcileError(f"{method} {path}: connection failed; details redacted") from error
++
++
++def ids(rows: Any, label: str) -> list[str]:
++    if not isinstance(rows, list):
++        raise ReconcileError(f"{label} is not an array")
++    result = [row if isinstance(row, str) else row.get("id") if isinstance(row, dict) else None for row in rows]
++    if any(not isinstance(item, str) for item in result) or len(set(result)) != len(result):
++        raise ReconcileError(f"{label} has invalid or duplicate IDs")
++    return sorted(result)
++
++
++def verify_import(client: Client, desired: dict[str, Any], source_manifest: Path) -> None:
++    skill = desired["imported_skill"]
++    live = client.request("GET", "/api/skills/" + skill["id"] + "?include=metadata")
++    if not isinstance(live, dict) or live.get("id") != skill["id"] or live.get("workspace_id") != desired["workspace_id"] or live.get("name") != skill["name"]:
++        raise ReconcileError("imported skill identity does not match desired state")
++    files = live.get("files")
++    if not isinstance(files, list):
++        raise ReconcileError("imported skill files were not returned")
++    source_bytes = source_manifest.read_bytes()
++    packaged = json.loads(source_bytes)["packaged_file_hashes_sha256"]
++    if live.get("content_hash") != packaged["SKILL.md"]:
++        raise ReconcileError("imported root skill content differs from source manifest")
++    expected = {path: digest for path, digest in packaged.items() if path != "SKILL.md"}
++    expected["source-manifest.json"] = hashlib.sha256(source_bytes).hexdigest()
++    actual = {}
++    for row in files:
++        if not isinstance(row, dict) or not isinstance(row.get("path"), str) or row["path"] in actual:
++            raise ReconcileError("imported skill file list is malformed")
++        actual[row["path"]] = row.get("content_hash")
++    if actual != expected:
++        raise ReconcileError("imported bundle files differ from source manifest")
++    manifest_file = next(row for row in files if row["path"] == "source-manifest.json")
++    if manifest_file.get("size") != len(source_bytes):
++        raise ReconcileError("imported source manifest length differs")
++
++
++def verify_linux_daemons_stopped(client: Client, desired: dict[str, Any]) -> None:
++    with ENVIRONMENTS.open("rb") as stream:
++        environments = tomllib.load(stream)
++    if environments.get("workspace_id") != desired["workspace_id"]:
++        raise ReconcileError("runtime inventory workspace differs from desired state")
++    expected = {
++        row["runtime_id"]: row["daemon_id"]
++        for row in environments["environments"]
++        if row["key"] in LINUX
++    }
++    if len(expected) != len(LINUX):
++        raise ReconcileError("Linux runtime inventory is incomplete")
++    live = client.request("GET", "/api/runtimes")
++    if not isinstance(live, list):
++        raise ReconcileError("runtime inventory is not an array")
++    seen = set()
++    for row in live:
++        if not isinstance(row, dict):
++            raise ReconcileError("runtime inventory contains a malformed row")
++        runtime_id = row.get("id")
++        if runtime_id not in expected:
++            continue
++        if runtime_id in seen:
++            raise ReconcileError("runtime inventory contains a duplicate Linux runtime")
++        seen.add(runtime_id)
++        if (row.get("workspace_id") != desired["workspace_id"]
++                or row.get("daemon_id") != expected[runtime_id]
++                or row.get("status") != "offline"):
++            raise ReconcileError("Linux runtime is not verified offline with its declared daemon")
++    if seen != set(expected):
++        raise ReconcileError("Linux runtime is missing from live inventory")
++
++
++def inspect_agent(live: Any, agent: dict[str, Any], workspace_id: str, legacy_skill_id: str) -> list[str]:
++    if not isinstance(live, dict):
++        raise ReconcileError(f"{agent['key']}: agent response is not an object")
++    protected = ("id", "workspace_id", "runtime_id", "permission_mode", "visibility", "has_custom_env", "custom_args", "service_tier", "max_concurrent_tasks")
++    expected = {key: agent[key] for key in protected if key in agent}
++    expected["workspace_id"] = workspace_id
++    for key, value in expected.items():
++        if live.get(key) != value:
++            raise ReconcileError(f"{agent['key']}: protected {key} differs")
++    if live.get("runtime_bound") is not True or live.get("status") != "idle":
++        raise ReconcileError(f"{agent['key']}: agent must be runtime-bound and idle")
++    if ids(live.get("disabled_runtime_skills"), "disabled runtime skills") != sorted(agent["disabled_runtime_skill_ids"]):
++        raise ReconcileError(f"{agent['key']}: disabled runtime skills differ")
++    targets = live.get("invocation_targets")
++    want_targets = ([{"target_type": "workspace", "target_id": workspace_id}] if agent["public_to_workspace"] else [])
++    if targets != want_targets:
++        raise ReconcileError(f"{agent['key']}: invocation targets differ")
++    replacements = live.get("builtin_skill_replacements")
++    if not isinstance(replacements, dict) or any(key != PLATFORM or value != agent["builtin_skill_replacements"][PLATFORM] for key, value in replacements.items()):
++        raise ReconcileError(f"{agent['key']}: unrecognized built-in replacement")
++    current_skills = ids(live.get("skills"), "agent skills")
++    if current_skills not in ([], [legacy_skill_id]):
++        raise ReconcileError(f"{agent['key']}: unexpected direct skill binding")
++    inventory = live.get("builtin_skills")
++    if not isinstance(inventory, list):
++        raise ReconcileError(f"{agent['key']}: no built-in inventory")
++    available = ids(inventory, "built-in inventory")
++    if not set(agent["enabled_builtin_skill_ids"]) <= set(available):
++        raise ReconcileError(f"{agent['key']}: desired built-in is unavailable")
++    enabled = live.get("enabled_builtin_skill_ids")
++    if enabled is not None and (not isinstance(enabled, list) or any(not isinstance(item, str) for item in enabled)):
++        raise ReconcileError(f"{agent['key']}: malformed built-in allowlist")
++    operations = []
++    for field in ("model", "thinking_level", "instructions"):
++        if live.get(field) != agent[field]:
++            operations.append(field)
++    if enabled is None or sorted(enabled) != agent["enabled_builtin_skill_ids"]:
++        operations.append("enabled_builtin_skill_ids")
++    if replacements.get(PLATFORM) != agent["builtin_skill_replacements"][PLATFORM]:
++        operations.append("builtin_skill_replacements")
++    if current_skills:
++        operations.append("skill_ids")
++    return operations
++
++
++def apply_agent(client: Client, agent: dict[str, Any], live: dict[str, Any], operations: list[str]) -> None:
++    agent_path = "/api/agents/" + agent["id"]
++    fields = {key: agent[key] for key in ("model", "thinking_level", "instructions") if key in operations}
++    if fields:
++        client.request("PUT", agent_path, fields)
++    if "enabled_builtin_skill_ids" in operations:
++        # Reset clears unavailable retired IDs from an old exact allowlist.
++        client.request("DELETE", agent_path + "/builtin-skills")
++        for built_in in ids(live["builtin_skills"], "built-in inventory"):
++            if built_in not in agent["enabled_builtin_skill_ids"]:
++                client.request("PUT", agent_path + "/builtin-skills/enabled", {"skill_id": built_in, "enabled": False})
++        # An inherit-all inventory exactly equal to desired still needs an
++        # explicit policy; toggle one ID off and back on.
++        if set(ids(live["builtin_skills"], "built-in inventory")) == set(agent["enabled_builtin_skill_ids"]):
++            pivot = agent["enabled_builtin_skill_ids"][0]
++            client.request("PUT", agent_path + "/builtin-skills/enabled", {"skill_id": pivot, "enabled": False})
++            client.request("PUT", agent_path + "/builtin-skills/enabled", {"skill_id": pivot, "enabled": True})
++    if "builtin_skill_replacements" in operations:
++        client.request("PUT", agent_path + "/builtin-skills/replacements", {"skill_id": PLATFORM, "replacement_skill_id": agent["builtin_skill_replacements"][PLATFORM]})
++    if "skill_ids" in operations:
++        client.request("PUT", agent_path + "/skills", {"skill_ids": []})
++
++
++def run(args: argparse.Namespace) -> int:
++    desired = load_desired(args.desired_state, args.source_manifest)
++    if args.command == "apply" and args.confirm_workspace_id != desired["workspace_id"]:
++        raise ReconcileError("apply requires the exact --confirm-workspace-id")
++    if args.command == "apply" and not args.confirm_linux_daemons_stopped:
++        raise ReconcileError("apply requires --confirm-linux-daemons-stopped after stopping all three Linux daemons")
++    token = read_token(args.token_file)
++    client = Client(args.api_url, desired["workspace_id"], token)
++    verify_import(client, desired, args.source_manifest)
++    if args.command == "apply":
++        verify_linux_daemons_stopped(client, desired)
++    legacy_skill_id = "836067d8-86f2-4395-bcb0-35be482ad4b6"
++    selected = [agent for agent in desired["updates"] if agent["environment"] in LINUX]
++    preflight = []
++    for agent in selected:
++        live = client.request("GET", "/api/agents/" + agent["id"])
++        operations = inspect_agent(live, agent, desired["workspace_id"], legacy_skill_id)
++        preflight.append((agent, live, operations))
++    for agent, _live, operations in preflight:
++        print(f"{agent['key']}: {','.join(operations) if operations else 'in_sync'}")
++    if args.command == "check":
++        return 1 if any(operations for _, _, operations in preflight) else 0
++    if args.command == "plan":
++        return 0
++    for agent, live, operations in preflight:
++        if not operations:
++            continue
++        verify_linux_daemons_stopped(client, desired)
++        apply_agent(client, agent, live, operations)
++        after = client.request("GET", "/api/agents/" + agent["id"])
++        remaining = inspect_agent(after, agent, desired["workspace_id"], legacy_skill_id)
++        if remaining:
++            raise ReconcileError(f"{agent['key']}: read-back drift remains: {remaining}")
++    print(f"mica_agent_definitions=in_sync agents={len(selected)} scope=linux")
++    return 0
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("command", nargs="?", default="plan", choices=["plan", "check", "apply"])
++    parser.add_argument("--desired-state", required=True, type=Path)
++    parser.add_argument("--source-manifest", required=True, type=Path)
++    parser.add_argument("--api-url", required=True)
++    parser.add_argument("--token-file", required=True, type=Path)
++    parser.add_argument("--confirm-workspace-id")
++    parser.add_argument("--confirm-linux-daemons-stopped", action="store_true")
++    args = parser.parse_args()
++    try:
++        return run(args)
++    except (ReconcileError, OSError, ValueError, json.JSONDecodeError) as error:
++        print(f"error: {error}", file=sys.stderr)
++        return 2
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
 diff --git a/scripts/test_prepare_mica_agent_handoff.py b/scripts/test_prepare_mica_agent_handoff.py
 new file mode 100644
-index 0000000..ddc679c
+index 0000000..63dd6c9
 --- /dev/null
 +++ b/scripts/test_prepare_mica_agent_handoff.py
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,136 @@
 +#!/usr/bin/env python3
 +"""Offline cutover handoff checks; no provider calls."""
 +
@@ -2357,7 +2721,14 @@ index 0000000..ddc679c
 +        "skill_name": f"trackself-platform-{identity[:16]}",
 +        "bundle_identity_sha256": identity,
 +        "source_hashes_sha256": {"policy/SKILL.md": "b" * 64},
-+        "packaged_file_hashes_sha256": {"SKILL.md": "c" * 64},
++        "packaged_file_hashes_sha256": {
++            path: "c" * 64 for path in (
++                "SKILL.md", "runtime/issue-workflow.md", "references/workflow.md",
++                "references/agents.md", "references/autopilots.md", "references/issues.md",
++                "references/mentions.md", "references/projects.md", "references/runtimes.md",
++                "references/skill-import.md", "references/squads.md",
++            )
++        },
 +    }))
 +    return source
 +
@@ -2376,9 +2747,12 @@ index 0000000..ddc679c
 +            "linux-container", "linux-branch", "linux-branch-2", "macos-native", "windows-native",
 +        })
 +        for agent in agents:
-+            self.assertEqual(agent["skill_ids"], [skill_id])
++            self.assertEqual(agent["skill_ids"], [])
 +            self.assertEqual(agent["builtin_skill_mode"], "exact")
-+            self.assertIn("builtin:multica-platform", agent["enabled_builtin_skill_ids"])
++            self.assertEqual(agent["enabled_builtin_skill_ids"],
++                             ["builtin:multica-onboarding", "builtin:multica-platform"]
++                             if agent["key"] == "mika" else ["builtin:multica-platform"])
++            self.assertEqual(agent["builtin_skill_replacements"], {"builtin:multica-platform": skill_id})
 +        self.assertEqual({a["thinking_level"] for a in agents if a["role"] == "orchestrator"}, {"low"})
 +        self.assertEqual({a["model"] for a in agents if a["role"] == "orchestrator"}, {"gpt-6-astra"})
 +        self.assertEqual({a["model"] for a in agents if a["role"] == "implementor"}, {"gpt-6-luna"})
@@ -2392,6 +2766,15 @@ index 0000000..ddc679c
 +        with tempfile.TemporaryDirectory() as directory:
 +            with self.assertRaisesRegex(ValueError, "must differ"):
 +                MODULE.build_handoff("836067d8-86f2-4395-bcb0-35be482ad4b6", source_manifest(directory))
++
++    def test_incomplete_platform_reference_bundle_is_rejected(self) -> None:
++        with tempfile.TemporaryDirectory() as directory:
++            source = source_manifest(directory)
++            data = json.loads(source.read_text())
++            del data["packaged_file_hashes_sha256"]["references/squads.md"]
++            source.write_text(json.dumps(data))
++            with self.assertRaisesRegex(ValueError, "full platform replacement"):
++                MODULE.build_handoff("3b055ec6-b733-44b9-994c-99762ecf78a4", source)
 +
 +    def test_source_manifest_must_match_exact_policy_name(self) -> None:
 +        with tempfile.TemporaryDirectory() as directory:
@@ -2439,6 +2822,223 @@ index 0000000..ddc679c
 +        )
 +        self.assertEqual(result.returncode, 2)
 +        self.assertIn("live apply is disabled", result.stderr)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/scripts/test_reconcile_mica_agent_definitions.py b/scripts/test_reconcile_mica_agent_definitions.py
+new file mode 100644
+index 0000000..3f61971
+--- /dev/null
++++ b/scripts/test_reconcile_mica_agent_definitions.py
+@@ -0,0 +1,211 @@
++#!/usr/bin/env python3
++"""Safety checks for the inactive Linux cutover reconciler."""
++
++import argparse
++import copy
++import importlib.machinery
++import importlib.util
++import json
++import tempfile
++import unittest
++from pathlib import Path
++from unittest import mock
++
++SCRIPT = Path(__file__).with_name("reconcile-mica-agent-definitions")
++LOADER = importlib.machinery.SourceFileLoader("mica_reconciler", str(SCRIPT))
++SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
++assert SPEC is not None
++MODULE = importlib.util.module_from_spec(SPEC)
++LOADER.exec_module(MODULE)
++PREPARER = Path(__file__).with_name("test_prepare_mica_agent_handoff.py")
++LOADER2 = importlib.machinery.SourceFileLoader("mica_preparer_tests", str(PREPARER))
++SPEC2 = importlib.util.spec_from_loader(LOADER2.name, LOADER2)
++assert SPEC2 is not None
++HELPER = importlib.util.module_from_spec(SPEC2)
++LOADER2.exec_module(HELPER)
++
++SKILL_ID = "3b055ec6-b733-44b9-994c-99762ecf78a4"
++LEGACY_ID = "836067d8-86f2-4395-bcb0-35be482ad4b6"
++
++
++def fixture(directory):
++    source = HELPER.source_manifest(directory)
++    loader = importlib.machinery.SourceFileLoader("mica_prep_fixture", str(SCRIPT.with_name("prepare-mica-agent-handoff")))
++    spec = importlib.util.spec_from_loader(loader.name, loader)
++    prep = importlib.util.module_from_spec(spec)
++    loader.exec_module(prep)
++    desired = prep.build_handoff(SKILL_ID, source)
++    path = Path(directory) / "desired.json"
++    path.write_text(json.dumps(desired))
++    return desired, path, source
++
++
++def live_for(agent, workspace):
++    live = {key: copy.deepcopy(value) for key, value in agent.items() if key not in ("skill_ids", "builtin_skill_replacements")}
++    live.update({
++        "workspace_id": workspace,
++        "runtime_bound": True,
++        "status": "idle",
++        "skills": [{"id": LEGACY_ID}],
++        "disabled_runtime_skills": [{"id": value} for value in agent["disabled_runtime_skill_ids"]],
++        "builtin_skill_replacements": {},
++        "builtin_skills": [{"id": "builtin:multica-platform", "enabled": False},
++                           {"id": "builtin:multica-working-on-issues", "enabled": True},
++                           {"id": "builtin:multica-onboarding", "enabled": False}],
++        "enabled_builtin_skill_ids": ["builtin:multica-working-on-issues"],
++        "invocation_targets": ([{"target_type": "workspace", "target_id": workspace}] if agent["public_to_workspace"] else []),
++    })
++    return live
++
++
++class ReconcilerTests(unittest.TestCase):
++    def test_import_readback_checks_every_packaged_file(self):
++        with tempfile.TemporaryDirectory() as directory:
++            desired, _, source = fixture(directory)
++            packaged = json.loads(source.read_text())["packaged_file_hashes_sha256"]
++            files = [{"path": path, "content_hash": digest, "size": 1}
++                     for path, digest in packaged.items() if path != "SKILL.md"]
++            files.append({"path": "source-manifest.json", "content_hash": MODULE.hashlib.sha256(source.read_bytes()).hexdigest(),
++                          "size": len(source.read_bytes())})
++            skill = {"id": SKILL_ID, "workspace_id": desired["workspace_id"],
++                     "name": desired["imported_skill"]["name"], "content_hash": packaged["SKILL.md"], "files": files}
++            class Client:
++                def request(self, method, path):
++                    self.path = path
++                    return skill
++            client = Client()
++            MODULE.verify_import(client, desired, source)
++            self.assertTrue(client.path.endswith("?include=metadata"))
++            files[0]["content_hash"] = "0" * 64
++            with self.assertRaisesRegex(MODULE.ReconcileError, "bundle files differ"):
++                MODULE.verify_import(client, desired, source)
++
++    def test_resolved_state_rejects_profile_or_manifest_drift(self):
++        with tempfile.TemporaryDirectory() as directory:
++            desired, path, source = fixture(directory)
++            self.assertEqual(MODULE.load_desired(path, source), desired)
++            desired["updates"][0]["model"] = "wrong"
++            path.write_text(json.dumps(desired))
++            with self.assertRaisesRegex(MODULE.ReconcileError, "differs"):
++                MODULE.load_desired(path, source)
++
++    def test_protected_changes_and_unexpected_skills_fail_closed(self):
++        with tempfile.TemporaryDirectory() as directory:
++            desired, _, _ = fixture(directory)
++            agent = desired["updates"][0]
++            live = live_for(agent, desired["workspace_id"])
++            self.assertIn("skill_ids", MODULE.inspect_agent(live, agent, desired["workspace_id"], LEGACY_ID))
++            other_permission = "private" if agent["permission_mode"] == "public_to" else "public_to"
++            for field, value in (("status", "busy"), ("runtime_id", "other"), ("permission_mode", other_permission)):
++                changed = copy.deepcopy(live)
++                changed[field] = value
++                with self.subTest(field=field), self.assertRaises(MODULE.ReconcileError):
++                    MODULE.inspect_agent(changed, agent, desired["workspace_id"], LEGACY_ID)
++            changed = copy.deepcopy(live)
++            changed["skills"].append({"id": SKILL_ID})
++            with self.assertRaisesRegex(MODULE.ReconcileError, "unexpected direct skill"):
++                MODULE.inspect_agent(changed, agent, desired["workspace_id"], LEGACY_ID)
++            changed = copy.deepcopy(live)
++            changed["builtin_skill_replacements"]["builtin:other"] = SKILL_ID
++            with self.assertRaisesRegex(MODULE.ReconcileError, "unrecognized"):
++                MODULE.inspect_agent(changed, agent, desired["workspace_id"], LEGACY_ID)
++
++    def test_apply_uses_supported_endpoints_and_removes_old_direct_binding_last(self):
++        with tempfile.TemporaryDirectory() as directory:
++            desired, _, _ = fixture(directory)
++            agent = desired["updates"][0]
++            live = live_for(agent, desired["workspace_id"])
++            calls = []
++            class Client:
++                def request(self, method, path, body=None):
++                    calls.append((method, path, body))
++            operations = MODULE.inspect_agent(live, agent, desired["workspace_id"], LEGACY_ID)
++            MODULE.apply_agent(Client(), agent, live, operations)
++            self.assertIn("/builtin-skills/replacements", calls[-2][1])
++            self.assertTrue(calls[-1][1].endswith("/skills"))
++            self.assertEqual(calls[-1][2], {"skill_ids": []})
++            self.assertFalse(any("/builtins" in path for _, path, _ in calls))
++            self.assertEqual(calls[-2][2]["replacement_skill_id"], SKILL_ID)
++
++    def test_apply_requires_workspace_confirmation_before_token_or_network(self):
++        with tempfile.TemporaryDirectory() as directory:
++            _, path, source = fixture(directory)
++            args = argparse.Namespace(command="apply", desired_state=path, source_manifest=source,
++                                      confirm_workspace_id="wrong", token_file=Path(directory) / "token",
++                                      api_url="https://example.test", confirm_linux_daemons_stopped=False)
++            with mock.patch.object(MODULE, "read_token") as read_token:
++                with self.assertRaisesRegex(MODULE.ReconcileError, "confirm-workspace-id"):
++                    MODULE.run(args)
++                read_token.assert_not_called()
++
++    def test_all_linux_agents_are_checked_before_first_write(self):
++        with tempfile.TemporaryDirectory() as directory:
++            desired, path, source = fixture(directory)
++            linux = [agent for agent in desired["updates"] if agent["environment"] in MODULE.LINUX]
++            responses = {agent["id"]: live_for(agent, desired["workspace_id"]) for agent in linux}
++            responses[linux[-1]["id"]]["status"] = "busy"
++            calls = []
++            class Client:
++                def __init__(self, *_args):
++                    pass
++                def request(self, method, route, body=None):
++                    calls.append((method, route))
++                    return responses[route.rsplit("/", 1)[-1]]
++            args = argparse.Namespace(command="apply", desired_state=path, source_manifest=source,
++                                      confirm_workspace_id=desired["workspace_id"], token_file=Path(directory) / "token",
++                                      api_url="https://example.test", confirm_linux_daemons_stopped=True)
++            with mock.patch.object(MODULE, "read_token", return_value="secret"), \
++                 mock.patch.object(MODULE, "Client", Client), \
++                 mock.patch.object(MODULE, "verify_import"), \
++                 mock.patch.object(MODULE, "verify_linux_daemons_stopped"):
++                with self.assertRaisesRegex(MODULE.ReconcileError, "idle"):
++                    MODULE.run(args)
++            self.assertEqual(len(calls), len(linux))
++            self.assertTrue(all(method == "GET" for method, _ in calls))
++
++    def test_apply_requires_operator_stop_and_offline_runtime_readback(self):
++        with tempfile.TemporaryDirectory() as directory:
++            desired, path, source = fixture(directory)
++            args = argparse.Namespace(command="apply", desired_state=path, source_manifest=source,
++                                      confirm_workspace_id=desired["workspace_id"], token_file=Path(directory) / "token",
++                                      api_url="https://example.test", confirm_linux_daemons_stopped=False)
++            with mock.patch.object(MODULE, "read_token") as read_token:
++                with self.assertRaisesRegex(MODULE.ReconcileError, "daemons-stopped"):
++                    MODULE.run(args)
++                read_token.assert_not_called()
++            class Client:
++                def request(self, method, route):
++                    self.route = route
++                    return []
++            client = Client()
++            with self.assertRaisesRegex(MODULE.ReconcileError, "missing from live inventory"):
++                MODULE.verify_linux_daemons_stopped(client, desired)
++            self.assertEqual(client.route, "/api/runtimes")
++            with MODULE.ENVIRONMENTS.open("rb") as stream:
++                import tomllib
++                configured = tomllib.load(stream)
++            rows = [{"id": row["runtime_id"], "daemon_id": row["daemon_id"],
++                     "workspace_id": desired["workspace_id"], "status": "offline"}
++                    for row in configured["environments"] if row["key"] in MODULE.LINUX]
++            client.request = lambda _method, _route: rows
++            MODULE.verify_linux_daemons_stopped(client, desired)
++            rows[-1]["status"] = "online"
++            with self.assertRaisesRegex(MODULE.ReconcileError, "not verified offline"):
++                MODULE.verify_linux_daemons_stopped(client, desired)
++
++    def test_token_file_permissions_and_api_origin_are_strict(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "token"
++            path.write_text("secret\n")
++            path.chmod(0o644)
++            with self.assertRaisesRegex(MODULE.ReconcileError, "0600"):
++                MODULE.read_token(path)
++            path.chmod(0o600)
++            self.assertEqual(MODULE.read_token(path), "secret")
++            for url in ("http://example.test", "https://user:pass@example.test", "https://example.test/api"):
++                with self.subTest(url=url), self.assertRaises(MODULE.ReconcileError):
++                    MODULE.validate_url(url)
 +
 +
 +if __name__ == "__main__":

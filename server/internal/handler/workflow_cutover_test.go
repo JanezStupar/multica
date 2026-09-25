@@ -37,6 +37,87 @@ func workflowCutoverTestSkill(t *testing.T, workspace, content string) string {
 	return id
 }
 
+func TestWorkflowCutoverRejectsInvalidFormat2StatusBeforeFreeze(t *testing.T) {
+	workspace := dbfx.Workspace(t, "Format two cutover", fmt.Sprintf("format-two-cutover-%d", time.Now().UnixNano()))
+	dbfx.Member(t, workspace, testUserID, "owner")
+	oldIssue := dbfx.Issue(t, "Old issue awaiting freeze", testutil.Cols{"workspace_id": workspace})
+	runtime := dbfx.Runtime(t, "format two cutover runtime", testutil.Cols{"workspace_id": workspace})
+	agent := dbfx.Agent(t, "format two outcome agent", runtime, testutil.Cols{"workspace_id": workspace})
+	status := dbfx.Insert(t, "issue_status", testutil.Cols{
+		"workspace_id": workspace, "key": "pr_ready", "name": "PR Ready", "category": "done",
+		"color": "#22c55e", "position": 1,
+	})
+	skill := workflowCutoverTestSkill(t, workspace, "Format two cutover")
+	dbfx.Insert(t, "skill_file", testutil.Cols{"skill_id": skill, "path": "runtime/policy.json",
+		"content": `{"format_version":2,"accepted_status_key":"pr_ready","outcome_agent_id":"` + agent + `"}`})
+	request := func() *testutil.Response {
+		return testutil.Call(t, testHandler.CutoverWorkspaceWorkflowDefault,
+			workflowCutoverRequest(http.MethodPost, "/", workspace, map[string]any{"skill_id": skill}))
+	}
+	request().Want(http.StatusConflict)
+	var frozen bool
+	var cutover bool
+	dbfx.QueryRow(t, `SELECT workflow_frozen FROM issue WHERE id=$1`, oldIssue).Scan(&frozen)
+	dbfx.QueryRow(t, `SELECT workflow_cutover_at IS NOT NULL FROM workspace WHERE id=$1`, workspace).Scan(&cutover)
+	if frozen || cutover {
+		t.Fatalf("invalid format two policy partially cut over: frozen=%t cutover=%t", frozen, cutover)
+	}
+	dbfx.Exec(t, `UPDATE issue_status SET category='started' WHERE id=$1`, status)
+	request().Want(http.StatusCreated)
+}
+
+func TestFormat2PolicyReferencesPreventStatusArchive(t *testing.T) {
+	t.Run("enrolled issue", func(t *testing.T) {
+		issueID := dbfx.Issue(t, "Pinned issue using PR Ready")
+		runtime := createClaimReclaimRuntime(t, nil, "pinned archive runtime")
+		agent := dbfx.Agent(t, "pinned archive agent", runtime)
+		statusID := dbfx.Insert(t, "issue_status", testutil.Cols{
+			"workspace_id": testWorkspaceID, "key": "pr_ready", "name": "PR Ready",
+			"category": "started", "color": "#22c55e", "position": 1,
+		})
+		skill := insertCompleteWorkflowSkill(t, "---\nname: archive-pin\n---\n\nPinned archive policy")
+		dbfx.Insert(t, "skill_file", testutil.Cols{"skill_id": skill, "path": "runtime/policy.json",
+			"content": `{"format_version":2,"accepted_status_key":"pr_ready","outcome_agent_id":"` + agent + `"}`})
+		enrollWorkflowPolicy(t, issueID, skill).Want(http.StatusCreated)
+		dbfx.Exec(t, `UPDATE issue SET status='in_progress' WHERE id=$1`, issueID)
+		format1Issue := dbfx.Issue(t, "Unrelated pinned format one issue")
+		enrollWorkflowPolicy(t, format1Issue,
+			workflowCutoverTestSkill(t, testWorkspaceID, "Unrelated format one policy")).Want(http.StatusCreated)
+		unrelatedStatus := dbfx.Insert(t, "issue_status", testutil.Cols{
+			"workspace_id": testWorkspaceID, "key": "unrelated_archive", "name": "Unrelated archive",
+			"category": "started", "color": "#22c55e", "position": 2,
+		})
+		testutil.Call(t, testHandler.ArchiveIssueStatus,
+			withURLParam(newRequest(http.MethodDelete, "/api/issue-statuses/"+unrelatedStatus, nil),
+				"id", unrelatedStatus)).Want(http.StatusOK)
+		archive := func() *testutil.Response {
+			return testutil.Call(t, testHandler.ArchiveIssueStatus,
+				withURLParam(newRequest(http.MethodDelete, "/api/issue-statuses/"+statusID, nil), "id", statusID))
+		}
+		archive().Want(http.StatusConflict)
+		dbfx.Exec(t, `UPDATE issue SET workflow_frozen=true WHERE id=$1`, issueID)
+		archive().Want(http.StatusOK)
+	})
+	t.Run("active workspace default", func(t *testing.T) {
+		workspace := dbfx.Workspace(t, "Default PR Ready archive", fmt.Sprintf("default-pr-ready-%d", time.Now().UnixNano()))
+		dbfx.Member(t, workspace, testUserID, "owner")
+		runtime := dbfx.Runtime(t, "default archive runtime", testutil.Cols{"workspace_id": workspace})
+		agent := dbfx.Agent(t, "default archive outcome agent", runtime, testutil.Cols{"workspace_id": workspace})
+		statusID := dbfx.Insert(t, "issue_status", testutil.Cols{
+			"workspace_id": workspace, "key": "pr_ready", "name": "PR Ready",
+			"category": "started", "color": "#22c55e", "position": 1,
+		})
+		skill := workflowCutoverTestSkill(t, workspace, "Default archive policy")
+		dbfx.Insert(t, "skill_file", testutil.Cols{"skill_id": skill, "path": "runtime/policy.json",
+			"content": `{"format_version":2,"accepted_status_key":"pr_ready","outcome_agent_id":"` + agent + `"}`})
+		testutil.Call(t, testHandler.CutoverWorkspaceWorkflowDefault,
+			workflowCutoverRequest(http.MethodPost, "/", workspace, map[string]any{"skill_id": skill})).Want(http.StatusCreated)
+		archive := withURLParam(newRequest(http.MethodDelete, "/api/issue-statuses/"+statusID, nil), "id", statusID)
+		archive.Header.Set("X-Workspace-ID", workspace)
+		testutil.Call(t, testHandler.ArchiveIssueStatus, archive).Want(http.StatusConflict)
+	})
+}
+
 func TestWorkflowCutoverRejectsConcurrentAndLaterIssueWrites(t *testing.T) {
 	workspace := dbfx.Workspace(t, "Workflow freeze race", fmt.Sprintf("workflow-freeze-%d", time.Now().UnixNano()))
 	dbfx.Member(t, workspace, testUserID, "owner")

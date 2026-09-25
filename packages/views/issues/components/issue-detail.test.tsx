@@ -756,6 +756,19 @@ describe("IssueDetail (shared)", () => {
     expect(onDone).not.toHaveBeenCalled();
   });
 
+  it("opens the acceptance options for format-2 workflow issues instead of accepting from Done", async () => {
+    mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, workflow_policy_present: true });
+    mockApiObj.getIssueWorkflow.mockResolvedValue({ ...mockIssueWorkflow, accepted_status_key: "pr_ready" });
+    renderIssueDetail("issue-1", vi.fn());
+
+    await screen.findByRole("heading", { name: "Workflow acceptance" });
+    fireEvent.click(await screen.findByRole("button", { name: "Mark as done" }));
+
+    expect(mockApiObj.acceptIssueWorkflow).not.toHaveBeenCalled();
+    expect(mockNavigationPush).toHaveBeenCalledWith("/test/issues/TES-1?workflow=accept");
+    expect(screen.getByRole("checkbox", { name: "The actual outcome is complete" })).toBeInTheDocument();
+  });
+
   it("focuses the candidate panel instead of accepting when the snapshot revision is stale", async () => {
     const enrolledIssue = { ...mockIssue, workflow_policy_present: true };
     mockApiObj.getIssue.mockResolvedValue(enrolledIssue);

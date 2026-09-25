@@ -422,12 +422,20 @@ func (s *TaskService) checkWorkflowStart(ctx context.Context, tx pgx.Tx, q *db.Q
 	var contextValue struct {
 		Handoff  json.RawMessage `json:"workflow_handoff"`
 		Recovery json.RawMessage `json:"workflow_recovery"`
+		Outcome  json.RawMessage `json:"workflow_outcome"`
 		WakeupID string          `json:"wakeup_id"`
 	}
 	if err := json.Unmarshal(task.Context, &contextValue); err != nil {
 		return fmt.Errorf("%w: invalid task context", pgx.ErrNoRows)
 	}
-	if len(contextValue.Handoff) == 0 && len(contextValue.Recovery) == 0 {
+	if len(contextValue.Handoff) == 0 && len(contextValue.Recovery) == 0 && len(contextValue.Outcome) == 0 {
+		return nil
+	}
+	if len(contextValue.Outcome) != 0 {
+		if len(contextValue.Handoff) != 0 || len(contextValue.Recovery) != 0 ||
+			validateWorkflowOutcomeTask(ctx, tx, task) != nil {
+			return fmt.Errorf("%w: workflow outcome no longer claimable", pgx.ErrNoRows)
+		}
 		return nil
 	}
 	if len(contextValue.Handoff) != 0 && len(contextValue.Recovery) != 0 {

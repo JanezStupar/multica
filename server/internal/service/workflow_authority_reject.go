@@ -76,13 +76,16 @@ func (s WorkflowAuthorityService) RejectWorkflow(ctx context.Context, workspaceI
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
-	if issue.WorkflowFrozen || issue.WorkflowCandidateID != candidateID || issue.Revision != in.ExpectedRevision ||
-		issue.Status != "in_review" && issue.Status != "done" {
+	if issue.WorkflowFrozen || issue.WorkflowCandidateID != candidateID || issue.Revision != in.ExpectedRevision {
 		return ErrWorkflowAuthorityConflict
 	}
-	pinned, _, err := workflowAuthorityPolicy(ctx, s, issue)
+	pinned, authority, err := workflowAuthorityPolicy(ctx, s, issue)
 	if err != nil {
 		return err
+	}
+	if issue.Status != "in_review" && issue.Status != "done" &&
+		(authority.FormatVersion != 2 || issue.Status != authority.AcceptedStatusKey) {
+		return ErrWorkflowAuthorityConflict
 	}
 	candidate, err := loadCurrentWorkflowCandidate(ctx, tx, issue, pinned.Version)
 	if err != nil {
@@ -134,7 +137,7 @@ func (s WorkflowAuthorityService) RejectWorkflow(ctx context.Context, workspaceI
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
-	if issue.Status == "done" && !acceptanceID.Valid {
+	if (issue.Status == "done" || authority.FormatVersion == 2 && issue.Status == authority.AcceptedStatusKey) && !acceptanceID.Valid {
 		return fmt.Errorf("%w: accepted decision unavailable", ErrWorkflowAuthorityConflict)
 	}
 	if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET state='revoked',revoked_at=now()

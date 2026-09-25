@@ -1,0 +1,25 @@
+{
+  "format_version": 2,
+  "accepted_status_key": "pr_ready",
+  "outcome_agent_id": "4fb41861-65ad-415c-98bd-b2b51eab68fb",
+  "human": {
+    "accept_roles": ["owner", "admin"],
+    "delivery": "merge"
+  },
+  "review": {"required": true},
+  "autonomous_trivial": {
+    "enabled": true,
+    "acceptor_agent_ids": [
+      "4fb41861-65ad-415c-98bd-b2b51eab68fb",
+      "bf691398-8cd1-4181-94f2-217315c8b66a",
+      "533882c9-5cdc-48cc-98f8-9effe6002f81"
+    ],
+    "delivery": "merge"
+  },
+  "delivery": {"merge_method": "squash", "multi_pr_merge_order": "explicit"},
+  "supervisors": [
+    {"agent_id": "4fb41861-65ad-415c-98bd-b2b51eab68fb", "scopes": ["review", "delivery"]},
+    {"agent_id": "bf691398-8cd1-4181-94f2-217315c8b66a", "scopes": ["review", "delivery"]},
+    {"agent_id": "533882c9-5cdc-48cc-98f8-9effe6002f81", "scopes": ["review", "delivery"]}
+  ]
+}
