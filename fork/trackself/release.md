@@ -1,5 +1,45 @@
 # Mica release and deployment
 
+## Current backend: v0.5.1-janez.3
+
+Backend-only upgrade completed on 2026-09-25 from reviewed commit
+`89d0c9b6629c31c5349facb88aaec302da828252`. Production uses
+`git.thn.janezstupar.com/janez/multica-backend:v0.5.1-janez.3` at
+`sha256:980a53493e5db9f77769859e9b3cb1b9547e0261506fb9f34da31eeeb5a3d220`.
+Migration 579 and the exact running container's health/image identity passed;
+the frontend task stayed unchanged. Web, desktop and agent/operator CLIs remain
+on `.2` and require no upgrade for this backend correction.
+
+The exact source archive and build metadata are published in Forgejo's generic
+`Janez/multica-backend/v0.5.1-janez.3` package. Focused database regressions,
+provider/CLI checks, binary builds, independent source review and vulnerability
+scan passed. The disposable proof database/container/volume/network were removed.
+The owning infrastructure record is
+`infra/automation-server/multica/upgrade-v0.5.1-janez.3.md` in private-infra.
+
+The new-ticket default is `trackself-platform-56ee71794967313b`, imported UUID
+`890e2f62-bc21-4831-8765-24665f92e31d`, policy version
+`sha256:7430ed94e22944526c01ba258884827137cb6997cc67bf9d837b6939a24f8d9b`.
+All twelve Linux profiles matched the imported bundle and current instructions;
+the three previously running runtimes restarted healthy. Existing ticket pins
+and the original cutover boundary remain unchanged.
+
+TRA-609's scoped `external_merge` exception recovered its stale-head-only
+revocation and observed its already completed PR26 merge. Read-back confirmed
+Done at revision 40, original acceptance restored, and delivery recorded at
+`2026-09-25T13:07:25.976648Z`; no new review, acceptance request or merge POST.
+The provider actor remains recorded as the `Multica` service account.
+Open changed-head PRs retain approval but pause agent merging; authorizing an
+updated open head for automatic merge remains a separate capability boundary.
+
+At the user's request, the superseded `.2` backend registry package and
+utility-server cache were removed after health and delivery read-back. The
+active `.2` web/CLI artifacts and protected backups remain intact. Production
+backup: `utility-server:/opt/multica/config-backups/before-v0.5.1-janez.3`.
+Do not blindly downgrade migration 579 or discard its exception audit rows.
+
+## Initial v0.5.1-janez.2 release
+
 Published 2026-09-25 as `v0.5.1-janez.2` from reviewed source commit
 `0f23313676b0fcc66f197dd9dffef7c4feb10d09` on
 `feature/trackself-context-workflow`. The registry bundle contains the exact
@@ -120,6 +160,25 @@ not a full interactive UI acceptance pass or desktop-agent policy activation.
 Electron-builder emitted dependency collector warnings but completed successfully;
 the packaged app version, exact CLI checksum and running client were checked.
 
+## Native macOS CLI
+
+On 2026-09-25, `mac-mini` (`janez`, Darwin arm64) was upgraded from
+`v0.4.40-janez.2` to the published `v0.5.1-janez.2` CLI at
+`/Users/janez/.local/bin/multica`. The release archive checksum matched before
+transfer; the staged and installed binary matched SHA-256
+`35d54c2ffccd966fd33a9227851cb7b95ee514c0db48bce4ddb9a484f89413f1`.
+Native execution reported source commit
+`0f23313676b0fcc66f197dd9dffef7c4feb10d09`, and an authenticated workspace read
+through profile `janez-mac-native` returned the expected Trackself UUID.
+
+The profile configuration and existing LaunchAgent were unchanged. The daemon
+was stopped before replacement and remained stopped afterward; no work was
+dispatched and native agent policy activation remains deferred. No Multica
+desktop app was found in the system or user Applications directory. Per user
+instruction, the old CLI binary was replaced without retaining a backup.
+These checks establish CLI execution and API access, not native daemon/task,
+repository-access or retained/fresh-context proof.
+
 ## Coordinated Linux activation
 
 Activation completed at `2026-09-25T09:08:49.206821Z`, with ticket policy version
@@ -173,15 +232,3 @@ A direct supported Forgejo title PATCH removed the prefix and returned
 preserved. This repaired the ticket without a release. The automatic title
 update failure has not been isolated; do not claim its recurrence is fixed.
 Remove this diagnosis when the provider mutation path is explained or repaired.
-
-The same deployed revision also revoked TRA-609 acceptance after its feature
-branch integrated `develop` (`21ba139e5533eaf4fb752da73325d295492f192a` to
-`b6f8e28b77f0f20ff434cfbd8537ab17bb5419f4`), then failed to observe the completed
-provider merge `d9bd237722ec8b5d51cb205fba4772aaca12e3c7`. The user clarified
-that parent integration alone is not grounds for rereview and their merge is
-acceptance/delivery. The prepared backend correction retains acceptance while
-pausing stale agent merge authority, recognizes policy-authorized completed
-external merges first, and recovers only stale-head revocations. Source policy
-now requires `delivery.external_merged_head` support and must not be activated
-on `.2`. Until that backend is deployed and the old ticket receives its scoped
-`external_merge` exception, TRA-609 remains unreconciled in the live workflow.

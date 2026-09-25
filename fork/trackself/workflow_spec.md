@@ -15,7 +15,8 @@ configurable and overridable rather than inseparable from compiled prompts.
 
 This spec records the workflow agreed on 2026-09-24, with production policy
 settings and completion semantics refined on 2026-09-25. Its format-2 mechanics
-are implemented in `v0.5.1-janez.2`; Linux provider, cross-repository and
+are implemented in `v0.5.1-janez.2`, with external-merge reconciliation in
+`v0.5.1-janez.3`; Linux provider, cross-repository and
 completion trials have distinct recorded source/evidence boundaries. Trackself's
 Linux cutover completed on 2026-09-25 with a branch task canary and configuration
 read-back. See [release.md](release.md) and [runtime-proof.md](runtime-proof.md)
