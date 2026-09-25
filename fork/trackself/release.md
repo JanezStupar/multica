@@ -1,6 +1,24 @@
 # Mica release and deployment
 
-## Current backend: v0.5.1-janez.3
+## Current backend: v0.5.1-janez.4
+
+Backend-only upgrade completed on 2026-09-25 from reviewed commit
+`be821aba1d5569af0cb361e67b15d8d0744b58c4`. Production uses
+`git.thn.janezstupar.com/janez/multica-backend:v0.5.1-janez.4` at
+`sha256:8778967785e14a52c6f4c0f728745ebfbb7e2dd7d3c0bf9aba742ae503f49002`.
+The patch accepts the exact `.git` clone form of a provider-bound repository
+URL while sending the provider web URL to review and delivery. No schema,
+web, desktop or agent CLI changed. Database-backed ready/merge regressions,
+independent review, vulnerability scan and production validation passed.
+TRA-634 retains its candidate and independent review at PR #29 head
+`1daeef806a5912ffc23cf9fe3492e823298a0efd`; `provider_binding_missing`
+cleared, while human-recipient handoff remains pending. PR #29 was not merged
+or deployed by this release. Source and metadata are published in the registry.
+The owning infrastructure record is
+`infra/automation-server/multica/upgrade-v0.5.1-janez.4.md` in private-infra;
+backup: `utility-server:/opt/multica/config-backups/before-v0.5.1-janez.4`.
+
+## Previous backend: v0.5.1-janez.3
 
 Backend-only upgrade completed on 2026-09-25 from reviewed commit
 `89d0c9b6629c31c5349facb88aaec302da828252`. Production uses
