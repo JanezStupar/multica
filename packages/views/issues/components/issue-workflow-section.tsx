@@ -515,6 +515,15 @@ export function IssueWorkflowSection({ workspaceId, issueId, enabled, frozen: is
         </div>
       ) : null}
 
+      {workflow.feedback ? (
+        <p className="mt-3 text-caption text-muted-foreground" role="status">
+          {t(($) => $.detail.workflow.feedback_historical)}{" "}
+          <a href={`#comment-${workflow.feedback.comment_id}`} className="text-foreground hover:underline">
+            {t(($) => $.detail.workflow.feedback_open_comment)}
+          </a>
+        </p>
+      ) : null}
+
       {!candidate && !frozen ? (
         <p className="mt-3 text-caption text-muted-foreground">{t(($) => $.detail.workflow.no_candidate)}</p>
       ) : null}

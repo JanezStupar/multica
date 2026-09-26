@@ -76,19 +76,15 @@ type CommentResponse struct {
 	// pulls the folded comments back with `comment list --full`.
 	ThreadResolved *bool `json:"thread_resolved,omitempty"`
 	FoldedCount    *int  `json:"folded_count,omitempty"`
-	// TriggerOutcomes is the per-target result of every EXPLICIT @agent / @squad
-	// mention in this comment (MUL-4525 §2). It is additive and populated only on
-	// create/edit responses: old clients ignore it. A saved comment whose mention
-	// was blocked (no invoke permission, target unavailable, runtime offline) now
-	// reports that here instead of silently dropping the trigger, so the client
-	// can show "comment posted, but N targets were not triggered".
+	// TriggerOutcomes reports explicit mentions and the implicit workflow agent
+	// conversation, when one is eligible. It is populated on create/edit so a
+	// saved comment can show when its agent dispatch failed or was deferred.
 	TriggerOutcomes []CommentTriggerOutcome `json:"trigger_outcomes,omitempty"`
 }
 
-// CommentTriggerOutcome is the per-target result of an explicit @agent / @squad
-// mention (MUL-4525 §2). target_id is the id the user mentioned — the agent id,
-// or the SQUAD id for a squad mention — so the client correlates it back to the
-// mention it rendered without the server echoing a private target's name/owner.
+// CommentTriggerOutcome is the per-target result of an explicit mention or an
+// implicit workflow agent conversation. target_id is the executing agent id or
+// the squad id for a squad mention.
 // reason_code is the stable, enumeration-safe admission reason.
 type CommentTriggerOutcome struct {
 	TargetType string             `json:"target_type"` // "agent" | "squad"
@@ -1511,7 +1507,14 @@ const (
 	commentTriggerSourceMentionSquadLeader commentAgentTriggerSource = "mention_squad_leader"
 	commentTriggerSourceThreadParent       commentAgentTriggerSource = "thread_parent"
 	commentTriggerSourceConversation       commentAgentTriggerSource = "conversation_continuation"
+	commentTriggerSourceWorkflowFeedback   commentAgentTriggerSource = "workflow_human_comment"
 )
+
+type workflowHumanCommentRoute struct {
+	HandoffID       pgtype.UUID
+	CoordinatorTask pgtype.UUID
+	CandidateID     pgtype.UUID
+}
 
 type commentAgentTrigger struct {
 	Agent          db.Agent
@@ -1522,6 +1525,7 @@ type commentAgentTrigger struct {
 	// from worker context. The worker need not be a squad member. Completion may
 	// replay it only if creation recorded it as a planned input.
 	NonLeaderAgentReply bool
+	WorkflowFeedback    *workflowHumanCommentRoute
 }
 
 type commentTriggerComputeOptions struct {
@@ -1550,6 +1554,8 @@ func commentAgentTriggerReason(trigger commentAgentTrigger) string {
 		return "This reply will trigger the parent comment's author."
 	case commentTriggerSourceConversation:
 		return "This follow-up will continue the recent agent conversation."
+	case commentTriggerSourceWorkflowFeedback:
+		return "This comment will reach the agent who handed the candidate to the human reviewer."
 	default:
 		return "This comment will trigger this agent."
 	}
@@ -2018,7 +2024,21 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 	triggers = filterSuppressedCommentAgentTriggers(triggers, suppressAgentIDs)
 	h.noteBlockedRuntimeTargets(ctx, issue, targets)
 	enqueued := h.enqueueCommentAgentTriggers(ctx, issue, comment.ID, triggers)
-	return commentTriggerOutcomes(targets, enqueued)
+	outcomes := commentTriggerOutcomes(targets, enqueued)
+	for _, trigger := range triggers {
+		if trigger.Source != commentTriggerSourceWorkflowFeedback {
+			continue
+		}
+		result, ok := enqueued[uuidToString(trigger.Agent.ID)]
+		if !ok {
+			continue
+		}
+		outcomes = append(outcomes, CommentTriggerOutcome{
+			TargetType: "agent", TargetID: uuidToString(trigger.Agent.ID),
+			Status: result.status, ReasonCode: result.reason,
+		})
+	}
+	return outcomes
 }
 
 // noteBlockedRuntimeTargets leaves one system comment per agent refused for an
@@ -2140,6 +2160,23 @@ func (h *Handler) enqueueCommentAgentTriggers(ctx context.Context, issue db.Issu
 // genuine non-convergence it returns a truthful internal_error, never a fabricated
 // deferred that would silently drop the comment.
 func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, triggerCommentID pgtype.UUID) (DispatchStatus, DispatchReasonCode) {
+	if trigger.Source == commentTriggerSourceWorkflowFeedback && trigger.WorkflowFeedback != nil {
+		task, coalesced, err := h.TaskService.EnqueueWorkflowHumanComment(ctx, issue, trigger.Agent.ID,
+			trigger.WorkflowFeedback.HandoffID, trigger.WorkflowFeedback.CoordinatorTask,
+			trigger.WorkflowFeedback.CandidateID, triggerCommentID)
+		if err != nil {
+			logCommentEnqueueFailure("enqueue workflow human comment failed", err,
+				"issue_id", uuidToString(issue.ID), "agent_id", uuidToString(trigger.Agent.ID))
+			return DispatchBlocked, commentEnqueueFailureReason(err)
+		}
+		if task.Status == "deferred" {
+			return DispatchDeferred, ""
+		}
+		if coalesced {
+			return DispatchCoalesced, ""
+		}
+		return DispatchQueued, ""
+	}
 	pending := trigger.AlreadyPending
 	lostRace := false
 	// Resolve the reviewed HEAD lazily and at most once — the common
@@ -2727,6 +2764,17 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 		return nil, nil
 	}
 
+	// A completed handoff to a person leaves the issue assigned to that person.
+	// The last handoff's source agent is the current conversational coordinator;
+	// the candidate writer may be a different agent and is resumed only after
+	// this coordinator classifies an actual correction.
+	if trigger, blocked, handled := h.routeWorkflowHumanComment(ctx, issue, actorID); handled {
+		if blocked != nil {
+			return nil, []commentMentionTarget{*blocked}
+		}
+		return []commentAgentTrigger{trigger}, nil
+	}
+
 	// A deleted parent no longer speaks for its agent author (#8296).
 	if parentComment != nil && parentComment.AuthorType == "agent" && !parentComment.DeletedAt.Valid {
 		trigger, ok := h.routeReplyToParentAuthor(ctx, issue, parentComment, actorType, actorID, opts)
@@ -2757,6 +2805,80 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 		return []commentAgentTrigger{trigger}, nil
 	}
 	return nil, nil
+}
+
+func (h *Handler) routeWorkflowHumanComment(ctx context.Context, issue db.Issue, memberID string) (commentAgentTrigger, *commentMentionTarget, bool) {
+	if !issue.WorkflowCandidateID.Valid || issue.WorkflowFrozen || !issue.AssigneeType.Valid ||
+		issue.AssigneeType.String != "member" || !issue.AssigneeID.Valid || len(issue.WorkflowPolicy) == 0 {
+		return commentAgentTrigger{}, nil, false
+	}
+	blocked := func(agentID string, reason DispatchReasonCode) (commentAgentTrigger, *commentMentionTarget, bool) {
+		return commentAgentTrigger{}, &commentMentionTarget{
+			TargetType: "agent", TargetID: agentID, Status: DispatchBlocked, ReasonCode: reason,
+		}, true
+	}
+	if h.DB == nil {
+		return blocked("", ReasonInternalError)
+	}
+	// Only an issue with an active handoff enters this route. Once that
+	// lineage exists, an unavailable coordinator is a blocked dispatch; it
+	// cannot silently become a reply to a different agent in the thread.
+	var handoffAgentID pgtype.UUID
+	err := h.DB.QueryRow(ctx, `SELECT agent_id FROM issue_wakeup
+		WHERE issue_id=$1 AND handoff IS NOT NULL AND disabled_at IS NULL
+		ORDER BY id DESC LIMIT 1`, issue.ID).Scan(&handoffAgentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return commentAgentTrigger{}, nil, false
+	}
+	if err != nil {
+		return blocked("", ReasonInternalError)
+	}
+	targetID := uuidToString(handoffAgentID)
+	memberUUID, err := util.ParseUUID(memberID)
+	if err != nil {
+		return blocked(targetID, ReasonInternalError)
+	}
+	var route workflowHumanCommentRoute
+	var agentID pgtype.UUID
+	err = h.DB.QueryRow(ctx, `SELECT w.id,w.filter_task_id,c.id,t.agent_id
+		FROM issue i
+		JOIN issue_workflow_candidate c ON c.id=i.workflow_candidate_id AND c.issue_id=i.id
+		JOIN issue_wakeup w ON w.id=(SELECT latest.id FROM issue_wakeup latest
+			WHERE latest.issue_id=i.id AND latest.handoff IS NOT NULL AND latest.disabled_at IS NULL
+			ORDER BY latest.id DESC LIMIT 1)
+		JOIN agent_task_queue t ON t.id=w.filter_task_id AND t.issue_id=i.id AND t.agent_id=w.agent_id
+		JOIN member m ON m.workspace_id=i.workspace_id AND m.user_id=$2
+		WHERE i.id=$1 AND i.workspace_id=$3 AND i.workflow_policy IS NOT NULL AND NOT i.workflow_frozen
+		AND i.assignee_type='member' AND i.workflow_candidate_id=$4
+		AND i.assignee_id=$5
+		AND c.policy_version=i.workflow_policy->>'version'
+		AND w.last_task_id IS NULL AND w.handoff_completed_at IS NOT NULL
+		AND w.source_task_id=w.filter_task_id AND w.filter_agent_id=t.agent_id
+		AND w.handoff->>'assignee_type'='member' AND w.handoff->>'assignee_id'=i.assignee_id::text
+		AND w.handoff->>'outgoing_task_id'=t.id::text
+		AND t.status='completed' AND (i.assignee_id=$2 OR m.role IN ('owner','admin'))`,
+		issue.ID, memberUUID, issue.WorkspaceID, issue.WorkflowCandidateID, issue.AssigneeID).Scan(
+		&route.HandoffID, &route.CoordinatorTask, &route.CandidateID, &agentID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return blocked(targetID, ReasonTargetUnavailable)
+		}
+		return blocked(targetID, ReasonInternalError)
+	}
+	agent, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: agentID, WorkspaceID: issue.WorkspaceID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return blocked(targetID, ReasonTargetUnavailable)
+		}
+		return blocked(targetID, ReasonInternalError)
+	}
+	if !h.canInvokeAgent(ctx, agent, "member", memberID, memberID, uuidToString(issue.WorkspaceID)) {
+		return blocked(targetID, ReasonInvocationNotAllowed)
+	}
+	if !agent.RuntimeID.Valid || agent.ArchivedAt.Valid {
+		return blocked(targetID, ReasonTargetUnavailable)
+	}
+	return commentAgentTrigger{Agent: agent, Source: commentTriggerSourceWorkflowFeedback, WorkflowFeedback: &route}, nil, true
 }
 
 func hasAgentOrSquadMention(mentions []util.Mention) bool {

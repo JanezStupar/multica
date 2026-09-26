@@ -462,6 +462,8 @@
       "retry": "再試行",
       "frozen_label": "凍結中のタスク",
       "frozen_body": "明示的に移行されるまで、このタスクは凍結されます。これまでの作業と履歴は保持されます。",
+      "feedback_historical": "このコメントを受けて変更が要求されました。",
+      "feedback_open_comment": "コメントに移動",
       "no_candidate": "承認できる候補はありません。",
       "candidate_digest": "候補",
       "pull_requests": "候補のプルリクエスト",

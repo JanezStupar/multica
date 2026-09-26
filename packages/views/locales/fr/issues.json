@@ -467,6 +467,8 @@
       "retry": "Réessayer",
       "frozen_label": "Issue gelée",
       "frozen_body": "Cette issue reste gelée jusqu'à sa migration explicite. Le travail et l'historique existants sont conservés.",
+      "feedback_historical": "Des modifications ont été demandées à partir de ce commentaire.",
+      "feedback_open_comment": "Aller au commentaire",
       "no_candidate": "Aucune proposition n'est prête à être acceptée.",
       "candidate_digest": "Proposition",
       "pull_requests": "Pull requests de la proposition",

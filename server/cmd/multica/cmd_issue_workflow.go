@@ -68,6 +68,13 @@ type issueWorkflowDeliveryRetryInput struct {
 	Reason           string `json:"reason,omitempty"`
 }
 
+type issueWorkflowFeedbackContinuationInput struct {
+	CandidateID      string `json:"candidate_id"`
+	ExpectedRevision int64  `json:"expected_revision"`
+	CommentID        string `json:"comment_id"`
+	Kind             string `json:"kind"`
+}
+
 func init() { issueCmd.AddCommand(newIssueWorkflowCommand()) }
 
 func newIssueWorkflowCommand() *cobra.Command {
@@ -80,7 +87,7 @@ func newIssueWorkflowCommand() *cobra.Command {
 	}
 	workflow.AddCommand(get)
 	var exceptionCommand *cobra.Command
-	for _, action := range []string{"review", "accept", "reject", "exception", "delivery-retry", "hold", "release", "complete", "retry-outcome"} {
+	for _, action := range []string{"review", "accept", "reject", "feedback-continue", "exception", "delivery-retry", "hold", "release", "complete", "retry-outcome"} {
 		action := action
 		use := action + " <issue-id>"
 		args := cobra.ExactArgs(1)
@@ -111,6 +118,11 @@ func newIssueWorkflowCommand() *cobra.Command {
 	{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"outcome_complete":false,"hold_delivery":true}
 
 	Add "merge_order_pr_urls":["https://git.example.com/team/app/pulls/7","https://git.example.com/team/app/pulls/8"] when the delivery preview requires an explicit PR order.`
+		}
+		if action == "feedback-continue" {
+			command.Short = "Continue the retained workflow from a classified member comment"
+			command.Long = "Reads one strict JSON request from --file or stdin. Use this current-agent continuation only when a member comment clearly requests an in-scope correction or identifies a scope change. Ordinary questions do not revoke review or acceptance; ambiguous scope must be escalated. The request is bound to the exact candidate, issue revision and comment. Unknown fields and trailing JSON are rejected."
+			command.Example = `  {"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"comment_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","kind":"in_scope_defect"}`
 		}
 		if isIssueWorkflowAcceptanceAction(action) {
 			command.Flags().String("acceptance-id", "", "Accepted workflow record UUID")
@@ -203,6 +215,8 @@ func runIssueWorkflow(cmd *cobra.Command, args []string, action string) error {
 			path += "/acceptances/" + url.PathEscape(acceptanceID) + "/" + action
 		case "reject":
 			path += "/rejections"
+		case "feedback-continue":
+			path += "/feedback-continuations"
 		case "exception":
 			path += "/exceptions"
 		case "exception-revoke":
@@ -268,6 +282,8 @@ func decodeIssueWorkflowInput(data []byte, action string) (any, error) {
 		input = &issueWorkflowExceptionRevokeInput{}
 	case "delivery-retry":
 		input = &issueWorkflowDeliveryRetryInput{}
+	case "feedback-continue":
+		input = &issueWorkflowFeedbackContinuationInput{}
 	default:
 		return nil, fmt.Errorf("unknown workflow action %q", action)
 	}
@@ -297,6 +313,8 @@ func decodeIssueWorkflowInput(data []byte, action string) (any, error) {
 		err = validateIssueWorkflowExceptionRevoke(typed)
 	case *issueWorkflowDeliveryRetryInput:
 		err = validateIssueWorkflowDeliveryRetry(typed)
+	case *issueWorkflowFeedbackContinuationInput:
+		err = validateIssueWorkflowFeedbackContinuation(typed)
 	}
 	if err != nil {
 		return nil, err
@@ -458,6 +476,19 @@ func validateIssueWorkflowDeliveryRetry(input *issueWorkflowDeliveryRetryInput) 
 	}
 	if input.Reason = strings.TrimSpace(input.Reason); len(input.Reason) > 500 {
 		return fmt.Errorf("reason must be at most 500 bytes")
+	}
+	return nil
+}
+
+func validateIssueWorkflowFeedbackContinuation(input *issueWorkflowFeedbackContinuationInput) error {
+	if err := validateIssueWorkflowIdentity(input.CandidateID, input.ExpectedRevision); err != nil {
+		return err
+	}
+	if _, err := util.ParseUUID(input.CommentID); err != nil {
+		return fmt.Errorf("comment_id must be a UUID")
+	}
+	if input.Kind != "in_scope_defect" && input.Kind != "scope_change" {
+		return fmt.Errorf("kind must be in_scope_defect or scope_change")
 	}
 	return nil
 }

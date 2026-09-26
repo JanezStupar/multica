@@ -26,6 +26,28 @@ For a human recipient, use `assignee_type: "member"` and `assignee_id`, with
 human review and does not create an agent task. Agent recipients may use the
 legacy `agent_id` field.
 
+Treat a member's comment as workflow evidence and classify it before changing
+the ticket's phase. An ordinary question or clarification does not revoke
+review or acceptance. When a comment clearly requests a correction within the
+assigned outcome, the current agent uses
+`multica issue workflow feedback-continue <issue-id> --file <json>` with the
+exact `candidate_id`, `expected_revision`, `comment_id` and
+`kind: "in_scope_defect"`; this returns the work to the retained writer and
+invalidates the affected evaluation for the corrected candidate. When the
+comment clearly changes the requested outcome, use `kind: "scope_change"` and
+reconcile the changed scope with the user's stated authorization and the
+ticket's objective. Proceed within that authorization when no material detail
+or authority remains unresolved; ask only when one does. If the scope is
+ambiguous, escalate for clarification instead of silently expanding
+implementation. This is the current-agent comment continuation path. After a
+completed human handoff, a plain comment from the assigned human (or an
+authorized workspace owner/admin) automatically wakes the server-created
+coordinator feedback task while retaining the human assignee; only that exact
+task may use this temporary continuation authority. Do not promise rework of
+an already delivered PR; if the backend rejects continuation after delivery,
+preserve the delivered history and escalate or create a separately owned
+follow-up.
+
 Before a review verdict, acceptance, rejection or exception, inspect current
 authority, blockers, candidate and revision with `multica issue workflow get
 <issue-id>`. Submit a review against that candidate with `workflow review` and

@@ -1393,6 +1393,253 @@ func (s *TaskService) EnqueueTaskForThreadParent(ctx context.Context, issue db.I
 	return s.enqueueMentionTask(ctx, issue, agentID, triggerCommentID, false, pgtype.UUID{}, false, "", pgtype.UUID{}, pgtype.UUID{}, OriginNamed)
 }
 
+// EnqueueWorkflowHumanComment starts a conversation with the agent who handed
+// the current candidate to a person. The task carries the exact candidate,
+// handoff, coordinator and comment as claimable evidence. It leaves acceptance
+// and issue ownership untouched; the agent decides whether feedback warrants
+// a separate continuation. An issue lock serializes this insert with handoffs,
+// rejection and competing comments on the same issue.
+const workflowHumanCommentHandoffNote = "Human commented on the current workflow candidate. Answer questions directly. If this is a clear correction, classify it and continue the retained writer through workflow feedback. Verify the candidate before acting."
+
+func (s *TaskService) EnqueueWorkflowHumanComment(ctx context.Context, issue db.Issue, agentID, handoffID, coordinatorTaskID, candidateID, commentID pgtype.UUID) (db.AgentTaskQueue, bool, error) {
+	var empty db.AgentTaskQueue
+	if s == nil || s.TxStarter == nil || !issue.ID.Valid || !commentID.Valid {
+		return empty, false, ErrAttributionFailClosed
+	}
+	comment, err := s.Queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{ID: commentID, WorkspaceID: issue.WorkspaceID})
+	if err != nil || comment.IssueID != issue.ID || comment.AuthorType != "member" || comment.DeletedAt.Valid {
+		return empty, false, ErrAttributionFailClosed
+	}
+	agent, err := s.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: agentID, WorkspaceID: issue.WorkspaceID})
+	if err != nil || agent.ArchivedAt.Valid || !agent.RuntimeID.Valid {
+		return empty, false, ErrAttributionFailClosed
+	}
+	overlay := s.buildRuntimeMCPOverlay(ctx, comment.AuthorID, agent)
+	headSHA := s.ResolveIssueReviewSHAParam(ctx, issue.ID)
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return empty, false, err
+	}
+	defer tx.Rollback(ctx)
+	q := s.Queries.WithTx(tx)
+	// Ownership teardown takes workspace, agent, issue and runtime locks in this
+	// order. Take that fence before locking the issue for candidate validation.
+	var ownersPresent bool
+	if err := tx.QueryRow(ctx, `SELECT lock_task_owner_rows($1,$2,$3)`, agentID, issue.ID, agent.RuntimeID).Scan(&ownersPresent); err != nil {
+		return empty, false, err
+	}
+	if !ownersPresent {
+		return empty, false, ErrAttributionFailClosed
+	}
+	var currentCandidate, currentHandoff, currentCoordinator, currentAgent, currentRuntime, sourceOriginator, authorID, humanAssignee pgtype.UUID
+	var sourceSession, content string
+	err = tx.QueryRow(ctx, `SELECT i.workflow_candidate_id,w.id,w.filter_task_id,source.agent_id,
+		source.runtime_id,source.originator_user_id,COALESCE(source.session_id,''),c.author_id,c.content,i.assignee_id
+		FROM issue i
+		JOIN issue_workflow_candidate candidate ON candidate.id=i.workflow_candidate_id AND candidate.issue_id=i.id
+		JOIN issue_wakeup w ON w.id=(SELECT latest.id FROM issue_wakeup latest
+			WHERE latest.issue_id=i.id AND latest.handoff IS NOT NULL AND latest.disabled_at IS NULL
+			ORDER BY latest.id DESC LIMIT 1)
+		JOIN agent_task_queue source ON source.id=w.filter_task_id AND source.issue_id=i.id
+			AND source.agent_id=w.agent_id
+		JOIN agent active ON active.id=source.agent_id AND active.workspace_id=i.workspace_id
+		JOIN comment c ON c.id=$3 AND c.issue_id=i.id AND c.workspace_id=i.workspace_id
+		JOIN member m ON m.workspace_id=i.workspace_id AND m.user_id=c.author_id
+		WHERE i.id=$1 AND i.workspace_id=$2 AND i.workflow_policy IS NOT NULL AND NOT i.workflow_frozen
+		AND i.assignee_type='member' AND i.workflow_candidate_id=$4
+		AND candidate.policy_version=i.workflow_policy->>'version'
+		AND w.last_task_id IS NULL AND w.handoff_completed_at IS NOT NULL
+		AND w.source_task_id=w.filter_task_id AND w.filter_agent_id=source.agent_id
+		AND w.handoff->>'assignee_type'='member' AND w.handoff->>'assignee_id'=i.assignee_id::text
+		AND w.handoff->>'outgoing_task_id'=source.id::text
+		AND source.status='completed' AND c.author_type='member' AND c.deleted_at IS NULL
+		AND active.runtime_id=$5 AND active.archived_at IS NULL
+		AND c.type IN ('comment','progress_update')
+		AND c.created_at>candidate.created_at
+		AND (i.assignee_id=c.author_id OR m.role IN ('owner','admin'))
+		FOR NO KEY UPDATE OF i`, issue.ID, issue.WorkspaceID, commentID, candidateID, agent.RuntimeID).Scan(
+		&currentCandidate, &currentHandoff, &currentCoordinator, &currentAgent, &currentRuntime, &sourceOriginator,
+		&sourceSession, &authorID, &content, &humanAssignee)
+	if err != nil || currentCandidate != candidateID || currentHandoff != handoffID ||
+		currentCoordinator != coordinatorTaskID || currentAgent != agentID || authorID != comment.AuthorID ||
+		humanAssignee != issue.AssigneeID {
+		return empty, false, ErrAttributionFailClosed
+	}
+	fields := strings.Fields(content)
+	if len(fields) == 0 || strings.EqualFold(fields[0], "/note") {
+		return empty, false, ErrAttributionFailClosed
+	}
+	marker, err := json.Marshal(map[string]string{
+		"candidate_id": util.UUIDToString(candidateID), "handoff_id": util.UUIDToString(handoffID),
+		"coordinator_task_id": util.UUIDToString(coordinatorTaskID), "comment_id": util.UUIDToString(commentID),
+	})
+	if err != nil {
+		return empty, false, err
+	}
+	// Reuse the latest completed conversation for this human and candidate. A
+	// different person's task, a replaced runtime, or a turn without a retained
+	// session starts fresh rather than borrowing another authority context.
+	var resumeTaskID, latestID, latestRuntime pgtype.UUID
+	var latestSession string
+	err = tx.QueryRow(ctx, `SELECT t.id,t.runtime_id,COALESCE(t.session_id,'') FROM agent_task_queue t
+		JOIN comment prior ON prior.id=t.trigger_comment_id AND prior.issue_id=t.issue_id
+		WHERE t.issue_id=$1 AND t.agent_id=$2 AND t.status='completed'
+		AND t.trigger_evidence_kind='workflow_human_comment' AND t.trigger_evidence_ref_id=$3
+		AND t.delegated_from_task_id=$4
+		AND t.context->'workflow_feedback'->>'candidate_id'=$5
+		AND t.context->'workflow_feedback'->>'handoff_id'=$6
+		AND t.context->'workflow_feedback'->>'coordinator_task_id'=$7
+		AND t.context->'workflow_feedback'->>'comment_id'=prior.id::text
+		AND t.originator_user_id=$8 AND t.accountable_user_id=$8
+		AND prior.author_type='member' AND prior.author_id=$8 AND prior.deleted_at IS NULL
+		ORDER BY t.completed_at DESC NULLS LAST,t.id DESC LIMIT 1`, issue.ID, agentID, handoffID,
+		coordinatorTaskID, util.UUIDToString(candidateID), util.UUIDToString(handoffID),
+		util.UUIDToString(coordinatorTaskID), authorID).Scan(&latestID, &latestRuntime, &latestSession)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return empty, false, err
+	}
+	if err == nil {
+		if latestSession != "" && latestRuntime == agent.RuntimeID {
+			resumeTaskID = latestID
+		}
+	} else if sourceSession != "" && currentRuntime == agent.RuntimeID && sourceOriginator == authorID {
+		resumeTaskID = coordinatorTaskID
+	}
+	// Reconciliation can revisit a comment already held behind another human's
+	// queued task. Return its durable deferred row instead of creating a second
+	// obligation for the same comment.
+	var existingID pgtype.UUID
+	err = tx.QueryRow(ctx, `SELECT id FROM agent_task_queue
+		WHERE issue_id=$1 AND agent_id=$2 AND trigger_comment_id=$3
+		AND trigger_evidence_kind='workflow_human_comment' AND trigger_evidence_ref_id=$4
+		AND context->'workflow_feedback'->>'candidate_id'=$5
+		AND context->'workflow_feedback'->>'comment_id'=$6
+		AND status IN ('deferred','queued','dispatched','running')
+		ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE`, issue.ID, agentID, commentID,
+		handoffID, util.UUIDToString(candidateID), util.UUIDToString(commentID)).Scan(&existingID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return empty, false, err
+	}
+	if existingID.Valid {
+		existing, err := q.GetAgentTask(ctx, existingID)
+		if err != nil {
+			return empty, false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return empty, false, err
+		}
+		return existing, true, nil
+	}
+	// A queued conversation is still editable. Fold a later same-thread comment
+	// into it while keeping the marker and provenance aligned to the new trigger.
+	var pendingID, oldCommentID, pendingAuthor pgtype.UUID
+	err = tx.QueryRow(ctx, `SELECT id,trigger_comment_id,originator_user_id FROM agent_task_queue
+		WHERE issue_id=$1 AND agent_id=$2 AND status='queued'
+		AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($3)
+		AND context->'workflow_feedback'->>'candidate_id'=$4
+		AND context->'workflow_feedback'->>'handoff_id'=$5
+		AND trigger_evidence_kind='workflow_human_comment'
+		ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE`, issue.ID, agentID, commentID,
+		util.UUIDToString(candidateID), util.UUIDToString(handoffID)).Scan(&pendingID, &oldCommentID, &pendingAuthor)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return empty, false, err
+	}
+	if pendingID.Valid {
+		// A queued task may carry only one human's connected-app capability and
+		// attribution. Persist the later author's own task as deferred. The normal
+		// promoter waits for the occupied thread slot, then releases it after the
+		// first task completes, fails or is cancelled.
+		if pendingAuthor != authorID {
+			var deferredID pgtype.UUID
+			var headSHAValue string
+			if headSHA.Valid {
+				headSHAValue = headSHA.String
+			}
+			err = tx.QueryRow(ctx, `INSERT INTO agent_task_queue
+				(id,agent_id,runtime_id,issue_id,status,priority,trigger_comment_id,
+				trigger_summary,force_fresh_session,handoff_note,context,originator_user_id,
+				accountable_user_id,runtime_mcp_overlay,runtime_connected_apps,originator_source,
+				delegated_from_task_id,rerun_of_task_id,trigger_evidence_kind,trigger_evidence_ref_id,fire_at)
+				SELECT $1,$2,$3,$4,'deferred',$5,$6,$7,true,$8,
+				jsonb_strip_nulls(jsonb_build_object('head_sha',NULLIF($9,''),
+					'workflow_feedback',$10::jsonb)),
+				$11,$11,$12,$13,'direct_human',$14,$15,'workflow_human_comment',$16,clock_timestamp()
+				WHERE lock_task_owner_rows($2,$4,$3) RETURNING id`,
+				dbid.NewV7(), agentID, agent.RuntimeID, issue.ID, priorityToInt(issue.Priority), commentID,
+				s.buildCommentTriggerSummary(ctx, issue.WorkspaceID, commentID), workflowHumanCommentHandoffNote,
+				headSHAValue, marker, authorID, overlay.Overlay, overlay.ConnectedApps,
+				coordinatorTaskID, resumeTaskID, handoffID).Scan(&deferredID)
+			if err != nil {
+				return empty, false, err
+			}
+			deferred, err := q.GetAgentTask(ctx, deferredID)
+			if err != nil {
+				return empty, false, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return empty, false, err
+			}
+			s.notifyRuntimeMayHaveWork(deferred.RuntimeID, "")
+			return deferred, false, nil
+		}
+		_, err = tx.Exec(ctx, `UPDATE agent_task_queue SET
+			coalesced_comment_ids=(SELECT COALESCE(array_agg(DISTINCT id),'{}'::uuid[])
+				FROM unnest(array_append(coalesced_comment_ids,trigger_comment_id)) id WHERE id<>$2),
+			trigger_comment_id=$2,trigger_summary=$3,
+			context=jsonb_set(COALESCE(context,'{}'::jsonb),'{workflow_feedback}',$4::jsonb),
+			originator_user_id=$5,accountable_user_id=$5,runtime_mcp_overlay=$6,
+			runtime_connected_apps=$7
+			WHERE id=$1`, pendingID, commentID, s.buildCommentTriggerSummary(ctx, issue.WorkspaceID, commentID),
+			marker, authorID, overlay.Overlay, overlay.ConnectedApps)
+		if err != nil {
+			return empty, false, err
+		}
+		merged, err := q.GetAgentTask(ctx, pendingID)
+		if err != nil {
+			return empty, false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return empty, false, err
+		}
+		return merged, true, nil
+	}
+	task, err := q.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+		ID: dbid.NewV7(), AgentID: agentID, RuntimeID: agent.RuntimeID, IssueID: issue.ID,
+		Priority: priorityToInt(issue.Priority), TriggerCommentID: commentID,
+		TriggerSummary:    s.buildCommentTriggerSummary(ctx, issue.WorkspaceID, commentID),
+		ForceFreshSession: pgtype.Bool{Bool: true, Valid: true},
+		HandoffNote:       pgtype.Text{String: workflowHumanCommentHandoffNote, Valid: true},
+		HeadSha:           headSHA, RerunOfTaskID: resumeTaskID,
+		OriginatorUserID: authorID, AccountableUserID: authorID,
+		OriginatorSource:     pgtype.Text{String: string(attribution.SourceDirectHuman), Valid: true},
+		DelegatedFromTaskID:  coordinatorTaskID,
+		TriggerEvidenceKind:  pgtype.Text{String: "workflow_human_comment", Valid: true},
+		TriggerEvidenceRefID: handoffID,
+		RuntimeMcpOverlay:    overlay.Overlay, RuntimeConnectedApps: overlay.ConnectedApps,
+	})
+	if err != nil {
+		if isDuplicatePendingTaskErr(err) {
+			return empty, false, ErrDuplicatePendingTask
+		}
+		return empty, false, err
+	}
+	_, err = tx.Exec(ctx, `UPDATE agent_task_queue SET context=COALESCE(context,'{}'::jsonb)
+		||jsonb_build_object('workflow_feedback',$2::jsonb) WHERE id=$1`, task.ID, marker)
+	if err != nil {
+		return empty, false, err
+	}
+	task, err = q.GetAgentTask(ctx, task.ID)
+	if err != nil {
+		return empty, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return empty, false, err
+	}
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+	s.NotifyTaskEnqueued(ctx, task)
+	return task, false, nil
+}
+
 // EnqueueTaskForSquadLeader is the leader-role variant of EnqueueTaskForMention.
 // The resulting task carries is_leader_task=true so that downstream
 // self-trigger guards can distinguish a comment posted while the agent was

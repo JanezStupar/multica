@@ -467,6 +467,8 @@
       "retry": "Try again",
       "frozen_label": "Frozen issue",
       "frozen_body": "This issue is frozen until it is explicitly migrated. Its existing work and history are preserved.",
+      "feedback_historical": "Changes were requested from this comment.",
+      "feedback_open_comment": "Go to comment",
       "no_candidate": "No candidate is ready for acceptance.",
       "candidate_digest": "Candidate",
       "pull_requests": "Candidate pull requests",

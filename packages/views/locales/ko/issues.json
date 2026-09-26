@@ -462,6 +462,8 @@
       "retry": "다시 시도",
       "frozen_label": "동결된 작업",
       "frozen_body": "명시적으로 마이그레이션할 때까지 이 작업은 동결됩니다. 기존 작업과 기록은 보존됩니다.",
+      "feedback_historical": "이 댓글을 바탕으로 수정이 요청되었습니다.",
+      "feedback_open_comment": "댓글로 이동",
       "no_candidate": "승인할 후보가 없습니다.",
       "candidate_digest": "후보",
       "pull_requests": "후보 PR",

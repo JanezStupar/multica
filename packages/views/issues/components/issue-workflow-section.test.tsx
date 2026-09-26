@@ -84,6 +84,34 @@ beforeEach(() => {
 });
 
 describe("IssueWorkflowSection", () => {
+  it("shows historical feedback evidence with a deep link without exposing the snapshot", () => {
+    mocks.workflow = makeWorkflow({
+      feedback: {
+        comment_id: "comment-7",
+        comment_revision: 3,
+        content_sha256: "a".repeat(64),
+        kind: "in_scope_defect",
+        candidate_id: "candidate-42",
+        source_task_id: "task-writer",
+        created_at: "2026-09-24T12:40:00Z",
+      },
+      acceptance: {
+        id: "accept-1",
+        candidate_id: "candidate-42",
+        state: "accepted",
+        mode: "human",
+        requested_at: "2026-09-24T12:45:00Z",
+        accepted_at: "2026-09-24T12:46:00Z",
+      },
+      available_actions: { accept_human: false, reject: false, request_trivial_acceptance: false, waive_review: false },
+    });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+
+    expect(screen.getByText("Changes were requested from this comment.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Go to comment" })).toHaveAttribute("href", "#comment-comment-7");
+    expect(screen.queryByText("a".repeat(64))).not.toBeInTheDocument();
+  });
+
   it("explains a changed candidate PR head to a read-only viewer", () => {
     mocks.workflow = makeWorkflow({
       acceptance_blockers: ["candidate_head_changed"],

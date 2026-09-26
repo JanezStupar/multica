@@ -23,6 +23,9 @@ func TestIssueWorkflowAuthorityEndpointsFailClosedForMalformedAndUnenrolled(t *t
 	call(http.MethodPost, "/api/issues/"+issueID+"/workflow/rejections",
 		map[string]any{"candidate_id": "not-a-uuid", "expected_revision": 1, "kind": "scope_change", "reason": "changed"},
 		testHandler.RejectIssueWorkflow).Want(http.StatusBadRequest)
+	call(http.MethodPost, "/api/issues/"+issueID+"/workflow/feedback-continuations",
+		map[string]any{"candidate_id": "not-a-uuid", "expected_revision": 1, "comment_id": "not-a-uuid", "kind": "in_scope_defect"},
+		testHandler.ContinueIssueWorkflowFeedback).Want(http.StatusBadRequest)
 	call(http.MethodPost, "/api/issues/"+issueID+"/workflow/acceptances",
 		map[string]any{"candidate_id": "00000000-0000-0000-0000-000000000001", "expected_revision": 1, "unexpected": true},
 		testHandler.AcceptIssueWorkflow).Want(http.StatusBadRequest)

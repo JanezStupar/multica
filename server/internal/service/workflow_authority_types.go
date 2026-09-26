@@ -38,6 +38,20 @@ type WorkflowReviewView struct {
 	SubmittedAt    time.Time `json:"submitted_at"`
 }
 
+// WorkflowFeedbackView identifies the immutable feedback snapshot that caused
+// candidate rework. The original comment may later be edited or deleted; the
+// snapshot stays in the rejection ledger and writer task, while this general
+// issue view exposes only its digest.
+type WorkflowFeedbackView struct {
+	CommentID       string    `json:"comment_id"`
+	CommentRevision int64     `json:"comment_revision"`
+	ContentSHA256   string    `json:"content_sha256"`
+	Kind            string    `json:"kind"`
+	CandidateID     string    `json:"candidate_id"`
+	SourceTaskID    string    `json:"source_task_id"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
 type WorkflowAcceptanceView struct {
 	ID                   string     `json:"id"`
 	CandidateID          string     `json:"candidate_id"`
@@ -122,6 +136,7 @@ type WorkflowState struct {
 	Candidate              *WorkflowCandidateView          `json:"candidate"`
 	Reviews                []WorkflowReviewView            `json:"reviews"`
 	Acceptance             *WorkflowAcceptanceView         `json:"acceptance"`
+	Feedback               *WorkflowFeedbackView           `json:"feedback,omitempty"`
 	Delivery               []WorkflowDeliveryView          `json:"delivery"`
 	RetainedContextOptions []WorkflowRetainedContextOption `json:"retained_context_options"`
 	AcceptanceBlockers     []string                        `json:"acceptance_blockers"`
@@ -151,6 +166,16 @@ type WorkflowRejectionInput struct {
 	Kind             string `json:"kind"`
 	Reason           string `json:"reason"`
 	ResumeTaskID     string `json:"resume_task_id,omitempty"`
+}
+
+// WorkflowFeedbackContinuationInput makes an existing human comment actionable
+// for the current candidate. The comment is resolved from the caller's running
+// task, so its content and author cannot be supplied by the agent.
+type WorkflowFeedbackContinuationInput struct {
+	CandidateID      string `json:"candidate_id"`
+	ExpectedRevision int64  `json:"expected_revision"`
+	CommentID        string `json:"comment_id"`
+	Kind             string `json:"kind"`
 }
 
 type WorkflowExceptionInput struct {

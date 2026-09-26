@@ -3705,6 +3705,15 @@ const IssueWorkflowReviewSchema = z.object({
   pr_review_urls: z.array(z.string()),
   submitted_at: z.string(),
 }).loose();
+const IssueWorkflowFeedbackSchema = z.object({
+  comment_id: z.string(),
+  comment_revision: z.number().int().nonnegative(),
+  content_sha256: z.string(),
+  kind: z.string(),
+  candidate_id: z.string(),
+  source_task_id: z.string(),
+  created_at: z.string(),
+}).loose();
 const IssueWorkflowAcceptanceSchema = z.object({
   id: z.string(),
   candidate_id: z.string(),
@@ -3784,6 +3793,7 @@ export const IssueWorkflowSchema: z.ZodType<IssueWorkflow> = z.object({
   candidate: IssueWorkflowCandidateSchema.nullable(),
   reviews: z.array(IssueWorkflowReviewSchema),
   acceptance: IssueWorkflowAcceptanceSchema.nullable(),
+  feedback: IssueWorkflowFeedbackSchema.optional().catch(undefined),
   acceptance_blockers: z.array(z.string()).default([]),
   delivery_preview: IssueWorkflowDeliveryPreviewSchema.nullable().optional().default(null),
   delivery: z.array(IssueWorkflowDeliverySchema),

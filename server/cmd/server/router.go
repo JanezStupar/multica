@@ -1989,6 +1989,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/workflow/acceptances/{acceptanceID}/complete", h.CompleteIssueWorkflowOutcome)
 					r.With(handler.RequireHumanActor).Post("/workflow/acceptances/{acceptanceID}/retry-outcome", h.RetryIssueWorkflowOutcome)
 					r.Post("/workflow/rejections", h.RejectIssueWorkflow)
+					r.Post("/workflow/feedback-continuations", h.ContinueIssueWorkflowFeedback)
 					r.Post("/workflow/exceptions", h.GrantIssueWorkflowException)
 					r.Post("/workflow/exceptions/{exceptionID}/revoke", h.RevokeIssueWorkflowException)
 					r.With(handler.RequireHumanActor).Post("/workflow/delivery/{deliveryID}/retry", h.RetryIssueWorkflowDelivery)

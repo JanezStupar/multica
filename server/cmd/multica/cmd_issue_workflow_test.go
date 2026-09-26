@@ -35,6 +35,28 @@ func TestIssueWorkflowAcceptHelpShowsBothRequestShapes(t *testing.T) {
 	}
 }
 
+func TestIssueWorkflowFeedbackContinuationHelpExplainsClassification(t *testing.T) {
+	cmd := newIssueWorkflowCommand()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"feedback-continue", "--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"current-agent continuation",
+		"in-scope correction",
+		"scope change",
+		"Ordinary questions do not revoke review or acceptance",
+		"ambiguous scope must be escalated",
+		"candidate, issue revision and comment",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("feedback continuation help lacks %q: %s", want, out.String())
+		}
+	}
+}
+
 func TestIssueWorkflowDispositionHelpExplainsStateBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		action string
@@ -119,6 +141,28 @@ func TestIssueWorkflowAcceptanceDispositionRequiresCandidateRevisionAndReason(t 
 	}
 }
 
+func TestIssueWorkflowFeedbackContinuationValidationRequiresExactClassification(t *testing.T) {
+	const candidateID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	const commentID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	valid := `{"candidate_id":"` + candidateID + `","expected_revision":4,"comment_id":"` + commentID + `","kind":"in_scope_defect"}`
+	if input, err := decodeIssueWorkflowInput([]byte(valid), "feedback-continue"); err != nil {
+		t.Fatalf("valid feedback continuation rejected: %v", err)
+	} else if typed := input.(*issueWorkflowFeedbackContinuationInput); typed.CommentID != commentID || typed.Kind != "in_scope_defect" {
+		t.Fatalf("feedback continuation fields changed: %#v", typed)
+	}
+
+	for _, invalid := range []string{
+		`{"candidate_id":"` + candidateID + `","expected_revision":4,"comment_id":"` + commentID + `","kind":"question"}`,
+		`{"candidate_id":"` + candidateID + `","expected_revision":4,"comment_id":"not-a-uuid","kind":"in_scope_defect"}`,
+		`{"candidate_id":"` + candidateID + `","expected_revision":4,"comment_id":"` + commentID + `","kind":"scope_change","extra":true}`,
+		`{"candidate_id":"` + candidateID + `","expected_revision":4,"comment_id":"` + commentID + `","kind":"scope_change"} {}`,
+	} {
+		if _, err := decodeIssueWorkflowInput([]byte(invalid), "feedback-continue"); err == nil {
+			t.Fatalf("invalid feedback continuation unexpectedly accepted: %s", invalid)
+		}
+	}
+}
+
 func TestIssueWorkflowExternalMergeExceptionPassesCLIValidation(t *testing.T) {
 	const input = `{"candidate_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","expected_revision":4,` +
 		`"scope":"external_merge","grant_details":{"accept_merged_head":true},` +
@@ -132,9 +176,10 @@ func TestIssueWorkflowExternalMergeExceptionPassesCLIValidation(t *testing.T) {
 func TestIssueWorkflowCLIActions(t *testing.T) {
 	const issueID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	const candidateID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-	const exceptionID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	const commentID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	const exceptionID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 	const deliveryID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
-	const acceptanceID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	const acceptanceID = "ffffffff-ffff-4fff-8fff-ffffffffffff"
 	workflowResponse := `{"issue_id":"` + issueID + `","issue_revision":4,"frozen":false,"policy_version":"sha256:policy","candidate":null,"reviews":[],"acceptance":null,"delivery":[],"retained_context_options":[],"available_actions":{"accept_human":true,"reject":true,"request_trivial_acceptance":false,"waive_review":false}}`
 	cases := []struct {
 		name, action, path, input string
@@ -170,6 +215,9 @@ func TestIssueWorkflowCLIActions(t *testing.T) {
 		{name: "reject", path: "/api/issues/" + issueID + "/workflow/rejections", wantMethod: http.MethodPost,
 			input:    `{"candidate_id":"` + candidateID + `","expected_revision":4,"kind":"scope_change","reason":" New work "}`,
 			wantBody: map[string]any{"candidate_id": candidateID, "expected_revision": float64(4), "kind": "scope_change", "reason": "New work"}},
+		{name: "feedback-continue", path: "/api/issues/" + issueID + "/workflow/feedback-continuations", wantMethod: http.MethodPost,
+			input:    `{"candidate_id":"` + candidateID + `","expected_revision":4,"comment_id":"` + commentID + `","kind":"in_scope_defect"}`,
+			wantBody: map[string]any{"candidate_id": candidateID, "expected_revision": float64(4), "comment_id": commentID, "kind": "in_scope_defect"}},
 		{name: "exception", path: "/api/issues/" + issueID + "/workflow/exceptions", wantMethod: http.MethodPost,
 			input:    `{"candidate_id":"` + candidateID + `","expected_revision":4,"scope":"review","grant_details":{"waive":true},"reason":" Justified exception ","consequences":"One final review is waived"}`,
 			wantBody: map[string]any{"candidate_id": candidateID, "expected_revision": float64(4), "scope": "review", "grant_details": map[string]any{"waive": true}, "reason": "Justified exception", "consequences": "One final review is waived"}},

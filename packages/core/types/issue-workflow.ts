@@ -103,6 +103,16 @@ export interface IssueWorkflowException {
   revoked_by_id?: string;
 }
 
+export interface IssueWorkflowFeedback {
+  comment_id: string;
+  comment_revision: number;
+  content_sha256: string;
+  kind: string;
+  candidate_id: string;
+  source_task_id: string;
+  created_at: string;
+}
+
 export interface IssueWorkflow {
   issue_id: string;
   issue_revision: number;
@@ -113,6 +123,7 @@ export interface IssueWorkflow {
   candidate: IssueWorkflowCandidate | null;
   reviews: IssueWorkflowReview[];
   acceptance: IssueWorkflowAcceptance | null;
+  feedback?: IssueWorkflowFeedback;
   acceptance_blockers: string[];
   delivery_preview: IssueWorkflowDeliveryPreview | null;
   delivery: IssueWorkflowDelivery[];

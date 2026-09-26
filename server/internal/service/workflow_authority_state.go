@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,6 +58,22 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 	state.IssueRevision = issue.Revision
 	state.Frozen = issue.WorkflowFrozen
 	state.PolicyVersion = policy.Version
+	var feedback WorkflowFeedbackView
+	var feedbackContent string
+	err = tx.QueryRow(ctx, `SELECT comment_id::text,comment_revision,reason,kind,candidate_id::text,
+		source_task_id::text,created_at FROM issue_workflow_rejection
+		WHERE workspace_id=$1 AND issue_id=$2 AND comment_id IS NOT NULL
+		ORDER BY created_at DESC,id DESC LIMIT 1`, workspaceID, issue.ID).Scan(
+		&feedback.CommentID, &feedback.CommentRevision, &feedbackContent, &feedback.Kind,
+		&feedback.CandidateID, &feedback.SourceTaskID, &feedback.CreatedAt)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return state, err
+	}
+	if err == nil {
+		sum := sha256.Sum256([]byte(feedbackContent))
+		feedback.ContentSHA256 = hex.EncodeToString(sum[:])
+		state.Feedback = &feedback
+	}
 	if authority.FormatVersion == 2 {
 		state.AcceptedStatusKey = authority.AcceptedStatusKey
 	}

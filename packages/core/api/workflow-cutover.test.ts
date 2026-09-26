@@ -136,6 +136,28 @@ it("reads progression state and sends revision-bound accept/reject decisions", a
   }));
 });
 
+it("preserves optional workflow feedback while remaining compatible with older and malformed projections", async () => {
+  const feedback = {
+    comment_id: "comment-7",
+    comment_revision: 3,
+    content_sha256: "a".repeat(64),
+    kind: "in_scope_defect",
+    candidate_id: issueWorkflow.candidate.id,
+    source_task_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    created_at: "2026-09-24T10:10:00Z",
+  };
+  const mocked = vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ...issueWorkflow, feedback })))
+    .mockResolvedValueOnce(new Response(JSON.stringify(issueWorkflow)))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ...issueWorkflow, feedback: { ...feedback, comment_revision: "future" } })));
+  vi.stubGlobal("fetch", mocked);
+  const client = new ApiClient("https://api.example.test");
+
+  await expect(client.getIssueWorkflow(issueID)).resolves.toEqual(expect.objectContaining({ feedback }));
+  await expect(client.getIssueWorkflow(issueID)).resolves.toEqual(expect.not.objectContaining({ feedback: expect.anything() }));
+  await expect(client.getIssueWorkflow(issueID)).resolves.toEqual(expect.not.objectContaining({ feedback: expect.anything() }));
+});
+
 it("does not send an unknown rejection kind", async () => {
   const mocked = vi.fn();
   vi.stubGlobal("fetch", mocked);

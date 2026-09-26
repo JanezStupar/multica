@@ -181,6 +181,37 @@ consequences; use `multica issue workflow exception revoke <issue-id>
 <exception-id> --file <json>` to record a scoped revocation. The workflow read
 shows active and revoked exceptions, acceptance blockers and delivery preview.
 
+## Member feedback continuation
+
+Use a member comment as workflow evidence and reconcile it with the assigned
+outcome, current candidate and authorization before taking a workflow action.
+A stale status or handoff record does not by itself block a clear correction.
+An ordinary question or clarification is conversational context and does not
+revoke review or acceptance. A clear correction within the existing outcome is
+an in-scope defect: use
+`multica issue workflow feedback-continue <issue-id> --file <json>` with the
+exact candidate, issue revision and comment IDs and
+`kind: "in_scope_defect"`. The server returns the correction to the retained
+writer and invalidates the affected acceptance or delivery authority so the
+corrected candidate receives a fresh independent review.
+
+A comment that clearly requests a different outcome is a scope change: submit
+`kind: "scope_change"`, preserve the existing objective and evidence, and
+reconcile the request with the user's stated authorization. Mica may proceed
+within that authorization without another approval when the requested details
+and authority are clear; ask only when a material detail or authority remains
+unresolved. Ambiguous scope is escalated, and Mica does not silently broaden
+implementation beyond the authorization. Do not manually change status,
+revoke acceptance or create a legacy handoff to make a clear correction
+executable. After a completed human handoff, a plain comment from the assigned
+human (or an authorized workspace owner/admin) automatically wakes the
+server-created coordinator feedback task while retaining the human assignee.
+Only that exact task may use the temporary continuation authority; an
+arbitrary agent task does not inherit it. This path does not promise rework of
+an already delivered PR. If the backend rejects continuation after delivery,
+preserve the delivered history and escalate or create a separately owned
+follow-up.
+
 ## PRs, ticket records and delivery
 
 PRs carry code handoffs: the branch, exact commit and a draft PR. PR review

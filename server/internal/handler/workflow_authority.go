@@ -125,6 +125,31 @@ func (h *Handler) RejectIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, state)
 }
 
+// ContinueIssueWorkflowFeedback records a supervisor's classification of the
+// human comment delivered to its running task and resumes the candidate writer.
+func (h *Handler) ContinueIssueWorkflowFeedback(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	var in service.WorkflowFeedbackContinuationInput
+	if !decodeWorkflowBody(w, r, &in) {
+		return
+	}
+	actor := h.workflowActorForIssue(r, uuidToString(issue.WorkspaceID))
+	svc := h.workflowAuthorityService()
+	if err := svc.ContinueWorkflowFeedback(r.Context(), issue.WorkspaceID, issue.ID, actor, in); err != nil {
+		workflowAuthorityError(w, err)
+		return
+	}
+	state, err := svc.ReadState(r.Context(), issue.WorkspaceID, issue.ID, actor)
+	if err != nil {
+		workflowAuthorityError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
 // GetIssueWorkflow reads a consistent, credential-free view of the current
 // candidate, review attestations, acceptance and per-PR delivery progress.
 func (h *Handler) GetIssueWorkflow(w http.ResponseWriter, r *http.Request) {

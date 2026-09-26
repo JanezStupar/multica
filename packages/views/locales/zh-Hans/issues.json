@@ -462,6 +462,8 @@
       "retry": "重试",
       "frozen_label": "已冻结的任务",
       "frozen_body": "此任务在明确迁移前保持冻结，已有工作和记录都会保留。",
+      "feedback_historical": "已根据此评论提出修改请求。",
+      "feedback_open_comment": "跳转到评论",
       "no_candidate": "暂无可验收的候选版本。",
       "candidate_digest": "候选版本",
       "pull_requests": "候选版本的 PR",
