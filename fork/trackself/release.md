@@ -1,6 +1,68 @@
 # Mica release and deployment
 
-## Current backend: v0.5.1-janez.4
+## Current backend: v0.5.1-janez.5
+
+Deployed on 2026-09-26 from independently reviewed commit
+`d3ae217b9a1e616f633195f80631622e803bec10`. Backend image digest:
+`sha256:94cf2a25d300e349490173adb88d306fd24d2d2b1e0b0b7a7272626003224316`.
+The exact source and build metadata are published in Forgejo's generic
+`Janez/multica-backend/v0.5.1-janez.5` package; the six-target CLI transport
+image digest is `sha256:78f6907e369a46a82f0d9d075c62d209086c9cf6aaede8299bd8ce246e444b85`.
+
+Production validation passed. The frontend was subsequently upgraded to `.5`
+at digest `sha256:f1bbc412d59b66516c7568d49c2b48057704d9e22e94be375d3dc7ad4d0a5025`;
+its update preserved the backend service specification and running task. The
+operator CLI, all three Linux runtimes and the Mac and Windows CLIs and daemons
+run `.5`. All 24 retained agent bindings match the newly imported bundle
+`0fb2c074-f586-4a9d-89b0-c72790de9ac8`. The new-ticket default was activated on
+2026-09-26 with policy version
+`sha256:61b3c803e0c530ae26d145e2a49afc136ad4297029bdad05a8ef00ee4ff15823`.
+Before/after read-back verified
+all 634 existing ticket policy versions and frozen states unchanged, including
+602 frozen tickets. Existing work still requires explicit migration or a
+scoped override to change its policy.
+
+Database-backed feedback, resumption, handoff, acceptance and delivery
+regressions passed, including full handler/service race suites. The managed
+trial database and profile were destroyed after migration rehearsal.
+Production backup remains on utility-server at
+`/opt/multica/config-backups/before-v0.5.1-janez.5`. Migrations 580–584 are
+additive; an image-only downgrade is not a verified rollback.
+
+TRA-633's existing human approval was registered without requesting another
+approval. Services PR6 was made ready and merged at the accepted head on
+2026-09-26 after replacing the saved Forgejo integration credential. Provider
+logs confirmed the old credential's title PATCH was denied by token-scope
+checks. Only the encrypted access credential changed; connection identity and
+webhook secret were preserved. Delivery read-back passed. TRA-622's PR28 is
+ready with its merge hold intact. TRA-625's live cleanup/crash qualification
+and TRA-634's human UX acceptance remain outstanding; source delivery does
+not establish those runtime outcomes.
+
+Revision-bound deployment limitation (2026-09-26): Docker stack's legacy
+interpolation rejects the owning Compose file's nested backend-version
+expression. After the installer guards passed, the backend alone was updated
+using its exact tag and digest; the owning validator then passed. This does
+not establish that a future stack-wide installer invocation will succeed.
+
+## Current workstation desktop: v0.5.1-janez.5
+
+Installed on 2026-09-26 from the same exact reviewed source. AppImage SHA-256:
+`223eb8d9a305218ff94f8599c74819e92dfb565378fdf87a0b3721452528e647`.
+The packaged app and running bundled daemon report `.5`; its CLI matches the
+published binary SHA-256
+`ed41dbc81d99e55894a1eb677b406320439b2ae223fb883487c18a105dcc41bb`.
+The launcher and profile were preserved; rollback AppImage remains alongside
+the installed file. AppImage and metadata are published in Forgejo generic
+`Janez/multica-desktop/v0.5.1-janez.5`.
+
+Client production builds/typechecks, 113 focused web tests, isolated and live
+HTTPS assets/version checks, actual desktop package inspection and startup
+passed. This does not constitute a full interactive GUI acceptance pass.
+The owning deployment record is private-infra
+`infra/automation-server/multica/upgrade-v0.5.1-janez.5.md`.
+
+## Previous backend: v0.5.1-janez.4
 
 Backend-only upgrade completed on 2026-09-25 from reviewed commit
 `be821aba1d5569af0cb361e67b15d8d0744b58c4`. Production uses
@@ -196,6 +258,14 @@ desktop app was found in the system or user Applications directory. Per user
 instruction, the old CLI binary was replaced without retaining a backup.
 These checks establish CLI execution and API access, not native daemon/task,
 repository-access or retained/fresh-context proof.
+
+At 2026-09-25 13:11 UTC, the user requested starting the existing
+`com.trackself.multica.janez-mac-native` LaunchAgent. `launchctl bootstrap
+gui/501` loaded it; read-back showed the service and `janez-mac-native`
+daemon running with CLI `v0.5.1-janez.2`. The authenticated Trackself
+runtime listing reported `fd86fade-411f-48e5-8643-422f6851afdc` online.
+This startup did not change native agent policy bindings or exercise a
+native task.
 
 ## Coordinated Linux activation
 
