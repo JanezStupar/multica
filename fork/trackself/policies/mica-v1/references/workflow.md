@@ -54,8 +54,9 @@ action:
 - `done` means required PRs merged and the actual ticket outcome is complete.
   No-PR work may finish directly after acceptance when its outcome is complete.
 
-These semantics require format-2 completion and external-merge reconciliation
-support; `v0.5.1-janez.2` cannot run this policy revision. Resolve the workspace
+These semantics require format-2 completion, external-merge reconciliation
+and exact-comment feedback continuation from backend and agent CLI
+`v0.5.1-janez.5`. Earlier deployments cannot run this policy revision. Resolve the workspace
 status identifier from its configuration, not by guessing from the `PR Ready`
 display name. The configured status must have the `started` category.
 

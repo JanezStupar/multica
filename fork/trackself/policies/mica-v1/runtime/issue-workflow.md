@@ -1,5 +1,6 @@
-This policy requires format-2 completion and `delivery.external_merged_head`
-support; do not activate this revision on `v0.5.1-janez.2`.
+This policy requires format-2 completion, external-merge reconciliation and
+exact-comment feedback continuation from backend and agent CLI
+`v0.5.1-janez.5`; do not activate this revision on earlier deployments.
 Use the workflow commands below for acceptance, persistent holds and completion.
 Existing tickets follow their pinned version until explicitly migrated at the
 authorized workspace boundary.
