@@ -2049,6 +2049,19 @@ func (h *Handler) finalizeClaimDelivery(
 		// its current owner as the task-token identity rather than the stale
 		// claim-time snapshot captured by the caller.
 		tokenParams.UserID = locked.OwnerID
+		if task.IssueID.Valid {
+			// Persist the server's exact selection together with the claim's
+			// comment receipt. Context supplied by a client grants no lineage.
+			_, err := qtx.SetTaskCommentResumeSource(ctx, db.SetTaskCommentResumeSourceParams{
+				TaskID: task.ID, RuntimeID: task.RuntimeID, DispatchedAt: task.DispatchedAt,
+				ExpectedTriggerCommentID: task.TriggerCommentID,
+				SourceTaskID:             task.CommentResumeFromTaskID, SessionID: response.PriorSessionID,
+				DeliveredCommentIds: deliveredCommentIDs,
+			})
+			if err != nil {
+				return fmt.Errorf("record retained comment session source: %w", err)
+			}
+		}
 		return nil
 	}
 
@@ -2412,6 +2425,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// comment input. Comment tasks replace this with the ids actually embedded
 	// in the capability-aware response built below.
 	deliveredCommentIDs = []pgtype.UUID{}
+	// A reclaimed response must select its own source, including clearing
+	// previously recorded lineage if this claim starts a fresh conversation.
+	task.CommentResumeFromTaskID = pgtype.UUID{}
 	composioMCPEnabled := h.composioMCPAppsEnabled(r.Context())
 	if composioMCPEnabled {
 		resp.ConnectedApps = parseRuntimeConnectedAppsForClaim(task.RuntimeConnectedApps, task.ID)
@@ -3162,6 +3178,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}); err == nil && prior.SessionID.Valid {
 				if prior.RuntimeID == task.RuntimeID {
 					resp.PriorSessionID = prior.SessionID.String
+					if requestHasClientCapability(r, protocol.DaemonCapabilityRetainedContextResetV1) && !task.RetainedContextInvalidated && prior.Status == "completed" && slices.ContainsFunc(deliveredComments, func(c CoalescedCommentData) bool { return c.AuthorType == "member" }) {
+						task.CommentResumeFromTaskID = prior.ID
+					}
 					priorPlatformFingerprint = prior.SkillBundleFingerprint
 					priorWorkflowProfileID = prior.WorkflowProfileID
 					// Same rule as the rerun path: date the deltas from the run
@@ -3201,6 +3220,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.PriorSessionID = ""
 			resp.PriorSessionResumeUnavailable = true
 			resumeAnchor = nil
+		}
+		if resp.PriorSessionID == "" {
+			task.CommentResumeFromTaskID = pgtype.UUID{}
 		}
 
 		// Both deltas, now that the resume source is known (MUL-7344).

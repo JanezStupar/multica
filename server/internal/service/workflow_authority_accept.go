@@ -52,6 +52,36 @@ func validateAutonomousAcceptanceAuthority(allowed, assigned bool, classificatio
 	return nil
 }
 
+func workflowHumanAcceptanceAllowed(authority WorkflowAuthorityPolicy, role, actorID string, grant map[string]any) bool {
+	if grant["human_actor_id"] == actorID {
+		return true
+	}
+	for _, acceptedRole := range authority.HumanAcceptRoles {
+		if role == acceptedRole {
+			return true
+		}
+	}
+	return false
+}
+
+// WorkflowNonterminalStatus resolves eligibility for active workflow authority
+// from the workspace's lifecycle category, rather than a presentation key.
+func WorkflowNonterminalStatus(ctx context.Context, tx pgx.Tx, issue db.Issue) (bool, error) {
+	var allowed bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM issue_status
+		WHERE workspace_id=$1 AND key=$2 AND category IN ('unstarted','started'))`,
+		issue.WorkspaceID, issue.Status).Scan(&allowed)
+	return allowed, err
+}
+
+func workflowSelectedProfileID(ctx context.Context, tx pgx.Tx, issue db.Issue, agentID pgtype.UUID, policyVersion string) (pgtype.UUID, error) {
+	var profileID pgtype.UUID
+	err := tx.QueryRow(ctx, `SELECT (SELECT id FROM issue_workflow_profile
+		WHERE workspace_id=$1 AND issue_id=$2 AND agent_id=$3 AND policy_version=$4
+		ORDER BY revision DESC LIMIT 1)`, issue.WorkspaceID, issue.ID, agentID, policyVersion).Scan(&profileID)
+	return profileID, err
+}
+
 func workflowAuthorityPolicy(ctx context.Context, s WorkflowAuthorityService, issue db.Issue) (*IssueWorkflowPolicy, WorkflowAuthorityPolicy, error) {
 	pinned, err := s.Tasks.DecodeIssueWorkflowPolicy(issue.WorkflowPolicy)
 	if err != nil || pinned == nil {
@@ -265,8 +295,15 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return "", err
 	}
-	if issue.WorkflowFrozen || issue.WorkflowCandidateID != candidateID || issue.Revision != request.ExpectedRevision || issue.Status != "in_review" {
+	if issue.WorkflowFrozen || issue.WorkflowCandidateID != candidateID || issue.Revision != request.ExpectedRevision {
 		return "", ErrWorkflowAuthorityConflict
+	}
+	allowedStatus, err := WorkflowNonterminalStatus(ctx, tx, issue)
+	if err != nil {
+		return "", err
+	}
+	if !allowedStatus {
+		return "", fmt.Errorf("%w: terminal issue cannot receive new acceptance", ErrWorkflowAuthorityConflict)
 	}
 	pinned, authority, err := workflowAuthorityPolicy(ctx, s, issue)
 	if err != nil {
@@ -296,6 +333,8 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 		return "", ErrWorkflowAuthorityForbidden
 	}
 	var sourceTaskID pgtype.UUID
+	var sourceTaskPolicy pgtype.Text
+	var sourceTaskProfile, selectedProfile pgtype.UUID
 	acceptanceExceptionID, acceptanceGrant, err := workflowExceptionGrant(ctx, tx, issue, candidate.ID, pinned.Version, "acceptance")
 	if err != nil {
 		return "", err
@@ -305,13 +344,7 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 		if err != nil {
 			return "", err
 		}
-		allowed := false
-		for _, candidateRole := range authority.HumanAcceptRoles {
-			allowed = allowed || role == candidateRole
-		}
-		allowed = allowed || acceptanceGrant["human_actor_id"] == actor.ID
-		if !allowed || issue.AssigneeType.String != "member" ||
-			(issue.AssigneeID != actorID && acceptanceGrant["human_actor_id"] != actor.ID) || request.ClassificationReason != "" {
+		if !workflowHumanAcceptanceAllowed(authority, role, actor.ID, acceptanceGrant) || request.ClassificationReason != "" {
 			return "", ErrWorkflowAuthorityForbidden
 		}
 	} else {
@@ -319,13 +352,15 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 		if err != nil {
 			return "", err
 		}
-		var taskPolicy pgtype.Text
-		var taskProfile pgtype.UUID
 		if err := tx.QueryRow(ctx, `SELECT workflow_policy_version,workflow_profile_id
 			FROM agent_task_queue WHERE id=$1 AND issue_id=$2 AND agent_id=$3`,
-			taskID, issue.ID, agentID).Scan(&taskPolicy, &taskProfile); err != nil ||
-			!taskPolicy.Valid || taskPolicy.String != pinned.Version || !taskProfile.Valid {
+			taskID, issue.ID, agentID).Scan(&sourceTaskPolicy, &sourceTaskProfile); err != nil ||
+			!sourceTaskPolicy.Valid || sourceTaskPolicy.String != pinned.Version || !sourceTaskProfile.Valid {
 			return "", ErrWorkflowAuthorityForbidden
+		}
+		selectedProfile, err = workflowSelectedProfileID(ctx, tx, issue, agentID, pinned.Version)
+		if err != nil {
+			return "", err
 		}
 		allowed := false
 		for _, id := range authority.AutonomousAgentIDs {
@@ -371,11 +406,24 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 	if err != nil {
 		return "", err
 	}
-	authorityJSON, _ := json.Marshal(map[string]any{"request": request, "review_id": reviewID,
+	authoritySnapshot := map[string]any{"request": request, "review_id": reviewID,
 		"acceptance_exception_id": util.UUIDToString(acceptanceExceptionID),
 		"review_exception_id":     util.UUIDToString(reviewExceptionID), "delivery_action": action,
 		"delivery_exception_id": util.UUIDToString(deliveryExceptionID),
-		"merge_method":          method, "policy_version": pinned.Version, "scope_digest": candidate.ScopeDigest})
+		"merge_method":          method, "policy_version": pinned.Version, "scope_digest": candidate.ScopeDigest}
+	if mode == "trivial" {
+		authoritySnapshot["source_task_workflow_policy_version"] = sourceTaskPolicy.String
+		authoritySnapshot["source_task_workflow_profile_id"] = util.UUIDToString(sourceTaskProfile)
+		// Retained tasks can use an older immutable profile. Capture the
+		// current selection independently so deliberate reselection requires
+		// reevaluation without comparing global agent defaults.
+		var selectedID any
+		if selectedProfile.Valid {
+			selectedID = util.UUIDToString(selectedProfile)
+		}
+		authoritySnapshot["selected_workflow_profile_id"] = selectedID
+	}
+	authorityJSON, _ := json.Marshal(authoritySnapshot)
 	acceptanceID := dbid.NewV7()
 	state := "requested"
 	var acceptedRevision any
@@ -423,17 +471,58 @@ func finalizeWorkflowAcceptance(ctx context.Context, tx pgx.Tx, q *db.Queries, i
 	acceptanceID pgtype.UUID, actor WorkflowActor, ordered []HandoffCandidate, bindings []workflowDeliveryBinding,
 	action, method string, authority WorkflowAuthorityPolicy, request workflowAcceptanceRequest,
 ) (*db.AgentTaskQueue, error) {
-	// The issue row lock also fences native enqueue paths. Retire unstarted
-	// plans before the done transition; started runs are rejected by caller.
-	if _, err := tx.Exec(ctx, `UPDATE agent_task_queue SET status='cancelled',completed_at=now(),
-		error='Issue accepted; queued work retired',prepare_lease_expires_at=NULL,
-		cancelled_by_type='system' WHERE issue_id=$1 AND status IN ('queued','deferred')
-		AND started_at IS NULL`, issue.ID); err != nil {
-		return nil, err
-	}
 	targetStatus := "done"
 	if authority.FormatVersion == 2 && (len(ordered) > 0 || request.OutcomeComplete == nil || !*request.OutcomeComplete) {
 		targetStatus = authority.AcceptedStatusKey
+	}
+	// A human may approve while a permission-checked ordinary question is
+	// already queued for the assigned agent. Preserve that exact input as
+	// conversation authority, independent of the acceptance decision evidence.
+	if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance a SET human_comment_obligations=
+		(SELECT COALESCE(jsonb_agg(DISTINCT entry),'[]'::jsonb) FROM (
+		  SELECT entry FROM jsonb_array_elements(a.human_comment_obligations) entry
+		  UNION ALL SELECT jsonb_build_object('comment_id',c.id::text,'agent_id',conversation.agent_id::text)
+		  FROM agent_task_queue conversation JOIN comment c
+		    ON (c.id=conversation.trigger_comment_id OR c.id=ANY(conversation.coalesced_comment_ids))
+		  JOIN member m ON m.workspace_id=$2 AND m.user_id=c.author_id
+		  WHERE conversation.issue_id=$1 AND conversation.agent_id=$3
+		  AND conversation.status IN ('queued','deferred') AND conversation.started_at IS NULL
+		  AND c.issue_id=$1 AND c.workspace_id=$2 AND c.author_type='member'
+		  AND c.type IN ('comment','progress_update') AND c.deleted_at IS NULL
+		  AND c.created_at>(SELECT created_at FROM issue_workflow_candidate WHERE id=$5)
+		  AND btrim(c.content)<>'' AND c.content !~* '^\s*/note(\s|$)'
+		  AND conversation.originator_user_id=c.author_id AND conversation.accountable_user_id=c.author_id
+		) input) WHERE a.id=$4 AND a.issue_id=$1 AND $6`, issue.ID, issue.WorkspaceID,
+		issue.AssigneeID, acceptanceID, issue.WorkflowCandidateID, issue.AssigneeType.String == "agent"); err != nil {
+		return nil, err
+	}
+	// Previously queued ordinary conversations gain server evidence when their
+	// exact input is preserved by this approval. It restricts stale reruns even
+	// after explicit withdrawal removes mutable recipient bookkeeping.
+	if _, err := tx.Exec(ctx, `UPDATE agent_task_queue conversation SET context=COALESCE(context,'{}'::jsonb)
+		||jsonb_build_object('workflow_comment_obligation',workflow_comment_obligation_context(issue_id,agent_id,trigger_comment_id))
+		WHERE issue_id=$1 AND status IN ('queued','deferred') AND trigger_comment_id IS NOT NULL
+		AND workflow_comment_obligation_context(issue_id,agent_id,trigger_comment_id) IS NOT NULL`, issue.ID); err != nil {
+		return nil, err
+	}
+	if authority.FormatVersion == 2 && len(ordered) == 0 && targetStatus == "done" {
+		pendingFeedback, err := WorkflowHasPendingHumanFeedback(ctx, tx, issue)
+		if err != nil {
+			return nil, err
+		}
+		if pendingFeedback {
+			targetStatus = authority.AcceptedStatusKey
+		}
+	}
+	// Retire unstarted work, preserving only exact already-promised human
+	// conversations. Acceptance does not cancel an answer; those tasks retain
+	// conversation authority while completion/rework guards remain separate.
+	if _, err := tx.Exec(ctx, `UPDATE agent_task_queue SET status='cancelled',completed_at=now(),
+		error='Issue accepted; queued work retired',prepare_lease_expires_at=NULL,
+		cancelled_by_type='system' WHERE issue_id=$1 AND status IN ('queued','deferred')
+		AND started_at IS NULL AND NOT workflow_human_comment_task_current(id,issue_id)
+		AND NOT workflow_accepted_comment_task_current(id,issue_id)`, issue.ID); err != nil {
+		return nil, err
 	}
 	updated, err := q.UpdateIssue(ctx, db.UpdateIssueParams{
 		ID: issue.ID, ExpectedRevision: pgtype.Int8{Int64: issue.Revision, Valid: true},
@@ -445,9 +534,6 @@ func finalizeWorkflowAcceptance(ctx context.Context, tx pgx.Tx, q *db.Queries, i
 	})
 	if err != nil || updated.Revision != issue.Revision+1 {
 		return nil, fmt.Errorf("%w: issue completion failed: %v", ErrWorkflowAuthorityConflict, err)
-	}
-	if err := q.DisableIssueWakeups(ctx, issue.ID); err != nil {
-		return nil, err
 	}
 	byURL := make(map[string]workflowDeliveryBinding, len(bindings))
 	for _, b := range bindings {
@@ -472,9 +558,22 @@ func finalizeWorkflowAcceptance(ctx context.Context, tx pgx.Tx, q *db.Queries, i
 			return nil, err
 		}
 	}
+	// A completed member handoff cannot dispatch again. Keep only that exact
+	// current conversation evidence while delivery or outcome remains pending;
+	// ordinary and incomplete wakeups are still retired by acceptance.
+	if _, err := tx.Exec(ctx, `UPDATE issue_wakeup SET enabled=false,disabled_at=clock_timestamp(),updated_at=clock_timestamp()
+		WHERE issue_id=$1 AND disabled_at IS NULL
+		AND NOT (workflow_human_comment_handoff_current($1,id) AND
+		  ($2 OR EXISTS(SELECT 1 FROM agent_task_queue conversation WHERE conversation.issue_id=$1
+		    AND conversation.status IN ('queued','deferred','dispatched','running','waiting_local_directory')
+		    AND conversation.trigger_evidence_ref_id=issue_wakeup.id
+		    AND workflow_human_comment_task_current(conversation.id,$1))))`,
+		issue.ID, targetStatus != "done"); err != nil {
+		return nil, err
+	}
 	var outcomeTask *db.AgentTaskQueue
-	if authority.FormatVersion == 2 && len(ordered) == 0 && request.OutcomeComplete != nil && !*request.OutcomeComplete {
-		outcomeTask, _, err = ReconcileWorkflowCompletion(ctx, tx, q, updated, acceptanceID)
+	if authority.FormatVersion == 2 && len(ordered) == 0 && targetStatus == authority.AcceptedStatusKey {
+		outcomeTask, _, _, err = TryReconcileWorkflowCompletion(ctx, tx, q, updated, acceptanceID)
 		if err != nil {
 			return nil, err
 		}

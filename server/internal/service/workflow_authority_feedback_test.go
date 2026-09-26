@@ -52,8 +52,8 @@ func workflowFeedbackCandidate(t *testing.T, status string) (principalFixture, W
 		WorkflowActor{Type: "agent", ID: supervisorAgent, SourceTaskID: util.UUIDToString(feedbackTask)}
 }
 
-func TestWorkflowFeedbackContinuationIgnoresStatusAndRevokesCandidate(t *testing.T) {
-	for _, status := range []string{"blocked", "in_review"} {
+func TestWorkflowFeedbackContinuationAllowsNonterminalStatusesAndRevokesCandidate(t *testing.T) {
+	for _, status := range []string{"blocked", "in_progress", "in_review"} {
 		t.Run(status, func(t *testing.T) {
 			f, svc, issueID, writerTask, commentID, actor := workflowFeedbackCandidate(t, status)
 			ctx := context.Background()
@@ -321,6 +321,8 @@ func TestWorkflowFeedbackContinuationHumanAssigneeRequiresExactFeedbackTask(t *t
 			'coordinator_task_id',$3::text,'comment_id',$6::text))
 		WHERE id=$1`, parseTestUUID(t, actor.SourceTaskID), handoff.ID, handoff.LastTaskID,
 		parseTestUUID(t, f.UserID), in.CandidateID, primaryComment, commentID)
+	f.Exec(t, `UPDATE agent_task_queue SET coalesced_comment_ids=ARRAY[$2,$3]::uuid[] WHERE id=$1`,
+		handoff.LastTaskID, primaryComment, commentID)
 	// A different authorized human wrote in the same thread while the first
 	// conversation was queued. Its own deferred task must survive candidate
 	// rejection with that human's invocation overlay and coordinator agent.
@@ -346,6 +348,8 @@ func TestWorkflowFeedbackContinuationHumanAssigneeRequiresExactFeedbackTask(t *t
 			'candidate_id',$5::text,'handoff_id',$2::text,
 			'coordinator_task_id',$3::text,'comment_id',$6::text))
 		WHERE id=$1`, deferred, handoff.ID, handoff.LastTaskID, parseTestUUID(t, other), in.CandidateID, otherComment)
+	f.Exec(t, `UPDATE agent_task_queue SET coalesced_comment_ids=array_append(coalesced_comment_ids,$2) WHERE id=$1`,
+		handoff.LastTaskID, otherComment)
 	var writerAgent pgtype.UUID
 	if err := f.Pool.QueryRow(ctx, `SELECT agent_id FROM agent_task_queue WHERE id=$1`, writerTask).Scan(&writerAgent); err != nil {
 		t.Fatal(err)

@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 )
@@ -1093,6 +1095,152 @@ func TestWriteRuntimeConfigFileIsIdempotent(t *testing.T) {
 	}
 	if !strings.HasPrefix(s, userContent) {
 		t.Errorf("user content must remain intact at the top of the file, got:\n%s", s)
+	}
+}
+
+// The runtime helper and the daemon both lock the config file's own inode.
+// Holding that lock here makes the ordering deterministic: the writer must
+// wait, then replace the managed block in place once the holder releases it.
+func TestWriteRuntimeConfigFileSerializesOnTargetInode(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.md")
+	const userContent = "# User AGENTS.md\n\nkeep this\n"
+	if err := os.WriteFile(path, []byte(userContent), 0o600); err != nil {
+		t.Fatalf("seed user file: %v", err)
+	}
+	if err := writeRuntimeConfigFile(path, "old brief"); err != nil {
+		t.Fatalf("seed managed block: %v", err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat before update: %v", err)
+	}
+
+	holder, _, err := openTargetFileForLock(path, false)
+	if err != nil {
+		t.Fatalf("open target lock: %v", err)
+	}
+	if err := lockFileExclusive(holder); err != nil {
+		_ = holder.Close()
+		t.Fatalf("hold target lock: %v", err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			_ = unlockFile(holder)
+		}
+		_ = holder.Close()
+	}()
+
+	done := make(chan error, 1)
+	go func() { done <- writeRuntimeConfigFile(path, "new brief") }()
+	select {
+	case err := <-done:
+		t.Fatalf("writer completed while target inode was locked: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := unlockFile(holder); err != nil {
+		t.Fatalf("release target lock: %v", err)
+	}
+	released = true
+	if err := <-done; err != nil {
+		t.Fatalf("writeRuntimeConfigFile after lock release: %v", err)
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after update: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("runtime config update replaced the target inode")
+	}
+	if before.Mode().Perm() != after.Mode().Perm() {
+		t.Fatalf("runtime config update changed mode from %o to %o", before.Mode().Perm(), after.Mode().Perm())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read updated runtime config: %v", err)
+	}
+	content := string(data)
+	if !strings.HasPrefix(content, userContent) {
+		t.Fatalf("user content changed during serialized update: %q", content)
+	}
+	if strings.Contains(content, "old brief") || !strings.Contains(content, "new brief") {
+		t.Fatalf("managed block was not replaced under lock: %q", content)
+	}
+	if got := strings.Count(content, runtimeMarkerBegin); got != 1 {
+		t.Fatalf("managed begin marker count = %d, want 1", got)
+	}
+}
+
+// Cleanup removes daemon-created files. A writer that opened the old inode
+// before that unlink must not report success after writing to an invisible
+// descriptor; it must retry against the current pathname.
+func TestRuntimeConfigWriterRetriesAfterCleanupUnlinksOpenedInode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.md")
+	if err := writeRuntimeConfigFile(path, "old brief"); err != nil {
+		t.Fatalf("seed managed block: %v", err)
+	}
+
+	opened := make(chan struct{})
+	resume := make(chan struct{})
+	resumed := false
+	t.Cleanup(func() {
+		if !resumed {
+			close(resume)
+		}
+	})
+	var once sync.Once
+	openWriter := func(path string, create bool) (*os.File, bool, error) {
+		f, created, err := openTargetFileForLock(path, create)
+		if err != nil {
+			return nil, false, err
+		}
+		once.Do(func() {
+			close(opened)
+			<-resume
+		})
+		return f, created, nil
+	}
+
+	block := runtimeMarkerBegin + "\nnew brief\n" + runtimeMarkerEnd + "\n"
+	done := make(chan error, 1)
+	go func() {
+		done <- withRuntimeConfigFileLockUsing(path, true, openWriter, func(f *os.File, _ bool) error {
+			return writeRuntimeConfigFileContents(f, []byte(block), path)
+		})
+	}()
+	select {
+	case <-opened:
+	case <-time.After(5 * time.Second):
+		t.Fatal("writer did not open the target inode")
+	}
+
+	if err := CleanupRuntimeConfig(dir, "codex"); err != nil {
+		t.Fatalf("cleanup while writer held an opened descriptor: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("cleanup must unlink the daemon-created file before writer resumes, stat err=%v", err)
+	}
+	close(resume)
+	resumed = true
+	if err := <-done; err != nil {
+		t.Fatalf("writer retry after cleanup unlink: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read recreated runtime config: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "old brief") || !strings.Contains(content, "new brief") {
+		t.Fatalf("writer used stale or incomplete content after retry: %q", content)
+	}
+	if got := strings.Count(content, runtimeMarkerBegin); got != 1 {
+		t.Fatalf("recreated managed begin marker count = %d, want 1", got)
 	}
 }
 

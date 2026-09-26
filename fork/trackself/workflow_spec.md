@@ -139,6 +139,12 @@ Work without code or a PR need not manufacture one to complete its objective.
    mutation remain limited to the assigned scope; a broad workspace binding
    does not authorize unrelated changes.
 
+A claimed run keeps its exact runtime lease when the agent's default runtime
+changes. That default change does not cancel an enrolled run. Unclaimed
+promised replies recover on the current runtime with the same pinned policy
+and profile, without borrowing a provider session from another runtime.
+Explicit cancellation and invalidated candidate authority still apply.
+
 ### Status, assignment and handoff
 
 Status describes the work phase, not whether an agent process is currently
@@ -169,6 +175,13 @@ Machine waiting, execution failure and missing decisions remain visible.
 Ordinary unfinished work is not a human blocker merely because a run ended.
 Routine progression must not depend on the user relaying comments or changing
 statuses between agents.
+
+A policy-authorized human may explicitly accept an otherwise eligible current
+candidate on any nonterminal ticket, regardless of status spelling or agent
+assignment. Human assignment is a communication convention, not an acceptance
+prerequisite. Preserve membership, policy authority, exact candidate and revision,
+independent review, provider checks, active-work exclusion and delivery holds.
+Terminal work is not reopened or retroactively accepted by this shortcut.
 
 ### Review, fixes and independent final judgment
 

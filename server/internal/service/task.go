@@ -1438,7 +1438,7 @@ func (s *TaskService) EnqueueWorkflowHumanComment(ctx context.Context, issue db.
 		FROM issue i
 		JOIN issue_workflow_candidate candidate ON candidate.id=i.workflow_candidate_id AND candidate.issue_id=i.id
 		JOIN issue_wakeup w ON w.id=(SELECT latest.id FROM issue_wakeup latest
-			WHERE latest.issue_id=i.id AND latest.handoff IS NOT NULL AND latest.disabled_at IS NULL
+			WHERE latest.issue_id=i.id AND latest.handoff IS NOT NULL
 			ORDER BY latest.id DESC LIMIT 1)
 		JOIN agent_task_queue source ON source.id=w.filter_task_id AND source.issue_id=i.id
 			AND source.agent_id=w.agent_id
@@ -1447,7 +1447,7 @@ func (s *TaskService) EnqueueWorkflowHumanComment(ctx context.Context, issue db.
 		JOIN member m ON m.workspace_id=i.workspace_id AND m.user_id=c.author_id
 		WHERE i.id=$1 AND i.workspace_id=$2 AND i.workflow_policy IS NOT NULL AND NOT i.workflow_frozen
 		AND i.assignee_type='member' AND i.workflow_candidate_id=$4
-		AND candidate.policy_version=i.workflow_policy->>'version'
+		AND (workflow_human_comment_handoff_eligible(i.id,w.id) OR workflow_recorded_comment_input_current(i.id,$6,c.id))
 		AND w.last_task_id IS NULL AND w.handoff_completed_at IS NOT NULL
 		AND w.source_task_id=w.filter_task_id AND w.filter_agent_id=source.agent_id
 		AND w.handoff->>'assignee_type'='member' AND w.handoff->>'assignee_id'=i.assignee_id::text
@@ -1457,7 +1457,7 @@ func (s *TaskService) EnqueueWorkflowHumanComment(ctx context.Context, issue db.
 		AND c.type IN ('comment','progress_update')
 		AND c.created_at>candidate.created_at
 		AND (i.assignee_id=c.author_id OR m.role IN ('owner','admin'))
-		FOR NO KEY UPDATE OF i`, issue.ID, issue.WorkspaceID, commentID, candidateID, agent.RuntimeID).Scan(
+		FOR NO KEY UPDATE OF i`, issue.ID, issue.WorkspaceID, commentID, candidateID, agent.RuntimeID, agentID).Scan(
 		&currentCandidate, &currentHandoff, &currentCoordinator, &currentAgent, &currentRuntime, &sourceOriginator,
 		&sourceSession, &authorID, &content, &humanAssignee)
 	if err != nil || currentCandidate != candidateID || currentHandoff != handoffID ||
@@ -1562,7 +1562,7 @@ func (s *TaskService) EnqueueWorkflowHumanComment(ctx context.Context, issue db.
 				delegated_from_task_id,rerun_of_task_id,trigger_evidence_kind,trigger_evidence_ref_id,fire_at)
 				SELECT $1,$2,$3,$4,'deferred',$5,$6,$7,true,$8,
 				jsonb_strip_nulls(jsonb_build_object('head_sha',NULLIF($9,''),
-					'workflow_feedback',$10::jsonb)),
+					'workflow_feedback',$10::jsonb,'workflow_comment_obligation',workflow_comment_obligation_context($4,$2,$6))),
 				$11,$11,$12,$13,'direct_human',$14,$15,'workflow_human_comment',$16,clock_timestamp()
 				WHERE lock_task_owner_rows($2,$4,$3) RETURNING id`,
 				dbid.NewV7(), agentID, agent.RuntimeID, issue.ID, priorityToInt(issue.Priority), commentID,
@@ -1586,11 +1586,13 @@ func (s *TaskService) EnqueueWorkflowHumanComment(ctx context.Context, issue db.
 			coalesced_comment_ids=(SELECT COALESCE(array_agg(DISTINCT id),'{}'::uuid[])
 				FROM unnest(array_append(coalesced_comment_ids,trigger_comment_id)) id WHERE id<>$2),
 			trigger_comment_id=$2,trigger_summary=$3,
-			context=jsonb_set(COALESCE(context,'{}'::jsonb),'{workflow_feedback}',$4::jsonb),
+			context=jsonb_set(COALESCE(context,'{}'::jsonb),'{workflow_feedback}',$4::jsonb)
+			||CASE WHEN workflow_comment_obligation_context($8,$9,$2) IS NULL THEN '{}'::jsonb
+			 ELSE jsonb_build_object('workflow_comment_obligation',workflow_comment_obligation_context($8,$9,$2)) END,
 			originator_user_id=$5,accountable_user_id=$5,runtime_mcp_overlay=$6,
 			runtime_connected_apps=$7
 			WHERE id=$1`, pendingID, commentID, s.buildCommentTriggerSummary(ctx, issue.WorkspaceID, commentID),
-			marker, authorID, overlay.Overlay, overlay.ConnectedApps)
+			marker, authorID, overlay.Overlay, overlay.ConnectedApps, issue.ID, agentID)
 		if err != nil {
 			return empty, false, err
 		}
@@ -5980,6 +5982,9 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 		// action on a different status.
 		if IsTriageTask(sourceTask) {
 			return nil, ErrRerunSourceIsTriage
+		}
+		if handled, task, err := s.rerunPromisedWorkflowComment(ctx, issue, sourceTask, triggerCommentID, actorUserID, canInvoke); handled || err != nil {
+			return task, err
 		}
 		agentID = sourceTask.AgentID
 		isLeader = sourceTask.IsLeaderTask

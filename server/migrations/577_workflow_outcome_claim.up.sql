@@ -23,7 +23,9 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
  );
 $$;
 
-CREATE FUNCTION workflow_task_claimable(candidate_id uuid, candidate_issue uuid)
+-- sqlc does not model ALTER FUNCTION RENAME; OR REPLACE also permits its
+-- schema parser to replace the original name. PostgreSQL creates it anew here.
+CREATE OR REPLACE FUNCTION workflow_task_claimable(candidate_id uuid, candidate_issue uuid)
 RETURNS boolean LANGUAGE sql STABLE AS $$
  SELECT workflow_outcome_task_claimable(candidate_id,candidate_issue)
      OR workflow_regular_task_claimable(candidate_id,candidate_issue);

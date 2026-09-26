@@ -6,12 +6,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // RecoverOrphanedTasks is called by the daemon at startup for each runtime
@@ -63,8 +65,49 @@ func (h *Handler) RecoverOrphanedTasks(w http.ResponseWriter, r *http.Request) {
 // emits its first system message — so a crash mid-run doesn't lose the
 // resume pointer needed to continue the conversation on the next attempt.
 type PinTaskSessionRequest struct {
-	SessionID string `json:"session_id,omitempty"`
-	WorkDir   string `json:"work_dir,omitempty"`
+	SessionID       string `json:"session_id,omitempty"`
+	WorkDir         string `json:"work_dir,omitempty"`
+	AfterFreshReset bool   `json:"after_fresh_reset,omitempty"`
+}
+
+// BeginFreshTaskSession acknowledges the authority boundary before a daemon
+// replaces rejected retained context with a fresh prompt on the same task.
+func (h *Handler) BeginFreshTaskSession(w http.ResponseWriter, r *http.Request) {
+	task, ok := h.requireDaemonTaskAccess(w, r, chi.URLParam(r, "taskId"))
+	if !ok {
+		return
+	}
+	var req protocol.FreshTaskSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	runtime, ok := h.requireDaemonRuntimeAccess(w, r, req.RuntimeID)
+	if !ok {
+		return
+	}
+	if runtime.ID != task.RuntimeID {
+		writeError(w, http.StatusConflict, "task runtime changed")
+		return
+	}
+	generation, err := time.Parse(time.RFC3339Nano, req.DispatchedAt)
+	if err != nil || generation.Nanosecond()%1000 != 0 {
+		writeError(w, http.StatusBadRequest, "dispatched_at must be a PostgreSQL claim timestamp")
+		return
+	}
+	_, err = h.Queries.InvalidateRetainedTaskContext(r.Context(), db.InvalidateRetainedTaskContextParams{
+		TaskID: task.ID, RuntimeID: runtime.ID, DispatchedAt: pgtype.Timestamptz{Time: generation, Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusConflict, "task claim is stale or no longer running")
+		return
+	}
+	if err != nil {
+		slog.Warn("invalidate retained task context failed", "task_id", chi.URLParam(r, "taskId"), "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to start fresh task session")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) PinTaskSession(w http.ResponseWriter, r *http.Request) {
@@ -83,7 +126,7 @@ func (h *Handler) PinTaskSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	params := db.UpdateAgentTaskSessionParams{ID: parseUUID(taskID)}
+	params := db.UpdateAgentTaskSessionParams{ID: parseUUID(taskID), AfterFreshReset: req.AfterFreshReset}
 	if req.SessionID != "" {
 		params.SessionID = pgtype.Text{String: req.SessionID, Valid: true}
 	}
@@ -211,6 +254,10 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 	task, err := h.TaskService.RerunIssue(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{}, actorUserID, canInvoke)
 	if errors.Is(err, service.ErrRerunInvokeNotAllowed) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
+		return
+	}
+	if errors.Is(err, service.ErrWorkflowCommentRerunAuthor) {
+		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
 	if errors.Is(err, service.ErrIssueInTriage) {

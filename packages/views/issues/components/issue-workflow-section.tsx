@@ -93,9 +93,11 @@ function blockerKey(code: string):
   | "blocker_provider_binding_missing"
   | "blocker_merge_not_granted"
   | "blocker_human_recipient_required"
+  | "blocker_terminal_status"
   | "blocker_frozen"
   | "blocker_merge_order_required"
   | "blocker_acceptance_pending"
+  | "blocker_human_comment_pending"
   | "blocker_already_accepted"
   | "outcome_run_not_queued"
   | "outcome_run_stopped"
@@ -113,9 +115,12 @@ function blockerKey(code: string):
     case "provider_binding_missing": return "blocker_provider_binding_missing";
     case "merge_not_granted": return "blocker_merge_not_granted";
     case "human_recipient_required": return "blocker_human_recipient_required";
+    case "terminal_status": return "blocker_terminal_status";
     case "frozen": return "blocker_frozen";
     case "merge_order_required": return "blocker_merge_order_required";
     case "acceptance_pending": return "blocker_acceptance_pending";
+    case "human_comment_pending":
+    case "human_feedback_pending": return "blocker_human_comment_pending";
     case "already_accepted": return "blocker_already_accepted";
     case "outcome_dispatch_failed": return "outcome_run_not_queued";
     case "outcome_task_failed": return "outcome_run_stopped";
@@ -173,8 +178,10 @@ function WorkflowDeliveryRow({
         <span>{t(($) => $.detail.workflow[deliveryStatusKey(delivery.status)])}</span>
         <code className="font-mono">{delivery.expected_head_sha}</code>
         {delivery.last_error_class && delivery.status !== "delivered" ? (
-          <span className="text-destructive">
-            {t(($) => $.detail.workflow.delivery_error, { reason: delivery.last_error_class })}
+          <span className={delivery.last_error_class === "human_feedback_pending" ? undefined : "text-destructive"}>
+            {delivery.last_error_class === "human_feedback_pending"
+              ? t(($) => $.detail.workflow.blocker_human_comment_pending)
+              : t(($) => $.detail.workflow.delivery_error, { reason: delivery.last_error_class })}
           </span>
         ) : null}
       </div>

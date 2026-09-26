@@ -110,9 +110,10 @@ func workflowFormat2DeliveryFixture(t *testing.T, server *httptest.Server, count
 	}
 	dbfx.Exec(t, `UPDATE issue_workflow_acceptance SET issue_revision=$2,policy_version=$3,
 		completion_version=2,accepted_status_key='pr_ready',outcome_agent_id=$4,
+		authority_snapshot=jsonb_set(authority_snapshot,'{scope_digest}',to_jsonb($7::text)),
 		hold_delivery=$5,held_at=CASE WHEN $5 THEN now() ELSE NULL END,
 		outcome_complete=$6,outcome_completed_at=CASE WHEN $6 THEN now() ELSE NULL END
-		WHERE id=$1`, acceptanceID, revision, pinned.Version, outcomeAgentID, held, outcomeComplete)
+		WHERE id=$1`, acceptanceID, revision, pinned.Version, outcomeAgentID, held, outcomeComplete, scopeDigest)
 	return issueID, candidateID, acceptanceID, deliveryIDs
 }
 

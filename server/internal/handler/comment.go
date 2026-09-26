@@ -1526,6 +1526,7 @@ type commentAgentTrigger struct {
 	// replay it only if creation recorded it as a planned input.
 	NonLeaderAgentReply bool
 	WorkflowFeedback    *workflowHumanCommentRoute
+	WorkflowAccepted    bool
 }
 
 type commentTriggerComputeOptions struct {
@@ -1879,6 +1880,20 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		ParentID:     parentID,
 		SourceTaskID: sourceTaskID,
 	}
+	var acceptanceRecipients []commentAgentTrigger
+	var lockedBlocked []CommentTriggerOutcome
+	// Every enrolled member save resolves its route after CreateComment has
+	// acquired the issue lock, including a finalizer that won that lock first.
+	workflowMemberWrite := authorType == "member" && len(issue.WorkflowPolicy) > 0
+	recordAcceptanceObligations := func(tx pgx.Tx, saved db.Comment) error {
+		if !workflowMemberWrite {
+			return nil
+		}
+		var recordErr error
+		issue, acceptanceRecipients, lockedBlocked, suppressAgentIDs, recordErr = h.recordWorkflowCommentRecipients(
+			r.Context(), tx, issue, saved, authorType, authorID, authorID, suppressAgentIDs, false)
+		return recordErr
+	}
 	var created db.CreateCommentRow
 	var err error
 	if len(attachmentIDs) > 0 {
@@ -1925,7 +1940,24 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		if err == nil {
+			err = recordAcceptanceObligations(tx, created.Comment())
+		}
+		if err == nil {
 			err = tx.Commit(r.Context())
+		}
+	} else if workflowMemberWrite {
+		tx, beginErr := h.beginWakeupWrite(r.Context())
+		if beginErr != nil {
+			err = beginErr
+		} else {
+			defer tx.Rollback(r.Context())
+			created, err = h.Queries.WithTx(tx).CreateComment(r.Context(), createParams)
+			if err == nil {
+				err = recordAcceptanceObligations(tx, created.Comment())
+			}
+			if err == nil {
+				err = tx.Commit(r.Context())
+			}
 		}
 	} else {
 		created, err = wakeupWrite(h, r, func(q *db.Queries) (db.CreateCommentRow, error) {
@@ -1971,7 +2003,13 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// The comment is already saved; a blocked mention must not fail the whole
 	// request. Surface the per-target outcomes so the client can show partial
 	// success instead of a silent no-op (MUL-4525 §2).
-	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs)
+	if current, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err == nil {
+		issue = current
+	}
+	var enqueued map[string]commentEnqueueResult
+	resp.TriggerOutcomes, enqueued = h.triggerTasksForCommentWithResults(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs)
+	resp.TriggerOutcomes = h.finishWorkflowCommentDispatch(r.Context(), issue, comment.ID, acceptanceRecipients, resp.TriggerOutcomes, enqueued)
+	resp.TriggerOutcomes = append(resp.TriggerOutcomes, lockedBlocked...)
 
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -2013,8 +2051,13 @@ func isNoteComment(content string) bool {
 // deferred / blocked from enqueue. UI-suppressed triggers (the user unchecked
 // them) are removed before enqueue and produce no outcome.
 func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs []pgtype.UUID) []CommentTriggerOutcome {
+	outcomes, _ := h.triggerTasksForCommentWithResults(ctx, issue, comment, parentComment, actorType, actorID, originatorUserID, suppressAgentIDs)
+	return outcomes
+}
+
+func (h *Handler) triggerTasksForCommentWithResults(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs []pgtype.UUID) ([]CommentTriggerOutcome, map[string]commentEnqueueResult) {
 	if isNoteComment(comment.Content) {
-		return nil
+		return nil, nil
 	}
 	triggers, targets := h.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, actorType, actorID, commentTriggerComputeOptions{
 		ExcludeTriggerCommentID: comment.ID,
@@ -2026,7 +2069,19 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 	enqueued := h.enqueueCommentAgentTriggers(ctx, issue, comment.ID, triggers)
 	outcomes := commentTriggerOutcomes(targets, enqueued)
 	for _, trigger := range triggers {
-		if trigger.Source != commentTriggerSourceWorkflowFeedback {
+		if trigger.Source != commentTriggerSourceWorkflowFeedback && !trigger.WorkflowAccepted {
+			continue
+		}
+		// An explicit coordinator mention already has a target outcome. The
+		// exact handoff route adds one only for an implicit conversation.
+		alreadyReported := false
+		for _, outcome := range outcomes {
+			if outcome.TargetType == "agent" && outcome.TargetID == uuidToString(trigger.Agent.ID) {
+				alreadyReported = true
+				break
+			}
+		}
+		if alreadyReported {
 			continue
 		}
 		result, ok := enqueued[uuidToString(trigger.Agent.ID)]
@@ -2038,7 +2093,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 			Status: result.status, ReasonCode: result.reason,
 		})
 	}
-	return outcomes
+	return outcomes, enqueued
 }
 
 // noteBlockedRuntimeTargets leaves one system comment per agent refused for an
@@ -2732,7 +2787,11 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 	// `all` is neither "agent" nor "squad", so it is skipped inside
 	// resolveMentionedAgentCommentTriggers and never enqueues a run of its own.
 	if hasAgentOrSquadMention(mentions) {
-		return h.resolveMentionedAgentCommentTriggers(ctx, issue, mentions, actorType, actorID, opts)
+		triggers, targets := h.resolveMentionedAgentCommentTriggers(ctx, issue, mentions, actorType, actorID, opts)
+		if actorType == "member" {
+			return h.routeMentionedWorkflowCoordinator(ctx, issue, actorID, triggers, targets)
+		}
+		return triggers, targets
 	}
 	if util.HasMentionAll(mentions) {
 		return nil, nil
@@ -2802,6 +2861,12 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 	}
 
 	if trigger, ok := h.routeAssigneeFallback(ctx, issue, actorType, actorID, opts); ok {
+		if actorType == "member" && issue.WorkflowCandidateID.Valid && issue.AssigneeType.String == "agent" && h.DB != nil {
+			_ = h.DB.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM issue_workflow_acceptance a
+				WHERE a.issue_id=$1 AND a.workspace_id=$2 AND a.candidate_id=$3
+				AND a.state='accepted' AND a.revoked_at IS NULL)`, issue.ID, issue.WorkspaceID,
+				issue.WorkflowCandidateID).Scan(&trigger.WorkflowAccepted)
+		}
 		return []commentAgentTrigger{trigger}, nil
 	}
 	return nil, nil
@@ -2825,7 +2890,7 @@ func (h *Handler) routeWorkflowHumanComment(ctx context.Context, issue db.Issue,
 	// cannot silently become a reply to a different agent in the thread.
 	var handoffAgentID pgtype.UUID
 	err := h.DB.QueryRow(ctx, `SELECT agent_id FROM issue_wakeup
-		WHERE issue_id=$1 AND handoff IS NOT NULL AND disabled_at IS NULL
+		WHERE issue_id=$1 AND handoff IS NOT NULL
 		ORDER BY id DESC LIMIT 1`, issue.ID).Scan(&handoffAgentID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return commentAgentTrigger{}, nil, false
@@ -2844,14 +2909,14 @@ func (h *Handler) routeWorkflowHumanComment(ctx context.Context, issue db.Issue,
 		FROM issue i
 		JOIN issue_workflow_candidate c ON c.id=i.workflow_candidate_id AND c.issue_id=i.id
 		JOIN issue_wakeup w ON w.id=(SELECT latest.id FROM issue_wakeup latest
-			WHERE latest.issue_id=i.id AND latest.handoff IS NOT NULL AND latest.disabled_at IS NULL
+			WHERE latest.issue_id=i.id AND latest.handoff IS NOT NULL
 			ORDER BY latest.id DESC LIMIT 1)
 		JOIN agent_task_queue t ON t.id=w.filter_task_id AND t.issue_id=i.id AND t.agent_id=w.agent_id
 		JOIN member m ON m.workspace_id=i.workspace_id AND m.user_id=$2
 		WHERE i.id=$1 AND i.workspace_id=$3 AND i.workflow_policy IS NOT NULL AND NOT i.workflow_frozen
 		AND i.assignee_type='member' AND i.workflow_candidate_id=$4
 		AND i.assignee_id=$5
-		AND c.policy_version=i.workflow_policy->>'version'
+		AND workflow_human_comment_handoff_eligible(i.id,w.id)
 		AND w.last_task_id IS NULL AND w.handoff_completed_at IS NOT NULL
 		AND w.source_task_id=w.filter_task_id AND w.filter_agent_id=t.agent_id
 		AND w.handoff->>'assignee_type'='member' AND w.handoff->>'assignee_id'=i.assignee_id::text
@@ -3550,6 +3615,8 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	sourceTaskID := existing.SourceTaskID
 	var triggerIssue *db.Issue
 	var cancelled []db.AgentTaskQueue
+	var acceptanceRecipients []commentAgentTrigger
+	var lockedBlocked []CommentTriggerOutcome
 	if oldContent != req.Content {
 		issue, err := h.Queries.GetIssue(r.Context(), existing.IssueID)
 		if err != nil {
@@ -3615,6 +3682,12 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 			if err == nil {
 				err = service.SettleDeliveredDelegatedFailureRecoveries(r.Context(), qtx, cancelled...)
 			}
+		}
+		if err == nil && oldContent != req.Content && actorType == "member" && len(triggerIssue.WorkflowPolicy) > 0 {
+			var current db.Issue
+			current, acceptanceRecipients, lockedBlocked, suppressAgentIDs, err = h.recordWorkflowCommentRecipients(
+				r.Context(), tx, *triggerIssue, comment, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), suppressAgentIDs, true)
+			triggerIssue = &current
 		}
 		if err == nil && replaceAttachments {
 			var changed int64
@@ -3683,8 +3756,18 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		if current, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err == nil {
+			issue = current
+		}
 		h.retriggerCancelledTaskSurvivors(r.Context(), issue, cancelled, existing.ID)
-		return h.triggerTasksForComment(r.Context(), issue, comment, parentComment, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), suppressAgentIDs)
+		// A nonauthor edit is a new action. Its permission cannot be combined
+		// with the original comment author's private task attribution.
+		if !isAuthor {
+			return lockedBlocked
+		}
+		outcomes, enqueued := h.triggerTasksForCommentWithResults(r.Context(), issue, comment, parentComment, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), suppressAgentIDs)
+		outcomes = h.finishWorkflowCommentDispatch(r.Context(), issue, comment.ID, acceptanceRecipients, outcomes, enqueued)
+		return append(outcomes, lockedBlocked...)
 	}
 
 	// Fetch reactions and attachments for the updated comment.
@@ -3916,6 +3999,15 @@ func (h *Handler) deleteCommentTx(ctx context.Context, commentID, workspaceID pg
 	})
 	if err != nil {
 		return out, err
+	}
+	issue, err := qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: target.IssueID, WorkspaceID: target.WorkspaceID})
+	if err != nil {
+		return out, err
+	}
+	if len(issue.WorkflowPolicy) > 0 {
+		if err := service.ReconcileWorkflowCommentRecipients(ctx, tx, issue, target.ID, nil); err != nil {
+			return out, err
+		}
 	}
 	if cancelTasks {
 		// A removed row would clear trigger_comment_id; cancel its planned

@@ -254,6 +254,7 @@ func (s WorkflowAuthorityService) FinalizeNextOutcomeAcknowledgment(ctx context.
 		JOIN agent_task_queue t ON t.id=a.outcome_request_task_id
 		WHERE a.completion_version=2 AND a.state='accepted' AND a.revoked_at IS NULL
 		AND NOT a.outcome_complete AND t.status IN ('completed','failed','cancelled')
+		AND (a.last_error_class IS DISTINCT FROM 'human_feedback_pending' OR a.outcome_next_attempt_at<=now())
 		ORDER BY a.outcome_requested_at,a.id LIMIT 1`).Scan(&issueID, &acceptanceID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -303,6 +304,23 @@ func (s WorkflowAuthorityService) FinalizeNextOutcomeAcknowledgment(ctx context.
 	pinned, err := s.Tasks.DecodeIssueWorkflowPolicy(issue.WorkflowPolicy)
 	if err != nil || pinned == nil || pinned.Version != policyVersion {
 		return false, ErrWorkflowAuthorityConflict
+	}
+	// Agent completion cannot consume a still-unclassified human correction.
+	// Keep the exact successful acknowledgment pending for the normal retry;
+	// explicit human completion retains its separate authority path.
+	pendingFeedback, err := WorkflowHasPendingHumanFeedback(ctx, tx, issue)
+	if err != nil {
+		return true, err
+	}
+	if pendingFeedback {
+		if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET last_error_class='human_feedback_pending',
+			outcome_next_attempt_at=now()+interval '5 seconds' WHERE id=$1 AND outcome_request_task_id=$2`, acceptanceID, taskID); err != nil {
+			return true, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return true, err
+		}
+		return true, nil
 	}
 	if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET outcome_complete=true,
 		outcome_completed_at=now(),outcome_request_task_id=NULL,last_error_class=NULL

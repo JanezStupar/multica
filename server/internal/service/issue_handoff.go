@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -284,8 +285,15 @@ func (s *IssueWakeupService) CreateHandoff(ctx context.Context, issueID, member,
 	if outgoing.Status != "running" && outgoing.Status != "waiting_local_directory" && outgoing.Status != "completed" {
 		return empty, fmt.Errorf("%w: outgoing task must be running or completed", ErrWakeupInput)
 	}
-	sourceAgent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: outgoing.AgentID, WorkspaceID: workspace})
-	if err != nil {
+	sourceAgent, err := q.LockHandoffSourceAgent(ctx, db.LockHandoffSourceAgentParams{AgentID: outgoing.AgentID, WorkspaceID: workspace})
+	var sourceLockError *pgconn.PgError
+	if errors.As(err, &sourceLockError) && sourceLockError.Code == "55P03" {
+		return empty, fmt.Errorf("%w: source agent is being updated", ErrWakeupConflict)
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return empty, err
+	}
+	if err != nil || !outgoing.RuntimeID.Valid || outgoing.RuntimeID != sourceAgent.RuntimeID {
 		return empty, ErrWakeupForbidden
 	}
 	if err = s.authorize(ctx, q, workspace, member, sourceAgent); err != nil {
@@ -306,17 +314,13 @@ func (s *IssueWakeupService) CreateHandoff(ctx context.Context, issueID, member,
 		if !previous.LastTaskID.Valid {
 			return empty, fmt.Errorf("%w: previous handoff is awaiting its recipient", ErrWakeupConflict)
 		}
-		var sourceContext struct {
-			WakeupID string `json:"wakeup_id"`
-		}
-		_ = json.Unmarshal(outgoing.Context, &sourceContext)
-		if previous.LastTaskID != outgoing.ID && sourceContext.WakeupID != util.UUIDToString(previous.ID) {
+		if !handoffRecipientMatches(ctx, q, previous, outgoing) && !handoffCommentContinuationMatches(ctx, q, previous, outgoing) {
 			// A validated delegated-failure recovery is the coordinator's
 			// retained follow-up to that recipient. It may issue the next
 			// handoff without a human relaying the failed candidate.
 			recoveredSource, recoveryErr := s.Tasks.validateWorkflowRecoverySourceWithQueries(ctx, q, outgoing)
 			if recoveryErr != nil || recoveredSource.ID != previous.FilterTaskID {
-				return empty, fmt.Errorf("%w: outgoing task is not the previous handoff recipient or its recovery", ErrWakeupConflict)
+				return empty, fmt.Errorf("%w: outgoing task is not the previous handoff recipient, retained comment continuation or recovery", ErrWakeupConflict)
 			}
 		}
 	}
@@ -361,9 +365,13 @@ func handoffIssueSnapshotMatches(issue db.Issue, intent issueHandoffIntent) bool
 // enqueued; sharing a context key alone is not sufficient. A visited set
 // terminates corrupt cycles without rejecting a legitimate long repair chain.
 func handoffRecipientMatches(ctx context.Context, q *db.Queries, w db.IssueWakeup, task db.AgentTaskQueue) bool {
+	recipient, err := q.GetAgentTask(ctx, w.LastTaskID)
+	if err != nil || !recipient.RuntimeID.Valid {
+		return false
+	}
 	visited := map[pgtype.UUID]struct{}{}
 	for {
-		if task.IssueID != w.IssueID || task.AgentID != w.AgentID {
+		if task.IssueID != w.IssueID || task.AgentID != w.AgentID || task.RuntimeID != recipient.RuntimeID {
 			return false
 		}
 		if _, repeated := visited[task.ID]; repeated {
@@ -385,6 +393,74 @@ func handoffRecipientMatches(ctx context.Context, q *db.Queries, w db.IssueWakeu
 		if err != nil {
 			return false
 		}
+	}
+}
+
+// Ordinary comments may continue a handoff recipient's retained provider
+// session. Only the source selected and recorded by server claim delivery is
+// authority; identical context keys, wakeup markers or client session IDs are
+// insufficient. Each completed turn must preserve the exact scope and session.
+func handoffCommentContinuationMatches(ctx context.Context, q *db.Queries, w db.IssueWakeup, task db.AgentTaskQueue) bool {
+	recipient, err := q.GetAgentTask(ctx, w.LastTaskID)
+	if err != nil || !recipient.RuntimeID.Valid {
+		return false
+	}
+	visited := map[pgtype.UUID]struct{}{}
+	for {
+		if task.IssueID != w.IssueID || task.AgentID != w.AgentID || task.RuntimeID != recipient.RuntimeID ||
+			!task.SessionID.Valid || task.SessionID.String == "" {
+			return false
+		}
+		if _, repeated := visited[task.ID]; repeated {
+			return false
+		}
+		visited[task.ID] = struct{}{}
+		// A completed retry/rerun is an exact recipient too, even when the
+		// original failed before pinning a session or its retry started fresh.
+		if handoffRecipientMatches(ctx, q, w, task) {
+			return true
+		}
+		// Explicit recipient identity is authority independent of provider
+		// context. An ordinary continuation may not borrow ancestry after its
+		// same-task fallback, even if a late pin restores the abandoned ID.
+		if task.RetainedContextInvalidated {
+			return false
+		}
+		parent := task.CommentResumeFromTaskID
+		if parent.Valid {
+			if task.ForceFreshSession {
+				return false
+			}
+			// A live delivered comment is required even after a coalesced plan
+			// changes its primary trigger. Deletion/redaction revokes authority.
+			liveComment := false
+			for _, id := range task.DeliveredCommentIds {
+				if id != task.TriggerCommentID && !slices.Contains(task.CoalescedCommentIds, id) {
+					continue
+				}
+				comment, e := q.GetComment(ctx, id)
+				if e == nil && comment.IssueID == w.IssueID && comment.WorkspaceID == w.WorkspaceID && comment.AuthorType == "member" && !comment.DeletedAt.Valid {
+					liveComment = true
+					break
+				}
+			}
+			if !liveComment {
+				return false
+			}
+		} else {
+			parent = task.RetryOfTaskID
+			if !parent.Valid {
+				parent = task.RerunOfTaskID
+			}
+			if !parent.Valid {
+				return false
+			}
+		}
+		prior, e := q.GetAgentTask(ctx, parent)
+		if e != nil || prior.SessionID != task.SessionID || (task.CommentResumeFromTaskID.Valid && prior.Status != "completed") {
+			return false
+		}
+		task = prior
 	}
 }
 

@@ -203,6 +203,7 @@ func daemonCommonCapabilities() []string {
 	return []string{
 		protocol.DaemonCapabilitySkillBundlesV1,
 		protocol.DaemonCapabilityCoalescedCommentsV1,
+		protocol.DaemonCapabilityRetainedContextResetV1,
 		protocol.DaemonCapabilityExecutionManifestV1,
 		protocol.DaemonCapabilityAgentSkillV1,
 		protocol.DaemonCapabilityRemoteMCPV1,
@@ -634,7 +635,7 @@ func (c *Client) failTaskWithRetrySchedule(ctx context.Context, taskID, errMsg, 
 
 // PinTaskSession persists the agent's session_id and work_dir on the task
 // row mid-flight so a daemon crash doesn't lose the resume pointer.
-func (c *Client) PinTaskSession(ctx context.Context, taskID, sessionID, workDir string) error {
+func (c *Client) PinTaskSession(ctx context.Context, taskID, sessionID, workDir string, afterFreshReset bool) error {
 	if sessionID == "" && workDir == "" {
 		return nil
 	}
@@ -645,7 +646,16 @@ func (c *Client) PinTaskSession(ctx context.Context, taskID, sessionID, workDir 
 	if workDir != "" {
 		body["work_dir"] = workDir
 	}
+	if afterFreshReset {
+		body["after_fresh_reset"] = true
+	}
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/session", taskID), body, nil)
+}
+
+// BeginFreshTaskSession synchronously revokes retained ancestry before the
+// daemon executes a same-task fallback with fresh provider context.
+func (c *Client) BeginFreshTaskSession(ctx context.Context, taskID string, req protocol.FreshTaskSessionRequest) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/session/fresh", taskID), req, nil)
 }
 
 // RecoverOrphans tells the server to fail any dispatched/running tasks the

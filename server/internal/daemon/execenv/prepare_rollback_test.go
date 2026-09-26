@@ -30,6 +30,12 @@ func TestPrepareRollsBackSidecarsWhenPrepareFailsInPlace(t *testing.T) {
 	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
 		t.Fatalf("create .cursor: %v", err)
 	}
+	// cursorProjectRoot walks upward to the nearest .git marker. Keep this
+	// fixture rooted in its own temporary repository so parallel tests cannot
+	// collide through a shared ancestor such as /tmp/.cursor/mcp.json.
+	if err := os.Mkdir(filepath.Join(userDir, ".git"), 0o755); err != nil {
+		t.Fatalf("create test .git marker: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(cursorDir, "mcp.json"), []byte(`{"mine":true}`), 0o644); err != nil {
 		t.Fatalf("seed user mcp.json: %v", err)
 	}

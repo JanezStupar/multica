@@ -56,11 +56,14 @@ func (s WorkflowAuthorityService) FinalizeNextRequestedAcceptance(ctx context.Co
 	var candidateID, sourceTaskID, actorID pgtype.UUID
 	var snapshot []byte
 	var sourceStatus, acceptanceState, acceptedPolicyVersion string
+	var sourcePolicy pgtype.Text
+	var sourceProfile, sourceAgentID pgtype.UUID
 	err = tx.QueryRow(ctx, `SELECT a.candidate_id,a.source_task_id,a.actor_id,a.authority_snapshot,
-		a.state,a.policy_version,t.status FROM issue_workflow_acceptance a
+		a.state,a.policy_version,t.status,t.agent_id,t.workflow_policy_version,t.workflow_profile_id FROM issue_workflow_acceptance a
 		JOIN agent_task_queue t ON t.id=a.source_task_id AND t.issue_id=a.issue_id
 		WHERE a.id=$1 AND a.issue_id=$2 FOR UPDATE OF a`, acceptanceID, issue.ID).Scan(
-		&candidateID, &sourceTaskID, &actorID, &snapshot, &acceptanceState, &acceptedPolicyVersion, &sourceStatus)
+		&candidateID, &sourceTaskID, &actorID, &snapshot, &acceptanceState, &acceptedPolicyVersion, &sourceStatus,
+		&sourceAgentID, &sourcePolicy, &sourceProfile)
 	if errors.Is(err, pgx.ErrNoRows) || acceptanceState != "requested" {
 		return false, nil
 	}
@@ -92,17 +95,53 @@ func (s WorkflowAuthorityService) FinalizeNextRequestedAcceptance(ctx context.Co
 		DeliveryExceptionID   string                    `json:"delivery_exception_id"`
 		AcceptanceExceptionID string                    `json:"acceptance_exception_id"`
 		ScopeDigest           string                    `json:"scope_digest"`
+		SourcePolicyVersion   string                    `json:"source_task_workflow_policy_version"`
+		SourceProfileID       string                    `json:"source_task_workflow_profile_id"`
+		SelectedProfileID     json.RawMessage           `json:"selected_workflow_profile_id"`
 	}
 	if json.Unmarshal(snapshot, &stored) != nil {
 		return block("acceptance_snapshot_invalid")
 	}
-	if issue.WorkflowFrozen || issue.WorkflowCandidateID != candidateID || issue.Revision != stored.Request.ExpectedRevision ||
-		issue.Status != "in_review" || issue.AssigneeType.String != "agent" || issue.AssigneeID != actorID {
+	if stored.SourcePolicyVersion == "" || stored.SourceProfileID == "" || len(stored.SelectedProfileID) == 0 {
+		return block("acceptance_profile_snapshot_missing")
+	}
+	var selectedID *string
+	if json.Unmarshal(stored.SelectedProfileID, &selectedID) != nil {
+		return block("acceptance_snapshot_invalid")
+	}
+	if selectedID != nil {
+		if _, err := workflowAuthorityUUID(*selectedID); err != nil {
+			return block("acceptance_snapshot_invalid")
+		}
+	}
+	if sourceAgentID != actorID || !sourcePolicy.Valid || sourcePolicy.String != acceptedPolicyVersion ||
+		sourcePolicy.String != stored.SourcePolicyVersion || !sourceProfile.Valid || util.UUIDToString(sourceProfile) != stored.SourceProfileID {
+		return block("source_task_profile_changed")
+	}
+	// Ingestion used expected_revision to fence the client's decision. Delayed
+	// finalization rechecks the material candidate facts against the locked
+	// current issue; presentation-only revisions do not invalidate approval.
+	if issue.WorkflowFrozen || issue.WorkflowCandidateID != candidateID ||
+		issue.AssigneeType.String != "agent" || issue.AssigneeID != actorID {
 		return block("candidate_or_owner_changed")
+	}
+	nonterminalStatus, err := WorkflowNonterminalStatus(ctx, tx, issue)
+	if err != nil {
+		return true, err
+	}
+	if !nonterminalStatus {
+		return block("terminal_status")
 	}
 	pinned, authority, err := workflowAuthorityPolicy(ctx, s, issue)
 	if err != nil || pinned.Version != acceptedPolicyVersion {
 		return block("pinned_authority_changed")
+	}
+	selectedProfile, err := workflowSelectedProfileID(ctx, tx, issue, actorID, pinned.Version)
+	if err != nil {
+		return true, err
+	}
+	if selectedID == nil && selectedProfile.Valid || selectedID != nil && *selectedID != util.UUIDToString(selectedProfile) {
+		return block("selected_profile_changed")
 	}
 	if err := ValidateWorkflowCompletionConfig(ctx, tx, issue, authority); err != nil {
 		return block("completion_config_changed")
@@ -133,6 +172,29 @@ func (s WorkflowAuthorityService) FinalizeNextRequestedAcceptance(ctx context.Co
 	}
 	if stored.ScopeDigest != candidate.ScopeDigest {
 		return block("candidate_scope_changed")
+	}
+	promisedComment, err := WorkflowHasCommentObligation(ctx, tx, issue, sourceTaskID, actorID)
+	if err != nil {
+		return true, err
+	}
+	humanFeedback, err := WorkflowHasPendingHumanFeedback(ctx, tx, issue)
+	if err != nil {
+		return true, err
+	}
+	if promisedComment || humanFeedback {
+		// This approval request stays durable while the promised conversation
+		// delivers and classifies its input. A question needs no new approval;
+		// a correction invalidates this candidate through the normal endpoint.
+		if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance
+			SET next_attempt_at=now()+interval '5 seconds',last_error_class='human_comment_pending'
+			WHERE id=$1 AND state='requested'`, acceptanceID); err != nil {
+			return true, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return true, err
+		}
+		s.PublishWorkflowIssueChange(ctx, issue, WorkflowActor{Type: "agent", ID: util.UUIDToString(actorID)})
+		return true, nil
 	}
 	active, err := workflowHasMutableRuns(ctx, tx, issue.ID, pgtype.UUID{})
 	if err != nil {

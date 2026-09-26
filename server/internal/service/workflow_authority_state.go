@@ -58,6 +58,10 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 	state.IssueRevision = issue.Revision
 	state.Frozen = issue.WorkflowFrozen
 	state.PolicyVersion = policy.Version
+	nonterminalStatus, err := WorkflowNonterminalStatus(ctx, tx, issue)
+	if err != nil {
+		return state, err
+	}
 	var feedback WorkflowFeedbackView
 	var feedbackContent string
 	err = tx.QueryRow(ctx, `SELECT comment_id::text,comment_revision,reason,kind,candidate_id::text,
@@ -298,6 +302,9 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 	if issue.WorkflowFrozen {
 		block("frozen")
 	}
+	currentCandidateValid := false
+	writerComplete := false
+	writerContinuationAllowed := false
 	if state.Candidate == nil {
 		block("candidate_missing")
 	} else {
@@ -308,6 +315,7 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 			if candidateErr != nil {
 				block("scope_changed")
 			} else {
+				currentCandidateValid = true
 				stale, err := workflowCandidateStale(ctx, tx, issue, candidate.ID)
 				if err != nil {
 					return state, err
@@ -316,16 +324,25 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 					block("candidate_head_changed")
 				}
 				var writerStatus string
-				if err := tx.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id=$1 AND issue_id=$2`,
-					candidate.WriterTaskID, issue.ID).Scan(&writerStatus); err != nil || writerStatus != "completed" {
+				var writerAgentID pgtype.UUID
+				if err := tx.QueryRow(ctx, `SELECT status,agent_id FROM agent_task_queue WHERE id=$1 AND issue_id=$2`,
+					candidate.WriterTaskID, issue.ID).Scan(&writerStatus, &writerAgentID); err != nil || writerStatus != "completed" {
 					block("source_incomplete")
+				} else {
+					writerComplete = true
+					if actor.Type == "member" {
+						writerAgent, agentErr := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: writerAgentID, WorkspaceID: workspaceID})
+						memberID, parseErr := workflowAuthorityUUID(actor.ID)
+						writerContinuationAllowed = agentErr == nil && parseErr == nil &&
+							(&IssueWakeupService{Tasks: s.Tasks}).authorize(ctx, q, workspaceID, memberID, writerAgent) == nil
+					}
 				}
 				_, reviewGrant, err := workflowExceptionGrant(ctx, tx, issue, candidate.ID, policy.Version, "review")
 				if err != nil {
 					return state, err
 				}
 				var pendingReviewerTaskID pgtype.UUID
-				if actor.Type == "agent" && issue.Status == "in_review" && issue.AssigneeType.String == "agent" {
+				if actor.Type == "agent" && nonterminalStatus && issue.AssigneeType.String == "agent" {
 					agentID, taskID, taskErr := workflowAgentTask(ctx, tx, issue, actor)
 					if taskErr == nil && agentID == issue.AssigneeID {
 						_, acceptanceGrant, grantErr := workflowExceptionGrant(ctx, tx, issue, candidate.ID, policy.Version, "acceptance")
@@ -401,6 +418,9 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 	if pending {
 		block("pending_handoff")
 	}
+	if !nonterminalStatus {
+		block("terminal_status")
+	}
 	if state.Acceptance != nil && state.Candidate != nil && state.Acceptance.CandidateID == state.Candidate.ID {
 		switch state.Acceptance.State {
 		case "requested":
@@ -422,22 +442,16 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 			if grantErr != nil {
 				return state, grantErr
 			}
-			allowed := false
-			for _, acceptedRole := range authority.HumanAcceptRoles {
-				allowed = allowed || role == acceptedRole
+			allowed := workflowHumanAcceptanceAllowed(authority, role, actor.ID, acceptanceGrant)
+			ownsHumanAssignment := issue.AssigneeType.String == "member" &&
+				util.UUIDToString(issue.AssigneeID) == actor.ID
+			state.AvailableActions.AcceptHuman = allowed && canAttempt
+			correctionStatus, err := workflowCorrectionStatus(ctx, tx, issue)
+			if err != nil {
+				return state, err
 			}
-			allowed = allowed || acceptanceGrant["human_actor_id"] == actor.ID
-			ownsHumanHandoff := issue.Status == "in_review" && issue.AssigneeType.String == "member" &&
-				(util.UUIDToString(issue.AssigneeID) == actor.ID || acceptanceGrant["human_actor_id"] == actor.ID)
-			if !ownsHumanHandoff {
-				block("human_recipient_required")
-			}
-			state.AvailableActions.AcceptHuman = allowed && ownsHumanHandoff && canAttempt
-			state.AvailableActions.Reject = !issue.WorkflowFrozen && !active &&
-				(issue.Status == "in_review" || issue.Status == "done" ||
-					authority.FormatVersion == 2 && issue.Status == authority.AcceptedStatusKey) &&
-				(ownsHumanHandoff || role == "owner" || role == "admin")
-			state.AvailableActions.WaiveReview = !issue.WorkflowFrozen && (role == "owner" || role == "admin")
+			state.AvailableActions.Reject = currentCandidateValid && writerComplete && writerContinuationAllowed && !issue.WorkflowFrozen && !active &&
+				correctionStatus && (ownsHumanAssignment || role == "owner" || role == "admin")
 		}
 	} else if actor.Type == "agent" && state.Candidate != nil {
 		_, acceptanceGrant, grantErr := workflowExceptionGrant(ctx, tx, issue, issue.WorkflowCandidateID, policy.Version, "acceptance")
@@ -451,8 +465,24 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 		agentID, taskID, taskErr := workflowAgentTask(ctx, tx, issue, actor)
 		allowed = authority.AutonomousEnabled && allowed || acceptanceGrant["agent_actor_id"] == actor.ID
 		state.AvailableActions.RequestTrivialAcceptance = allowed && canAttempt &&
-			taskErr == nil && agentID == issue.AssigneeID && taskID.Valid && issue.Status == "in_review"
-		state.AvailableActions.WaiveReview = !issue.WorkflowFrozen && authority.SupervisorAgentScopes[actor.ID]["review"]
+			taskErr == nil && issue.AssigneeType.String == "agent" && agentID == issue.AssigneeID && taskID.Valid
+	}
+	// Waiving review changes candidate authority, rather than completing work.
+	// Mirror the exception mutation: a requested decision may be blocked by a
+	// new grant, but accepted authority or an existing grant must be resolved.
+	if !issue.WorkflowFrozen && nonterminalStatus && currentCandidateValid {
+		acceptanceState, err := workflowExceptionAcceptanceState(ctx, tx, issue, issue.WorkflowCandidateID)
+		if err != nil {
+			return state, err
+		}
+		grantID, _, err := workflowExceptionGrant(ctx, tx, issue, issue.WorkflowCandidateID, policy.Version, "review")
+		if err != nil {
+			return state, err
+		}
+		if acceptanceState != "accepted" && !grantID.Valid {
+			_, _, err := authorizeWorkflowExceptionActor(ctx, tx, workspaceID, issue, authority, policy.Version, "review", actor)
+			state.AvailableActions.WaiveReview = err == nil
+		}
 	}
 	if authority.FormatVersion == 2 && state.Acceptance != nil && state.Acceptance.State == "accepted" &&
 		state.Candidate != nil && state.Acceptance.CandidateID == state.Candidate.ID &&
@@ -504,4 +534,14 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 		return state, err
 	}
 	return state, nil
+}
+
+// Corrections may reopen completed work, but closed/cancelled work needs an
+// explicit reopen. Status spelling does not change that lifecycle boundary.
+func workflowCorrectionStatus(ctx context.Context, tx pgx.Tx, issue db.Issue) (bool, error) {
+	var eligible bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM issue_status
+		WHERE workspace_id=$1 AND key=$2 AND archived_at IS NULL
+		AND category IN ('unstarted','started','done'))`, issue.WorkspaceID, issue.Status).Scan(&eligible)
+	return eligible, err
 }

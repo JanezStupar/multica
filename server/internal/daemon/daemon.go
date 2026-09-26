@@ -32,6 +32,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
@@ -8777,6 +8778,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	defer func() { taskResult.RetiredSessionID = retiredSessionID }()
 
 	if shouldRetryWithFreshSession(result, task.PriorSessionID, tools, provider) {
+		// Revoke server-side retained ancestry before any fresh prompt can
+		// execute tools. An asynchronous pin from the first attempt may arrive
+		// later, so clearing only the local session ID is insufficient.
+		if err := d.client.BeginFreshTaskSession(ctx, task.ID, protocol.FreshTaskSessionRequest{
+			RuntimeID: task.RuntimeID, DispatchedAt: task.DispatchedAt,
+		}); err != nil {
+			return TaskResult{}, fmt.Errorf("invalidate retained context before fresh session retry: %w", err)
+		}
 		firstResult := result
 		firstUsage := result.Usage
 		firstTools := tools
@@ -8818,7 +8827,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)
 
-		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
+		freshSessionCtx := context.WithValue(ctx, freshTaskSessionPinPhaseKey{}, true)
+		retryResult, retryTools, retryErr := d.executeAndDrain(freshSessionCtx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 		if retryErr != nil {
 			taskLog.Error("fresh session also failed to start; keeping the original poisoned result", "error", retryErr)
 		} else if retryResult.Status != "completed" && retryResult.SessionID == "" {
@@ -9268,12 +9278,18 @@ func freshSessionMayHelp(errText string) bool {
 	}
 }
 
+type freshTaskSessionPinPhaseKey struct{}
+
 // executeAndDrain runs a backend, drains its message stream (forwarding to the
 // server), and waits for the final result. msgSeq numbers the reported task
 // messages and is owned by the caller so a same-task retry continues the
 // sequence instead of restarting at 1 — the server orders the transcript by
 // seq alone, and duplicate seqs would interleave the two attempts' rows.
 func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, prompt string, opts agent.ExecOptions, taskLog *slog.Logger, taskID, codexHome string, msgSeq *atomic.Int32) (agent.Result, int32, error) {
+	// Capture the phase before spawning pin waiters. Only the fresh execution
+	// after the synchronous reset acknowledgement carries phase one; delayed
+	// waiters from the original execution remain phase zero.
+	afterFreshReset, _ := ctx.Value(freshTaskSessionPinPhaseKey{}).(bool)
 	phaseRecorder := taskPhaseRecorderFromContext(ctx)
 	// Wrap the caller's ctx so the idle watchdog (below) can interrupt both
 	// the agent subprocess (via the ctx passed to backend.Execute) AND the
@@ -9538,7 +9554,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 							}
 							pinCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 							defer cancel()
-							if err := d.client.PinTaskSession(pinCtx, taskID, sid, wd); err != nil {
+							if err := d.client.PinTaskSession(pinCtx, taskID, sid, wd, afterFreshReset); err != nil {
 								taskLog.Debug("pin session failed", "error", err)
 							}
 						}()

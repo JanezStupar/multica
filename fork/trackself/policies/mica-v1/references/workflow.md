@@ -105,6 +105,11 @@ not labels: a targeted sync fix still requires approval. Mechanical label/typo
 edits or already-agreed labels are eligible; altered meaning/interaction is a
 UX change. Record a short classification reason, without numeric size thresholds.
 Honor existing scoped approval without asking for it again.
+A policy-authorized human may explicitly accept an eligible current candidate
+on any nonterminal ticket; changing its status or assignee first is unnecessary.
+Human assignment helps route a needed decision but does not grant or withhold
+acceptance authority. Exact candidate, revision, review, provider state and
+active-work guards still apply.
 
 Human acceptance covers the approved outcome, behavior, scope, risk and stated
 conditions, not a frozen commit identifier. Before asking again, compare the

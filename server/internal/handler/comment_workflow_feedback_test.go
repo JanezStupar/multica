@@ -38,17 +38,27 @@ func (f workflowHumanCommentFixture) allowCoordinatorInvocation(t *testing.T, us
 
 func setupWorkflowHumanCommentFixture(t *testing.T) workflowHumanCommentFixture {
 	t.Helper()
+	return setupWorkflowHumanCommentFixtureWithPolicy(t, nil, false)
+}
+
+func setupWorkflowHumanCommentFixtureWithPolicy(t *testing.T, policyConfig func(string) string, noPR bool) workflowHumanCommentFixture {
+	t.Helper()
 	ctx := context.Background()
 	issueID := dbfx.Issue(t, "Human comment after workflow handoff")
-	enrollWorkflowPolicy(t, issueID, insertCompleteWorkflowSkill(t, "workflow feedback test")).Want(http.StatusCreated)
 	for _, table := range []string{"issue_workflow_rejection", "issue_workflow_delivery", "issue_workflow_acceptance", "issue_workflow_review", "issue_workflow_candidate", "issue_wakeup", "agent_task_queue", "comment"} {
 		dbfx.Cleanup(t, "DELETE FROM "+table+" WHERE issue_id=$1", issueID)
 	}
 	dbfx.Cleanup(t, `DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN
 		(SELECT id FROM issue_wakeup WHERE issue_id=$1)`, issueID)
 	runtimeID := createClaimReclaimRuntime(t, nil, "Human feedback runtime")
-	writerID := dbfx.Agent(t, "Candidate writer", runtimeID)
-	coordinatorID := dbfx.Agent(t, "Final candidate coordinator", runtimeID)
+	writerID := dbfx.Agent(t, "Candidate writer "+issueID, runtimeID)
+	coordinatorID := dbfx.Agent(t, "Final candidate coordinator "+issueID, runtimeID)
+	skillID := insertCompleteWorkflowSkill(t, "workflow feedback test")
+	dbfx.Exec(t, `UPDATE skill SET name=name||$2 WHERE id=$1`, skillID, " "+issueID)
+	if policyConfig != nil {
+		dbfx.Insert(t, "skill_file", testutil.Cols{"skill_id": skillID, "path": "runtime/policy.json", "content": policyConfig(coordinatorID)})
+	}
+	enrollWorkflowPolicy(t, issueID, skillID).Want(http.StatusCreated)
 	dbfx.Exec(t, `UPDATE issue SET status='in_progress',assignee_type='agent',assignee_id=$2 WHERE id=$1`, issueID, writerID)
 	writerTaskID := dbfx.Task(t, writerID, testutil.Cols{
 		"issue_id": issueID, "runtime_id": runtimeID, "status": "queued",
@@ -63,14 +73,18 @@ func setupWorkflowHumanCommentFixture(t *testing.T) workflowHumanCommentFixture 
 	}
 	dbfx.Exec(t, `UPDATE agent_task_queue SET session_id='candidate-writer-session',
 		work_dir='/tmp/workflow-candidate-writer' WHERE id=$1`, writerTaskID)
-	pr := service.HandoffCandidate{RepositoryURL: "https://forge.example/repo", PRURL: "https://forge.example/repo/pulls/42",
+	pr := service.HandoffCandidate{RepositoryURL: "https://forge.example/team/repo", PRURL: "https://forge.example/team/repo/pulls/42",
 		Branch: "feature/feedback", CommitSHA: strings.Repeat("a", 40), Draft: true}
+	prs := []service.HandoffCandidate{pr}
+	if noPR {
+		prs = []service.HandoffCandidate{}
+	}
 	wakeups := service.IssueWakeupService{Tasks: testHandler.TaskService}
 	first, err := wakeups.CreateHandoff(ctx, parseUUID(issueID), parseUUID(testUserID), parseUUID(writerTaskID), service.HandoffInput{
 		RequestKey: uuidToString(dbid.NewV7()), OutgoingTaskID: writerTaskID,
 		AssigneeType: "agent", AssigneeID: coordinatorID, AgentID: coordinatorID,
 		Status: "in_review", ContextMode: "fresh", Instruction: "Review the candidate and coordinate with the human.",
-		Candidates: []service.HandoffCandidate{pr}, EvidenceURLs: []string{},
+		Candidates: prs, EvidenceURLs: []string{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +110,7 @@ func setupWorkflowHumanCommentFixture(t *testing.T) workflowHumanCommentFixture 
 		RequestKey: uuidToString(dbid.NewV7()), OutgoingTaskID: coordinatorTaskID,
 		AssigneeType: "member", AssigneeID: testUserID, Status: "in_review", ContextMode: "fresh",
 		Instruction: "Present the candidate to the human for feedback.",
-		Candidates:  []service.HandoffCandidate{pr}, EvidenceURLs: []string{},
+		Candidates:  prs, EvidenceURLs: []string{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -221,17 +235,31 @@ func TestWorkflowHumanCommentUsesCurrentRuntimeWithPinnedPolicy(t *testing.T) {
 	}
 	var taskID, taskRuntime string
 	var rerun pgtype.UUID
-	if err := testPool.QueryRow(ctx, `SELECT id::text,runtime_id::text,rerun_of_task_id FROM agent_task_queue
-		WHERE issue_id=$1 AND trigger_comment_id=$2`, f.issueID, feedback.ID).Scan(&taskID, &taskRuntime, &rerun); err != nil {
+	var fresh bool
+	if err := testPool.QueryRow(ctx, `SELECT id::text,runtime_id::text,rerun_of_task_id,force_fresh_session FROM agent_task_queue
+		WHERE issue_id=$1 AND trigger_comment_id=$2`, f.issueID, feedback.ID).Scan(&taskID, &taskRuntime, &rerun, &fresh); err != nil {
 		t.Fatal(err)
 	}
-	if taskRuntime != newRuntimeID || rerun.Valid {
-		t.Fatalf("replacement runtime task inherited a stale session: runtime=%s rerun=%v", taskRuntime, rerun)
+	if taskRuntime != newRuntimeID || rerun.Valid || !fresh {
+		t.Fatalf("replacement runtime task inherited a stale session: runtime=%s rerun=%v fresh=%v", taskRuntime, rerun, fresh)
 	}
 	claimed := claimWorkflowTask(t, newRuntimeID, protocol.DaemonCapabilityPlatformSkillV1)
 	if claimed.ID != taskID || claimed.PriorSessionID != "" ||
+		claimed.PriorWorkDir != "" ||
 		claimed.WorkflowProfileID == "" || claimed.WorkflowPolicyVersion == "" {
-		t.Fatalf("fresh replacement runtime lost its pinned workflow identity: %+v", claimed)
+		t.Fatalf("fresh replacement runtime task=%s profile=%s policy=%s prior_session=%q prior_workdir=%q resume_unavailable=%v",
+			claimed.ID, claimed.WorkflowProfileID, claimed.WorkflowPolicyVersion, claimed.PriorSessionID, claimed.PriorWorkDir,
+			claimed.PriorSessionResumeUnavailable)
+	}
+	var sourceProfile string
+	if err := testPool.QueryRow(ctx, `SELECT workflow_profile_id::text FROM agent_task_queue WHERE id=$1`, f.coordinatorTaskID).Scan(&sourceProfile); err != nil {
+		t.Fatal(err)
+	}
+	if claimed.WorkflowProfileID != sourceProfile {
+		t.Fatalf("replacement runtime captured a different profile: got=%s pinned=%s", claimed.WorkflowProfileID, sourceProfile)
+	}
+	if _, err := testHandler.TaskService.StartTask(ctx, parseUUID(taskID)); err != nil {
+		t.Fatalf("start fresh replacement runtime conversation: %v", err)
 	}
 	var pinnedVersion string
 	if err := testPool.QueryRow(ctx, `SELECT workflow_policy->>'version' FROM issue WHERE id=$1`, f.issueID).Scan(&pinnedVersion); err != nil {

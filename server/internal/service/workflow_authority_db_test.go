@@ -24,11 +24,18 @@ func bindWorkflowTestTask(t *testing.T, f principalFixture, issueID, taskID pgty
 
 func workflowReviewedHumanCandidate(t *testing.T, format2 ...bool) (principalFixture, WorkflowAuthorityService, pgtype.UUID, pgtype.UUID) {
 	t.Helper()
+	return workflowReviewedHumanCandidateForRoles(t, len(format2) > 0 && format2[0], nil)
+}
+
+func workflowReviewedHumanCandidateForRoles(t *testing.T, format2 bool, roles []string) (principalFixture, WorkflowAuthorityService, pgtype.UUID, pgtype.UUID) {
+	t.Helper()
 	f, wakeups, issueID, writerAgent, reviewerAgent := handoffFixture(t)
 	ctx := context.Background()
-	if len(format2) > 0 && format2[0] {
+	if format2 {
 		f.Exec(t, `INSERT INTO issue_status(workspace_id,key,name,category,color,position)
 			VALUES($1,'pr_ready','PR Ready','started','#22c55e',1)`, f.WorkspaceID)
+	}
+	if format2 || roles != nil {
 		issue, err := f.q.GetIssue(ctx, issueID)
 		if err != nil {
 			t.Fatal(err)
@@ -39,7 +46,18 @@ func workflowReviewedHumanCandidate(t *testing.T, format2 ...bool) (principalFix
 		}
 		source := old.Bundle
 		source.ID = util.UUIDToString(dbid.NewV7())
-		source.Files = append(source.Files, AgentSkillFileData{Path: "runtime/policy.json", Content: `{"format_version":2,"accepted_status_key":"pr_ready","outcome_agent_id":"` + writerAgent + `"}`})
+		config := map[string]any{"format_version": 1}
+		if format2 {
+			config["format_version"], config["accepted_status_key"], config["outcome_agent_id"] = 2, "pr_ready", writerAgent
+		}
+		if roles != nil {
+			config["human"] = map[string]any{"accept_roles": roles}
+		}
+		rawConfig, err := json.Marshal(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source.Files = append(source.Files, AgentSkillFileData{Path: "runtime/policy.json", Content: string(rawConfig)})
 		pinned, err := wakeups.Tasks.NewIssueWorkflowPolicy(source)
 		if err != nil {
 			t.Fatal(err)
@@ -240,16 +258,21 @@ func TestWorkflowAuthorityCancellationBlocksPendingAutonomousAcceptance(t *testi
 }
 
 func TestWorkflowAuthorityNamedHumanAcceptanceException(t *testing.T) {
-	f, svc, issueID, _ := workflowReviewedHumanCandidate(t)
+	f, svc, issueID, writerTask := workflowReviewedHumanCandidateForRoles(t, false, []string{"owner", "admin"})
 	ctx := context.Background()
 	otherMember := f.member(t, "named-acceptor")
+	writer, err := f.q.GetAgentTask(ctx, writerTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Exec(t, `UPDATE issue SET assignee_type='agent',assignee_id=$2,revision=revision+1 WHERE id=$1`, issueID, writer.AgentID)
 	issue, err := f.q.GetIssue(ctx, issueID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := WorkflowAcceptanceInput{CandidateID: util.UUIDToString(issue.WorkflowCandidateID), ExpectedRevision: issue.Revision}
 	if _, err := svc.AcceptWorkflow(ctx, issue.WorkspaceID, issueID, WorkflowActor{Type: "member", ID: otherMember}, request); !errors.Is(err, ErrWorkflowAuthorityForbidden) {
-		t.Fatalf("non-recipient accepted without scoped grant: %v", err)
+		t.Fatalf("policy-excluded member accepted without scoped grant: %v", err)
 	}
 	_, err = svc.GrantException(ctx, issue.WorkspaceID, issueID, WorkflowActor{Type: "member", ID: f.UserID},
 		WorkflowExceptionInput{CandidateID: request.CandidateID, ExpectedRevision: issue.Revision,
@@ -259,6 +282,7 @@ func TestWorkflowAuthorityNamedHumanAcceptanceException(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.Exec(t, `UPDATE issue SET status='blocked',revision=revision+1 WHERE id=$1`, issueID)
 	current, err := f.q.GetIssue(ctx, issueID)
 	if err != nil {
 		t.Fatal(err)
@@ -269,6 +293,15 @@ func TestWorkflowAuthorityNamedHumanAcceptanceException(t *testing.T) {
 		t.Fatalf("named grant not visible/effective: %+v, %v", view, err)
 	}
 	request.ExpectedRevision = current.Revision
+	unnamedMember := f.member(t, "unnamed-acceptor")
+	unnamedActor := WorkflowActor{Type: "member", ID: unnamedMember}
+	unnamedView, err := svc.ReadState(ctx, current.WorkspaceID, issueID, unnamedActor)
+	if err != nil || unnamedView.AvailableActions.AcceptHuman || len(unnamedView.AcceptanceBlockers) != 0 {
+		t.Fatalf("candidate grant leaked to unnamed member or global blockers: %+v, %v", unnamedView, err)
+	}
+	if _, err := svc.AcceptWorkflow(ctx, current.WorkspaceID, issueID, unnamedActor, request); !errors.Is(err, ErrWorkflowAuthorityForbidden) {
+		t.Fatalf("candidate grant authorized unnamed member: %v", err)
+	}
 	state, err := svc.AcceptWorkflow(ctx, issue.WorkspaceID, issueID, WorkflowActor{Type: "member", ID: otherMember}, request)
 	if err != nil || state != "accepted" {
 		t.Fatalf("named grant acceptance: %q, %v", state, err)

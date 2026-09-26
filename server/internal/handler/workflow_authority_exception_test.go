@@ -128,61 +128,65 @@ func TestIssueWorkflowExceptionRejectsUnconfiguredSupervisorAndMember(t *testing
 }
 
 func TestIssueWorkflowExceptionConfiguredSupervisorNeedsBoundRunningTaskAndScope(t *testing.T) {
-	issueID := dbfx.Issue(t, "Supervisor exception", testutil.Cols{"status": "in_review"})
-	runtimeID := createClaimReclaimRuntime(t, nil, "supervisor exception runtime")
-	agentID := dbfx.Agent(t, "supervisor agent", runtimeID)
-	sourceID := insertCompleteWorkflowSkill(t, "---\nname: supervisor-policy\n---\n\nPinned policy")
-	dbfx.Insert(t, "skill_file", testutil.Cols{"skill_id": sourceID, "path": "runtime/policy.json",
-		"content": fmt.Sprintf(`{"format_version":1,"supervisors":[{"agent_id":%q,"scopes":["review"]}]}`, agentID)})
-	enrollWorkflowPolicy(t, issueID, sourceID).Want(http.StatusCreated)
-	taskID := dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "issue_id": issueID})
-	claimed := claimWorkflowTask(t, runtimeID, protocol.DaemonCapabilityPlatformSkillV1)
-	if claimed.ID != taskID || claimed.WorkflowProfileID == "" {
-		t.Fatalf("supervisor task lacks bound profile: %+v", claimed)
-	}
-	dbfx.Exec(t, `UPDATE agent_task_queue SET status='running',started_at=now() WHERE id=$1`, taskID)
-	issue, err := testHandler.Queries.GetIssueInWorkspace(context.Background(), db.GetIssueInWorkspaceParams{
-		ID: parseUUID(issueID), WorkspaceID: parseUUID(testWorkspaceID),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	policy, err := testHandler.TaskService.DecodeIssueWorkflowPolicy(issue.WorkflowPolicy)
-	if err != nil || policy == nil {
-		t.Fatalf("decode supervisor policy: %v", err)
-	}
-	candidateID := dbfx.Insert(t, "issue_workflow_candidate", testutil.Cols{
-		"id": dbid.NewV7(), "workspace_id": testWorkspaceID, "issue_id": issueID,
-		"policy_version": policy.Version, "digest": "supervisor candidate",
-		"scope_digest":      service.WorkflowScopeDigest(issue, policy.Version),
-		"source_handoff_id": dbid.NewV7(), "source_task_id": dbid.NewV7(),
-		"writer_task_id": dbid.NewV7(), "pr_set": testutil.Raw("'[]'::jsonb"),
-	})
-	dbfx.Exec(t, `UPDATE issue SET workflow_candidate_id=$2 WHERE id=$1`, issueID, candidateID)
-	svc := service.WorkflowAuthorityService{Tasks: testHandler.TaskService}
-	actor := service.WorkflowActor{Type: "agent", ID: agentID, SourceTaskID: taskID}
-	_, err = svc.GrantException(context.Background(), parseUUID(testWorkspaceID), parseUUID(issueID),
-		service.WorkflowActor{Type: "agent", ID: agentID, SourceTaskID: uuidToString(dbid.NewV7())},
-		service.WorkflowExceptionInput{CandidateID: candidateID, ExpectedRevision: issue.Revision, Scope: "review",
-			GrantDetails: map[string]any{"waive": true}, Reason: "Supervisor review decision", Consequences: "Waives review"})
-	if err != service.ErrWorkflowAuthorityForbidden {
-		t.Fatalf("unbound task accepted: %v", err)
-	}
-	id, err := svc.GrantException(context.Background(), parseUUID(testWorkspaceID), parseUUID(issueID), actor,
-		service.WorkflowExceptionInput{CandidateID: candidateID, ExpectedRevision: issue.Revision, Scope: "review",
-			GrantDetails: map[string]any{"waive": true}, Reason: "Supervisor review decision", Consequences: "Waives review"})
-	if err != nil || id == "" {
-		t.Fatalf("configured supervisor grant=%q error=%v", id, err)
-	}
-	_, err = svc.GrantException(context.Background(), parseUUID(testWorkspaceID), parseUUID(issueID), actor,
-		service.WorkflowExceptionInput{CandidateID: candidateID, ExpectedRevision: issue.Revision + 1, Scope: "delivery",
-			GrantDetails: map[string]any{"action": "merge", "merge_method": "squash"},
-			Reason:       "Try delivery", Consequences: "Would merge"})
-	if err != service.ErrWorkflowAuthorityForbidden {
-		t.Fatalf("supervisor crossed delegated scope: %v", err)
-	}
-	if err := svc.RevokeException(context.Background(), parseUUID(testWorkspaceID), parseUUID(issueID), parseUUID(id), actor,
-		service.WorkflowExceptionRevokeInput{ExpectedRevision: issue.Revision + 1, Reason: "Review required again", Consequences: "No waiver"}); err != nil {
-		t.Fatalf("grantor supervisor revoke: %v", err)
+	for _, status := range []string{"backlog", "todo", "in_progress", "in_review", "blocked"} {
+		t.Run(status, func(t *testing.T) {
+			issueID := dbfx.Issue(t, "Supervisor exception", testutil.Cols{"status": status})
+			runtimeID := createClaimReclaimRuntime(t, nil, "supervisor exception runtime")
+			agentID := dbfx.Agent(t, "supervisor agent", runtimeID)
+			sourceID := insertCompleteWorkflowSkill(t, "---\nname: supervisor-policy\n---\n\nPinned policy")
+			dbfx.Insert(t, "skill_file", testutil.Cols{"skill_id": sourceID, "path": "runtime/policy.json",
+				"content": fmt.Sprintf(`{"format_version":1,"supervisors":[{"agent_id":%q,"scopes":["review"]}]}`, agentID)})
+			enrollWorkflowPolicy(t, issueID, sourceID).Want(http.StatusCreated)
+			taskID := dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "issue_id": issueID})
+			claimed := claimWorkflowTask(t, runtimeID, protocol.DaemonCapabilityPlatformSkillV1)
+			if claimed.ID != taskID || claimed.WorkflowProfileID == "" {
+				t.Fatalf("supervisor task lacks bound profile: %+v", claimed)
+			}
+			dbfx.Exec(t, `UPDATE agent_task_queue SET status='running',started_at=now() WHERE id=$1`, taskID)
+			issue, err := testHandler.Queries.GetIssueInWorkspace(context.Background(), db.GetIssueInWorkspaceParams{
+				ID: parseUUID(issueID), WorkspaceID: parseUUID(testWorkspaceID),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			policy, err := testHandler.TaskService.DecodeIssueWorkflowPolicy(issue.WorkflowPolicy)
+			if err != nil || policy == nil {
+				t.Fatalf("decode supervisor policy: %v", err)
+			}
+			candidateID := dbfx.Insert(t, "issue_workflow_candidate", testutil.Cols{
+				"id": dbid.NewV7(), "workspace_id": testWorkspaceID, "issue_id": issueID,
+				"policy_version": policy.Version, "digest": "supervisor candidate",
+				"scope_digest":      service.WorkflowScopeDigest(issue, policy.Version),
+				"source_handoff_id": dbid.NewV7(), "source_task_id": dbid.NewV7(),
+				"writer_task_id": dbid.NewV7(), "pr_set": testutil.Raw("'[]'::jsonb"),
+			})
+			dbfx.Exec(t, `UPDATE issue SET workflow_candidate_id=$2 WHERE id=$1`, issueID, candidateID)
+			svc := service.WorkflowAuthorityService{Tasks: testHandler.TaskService}
+			actor := service.WorkflowActor{Type: "agent", ID: agentID, SourceTaskID: taskID}
+			_, err = svc.GrantException(context.Background(), parseUUID(testWorkspaceID), parseUUID(issueID),
+				service.WorkflowActor{Type: "agent", ID: agentID, SourceTaskID: uuidToString(dbid.NewV7())},
+				service.WorkflowExceptionInput{CandidateID: candidateID, ExpectedRevision: issue.Revision, Scope: "review",
+					GrantDetails: map[string]any{"waive": true}, Reason: "Supervisor review decision", Consequences: "Waives review"})
+			if err != service.ErrWorkflowAuthorityForbidden {
+				t.Fatalf("unbound task accepted: %v", err)
+			}
+			id, err := svc.GrantException(context.Background(), parseUUID(testWorkspaceID), parseUUID(issueID), actor,
+				service.WorkflowExceptionInput{CandidateID: candidateID, ExpectedRevision: issue.Revision, Scope: "review",
+					GrantDetails: map[string]any{"waive": true}, Reason: "Supervisor review decision", Consequences: "Waives review"})
+			if err != nil || id == "" {
+				t.Fatalf("configured supervisor grant=%q error=%v", id, err)
+			}
+			_, err = svc.GrantException(context.Background(), parseUUID(testWorkspaceID), parseUUID(issueID), actor,
+				service.WorkflowExceptionInput{CandidateID: candidateID, ExpectedRevision: issue.Revision + 1, Scope: "delivery",
+					GrantDetails: map[string]any{"action": "merge", "merge_method": "squash"},
+					Reason:       "Try delivery", Consequences: "Would merge"})
+			if err != service.ErrWorkflowAuthorityForbidden {
+				t.Fatalf("supervisor crossed delegated scope: %v", err)
+			}
+			if err := svc.RevokeException(context.Background(), parseUUID(testWorkspaceID), parseUUID(issueID), parseUUID(id), actor,
+				service.WorkflowExceptionRevokeInput{ExpectedRevision: issue.Revision + 1, Reason: "Review required again", Consequences: "No waiver"}); err != nil {
+				t.Fatalf("grantor supervisor revoke: %v", err)
+			}
+		})
 	}
 }

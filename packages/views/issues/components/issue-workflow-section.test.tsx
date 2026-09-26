@@ -119,8 +119,18 @@ describe("IssueWorkflowSection", () => {
     });
     renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
 
-    expect(screen.getByText("The candidate PR head changed. Reject this candidate and evaluate a new one.")).toBeInTheDocument();
+    expect(screen.getByText("The PR head changed. Reconcile and evaluate the current commit before proceeding.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reject candidate" })).not.toBeInTheDocument();
+  });
+
+  it("explains terminal acceptance without requesting ceremonial reassignment", () => {
+    mocks.workflow = makeWorkflow({
+      acceptance_blockers: ["terminal_status"],
+      available_actions: { accept_human: false, reject: false, request_trivial_acceptance: false, waive_review: false },
+    });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+    expect(screen.getByText("This issue is closed. Reopen it before requesting acceptance.")).toBeInTheDocument();
+    expect(screen.queryByText("Assign the issue to an authorized human first.")).not.toBeInTheDocument();
   });
 
   it("shows exact candidate commits, independent reviews, and mixed delivery outcomes", () => {
@@ -132,6 +142,18 @@ describe("IssueWorkflowSection", () => {
     expect(screen.getByText("1 of 2 delivered")).toBeInTheDocument();
     expect(screen.getByText("Blocked")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry PR 2" })).toBeInTheDocument();
+  });
+
+  it("explains a feedback delivery pause without presenting it as a provider failure", () => {
+    const workflow = makeWorkflow();
+    mocks.workflow = makeWorkflow({
+      delivery: [{ ...workflow.delivery[0]!, status: "pending", last_error_class: "human_feedback_pending" }],
+    });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+
+    const explanation = screen.getByText("Human feedback is awaiting a response. The recorded approval is preserved.");
+    expect(explanation).not.toHaveClass("text-destructive");
+    expect(screen.queryByText(/human_feedback_pending/)).not.toBeInTheDocument();
   });
 
   it("retries only a server-authorized blocked PR using the displayed candidate and revision", () => {
@@ -310,6 +332,16 @@ describe("IssueWorkflowSection", () => {
     expect(screen.getByText("The outcome run could not be queued. It will retry automatically.")).toBeInTheDocument();
     expect(screen.queryByText("Outcome run stopped before completion.")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry outcome run" })).not.toBeInTheDocument();
+  });
+
+  it("explains an accepted outcome waiting for an unanswered conversation", () => {
+    mocks.workflow = makeWorkflow({
+      acceptance: { id: "accept-1", candidate_id: "candidate-42", state: "accepted", mode: "human", requested_at: "2026-09-24T12:30:00Z", accepted_at: "2026-09-24T12:31:00Z", outcome_complete: false, blocker: "human_feedback_pending" },
+    });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+
+    expect(screen.getByText(/Human feedback is awaiting a response\. The recorded approval is preserved\./)).toBeInTheDocument();
+    expect(screen.queryByText(/human_feedback_pending/)).not.toBeInTheDocument();
   });
 
   it("explains a delayed Done transition after verified delivery to a viewer", () => {

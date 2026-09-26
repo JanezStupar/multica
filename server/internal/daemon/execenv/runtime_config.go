@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -247,31 +248,150 @@ func runtimeConfigPath(workDir, provider string) string {
 func writeRuntimeConfigFile(path, brief string) error {
 	block := runtimeMarkerBegin + "\n" + strings.TrimRight(brief, "\n") + "\n" + runtimeMarkerEnd + "\n"
 
-	existing, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return os.WriteFile(path, []byte(block), 0o644)
+	return withRuntimeConfigFileLock(path, true, func(f *os.File, created bool) error {
+		existing, err := readRuntimeConfigFile(f)
+		if err != nil {
+			return fmt.Errorf("read existing runtime config %s: %w", path, err)
+		}
+
+		var newContent string
+		if created {
+			newContent = block
+		} else {
+			existingStr := string(existing)
+			if start, end, ok := locateMarkerBlock(existingStr); ok {
+				// Replace the existing block in place. locateMarkerBlock already
+				// consumes the trailing newline that closed the previous block, so
+				// successive runs don't accumulate blank lines around the block.
+				// The managed separator (if any) lives in existingStr[:start] and
+				// is preserved untouched.
+				newContent = existingStr[:start] + block + existingStr[end:]
+			} else {
+				// No marker block present. Append the fixed managed separator
+				// followed by the block. The separator is unconditional — including
+				// for files that already end in two or more newlines — so the byte
+				// boundary between user content and the managed region is
+				// deterministic, which is what lets Cleanup roll back to the user's
+				// exact original bytes.
+				newContent = existingStr + runtimeManagedSeparator + block
+			}
+		}
+		return writeRuntimeConfigFileContents(f, []byte(newContent), path)
+	})
+}
+
+// withRuntimeConfigFileLock opens and exclusively locks path's actual inode,
+// then runs fn while the descriptor remains open. The lock is deliberately
+// scoped to one file update so an external helper that uses fcntl.flock on the
+// same file serialises with the daemon without introducing a sidecar lock or
+// holding a task/chat mutex. Cleanup can unlink a daemon-created file while a
+// waiter already has its old descriptor open, so the descriptor is checked
+// against the pathname after every lock acquisition before fn runs.
+const runtimeConfigLockAttempts = 3
+
+var errRuntimeConfigPathChanged = errors.New("runtime config path changed while acquiring lock")
+
+func withRuntimeConfigFileLock(path string, create bool, fn func(*os.File, bool) error) error {
+	return withRuntimeConfigFileLockUsing(path, create, openTargetFileForLock, fn)
+}
+
+// withRuntimeConfigFileLockUsing keeps the opener injectable for the
+// cleanup-vs-writer unlink regression test. Production callers always use the
+// target-inode opener above.
+func withRuntimeConfigFileLockUsing(
+	path string,
+	create bool,
+	open func(string, bool) (*os.File, bool, error),
+	fn func(*os.File, bool) error,
+) error {
+	var lastPathErr error
+	for attempt := 0; attempt < runtimeConfigLockAttempts; attempt++ {
+		f, created, err := open(path, create)
+		if err != nil {
+			return err
+		}
+		if err := lockFileExclusive(f); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("lock runtime config %s: %w", path, err)
+		}
+
+		matches, matchErr := runtimeConfigFileMatchesPath(f, path)
+		if !matches {
+			if releaseErr := releaseRuntimeConfigFileLock(f, path); releaseErr != nil {
+				return releaseErr
+			}
+			if matchErr == nil {
+				matchErr = errRuntimeConfigPathChanged
+			}
+			lastPathErr = matchErr
+			continue
+		}
+
+		fnErr := fn(f, created)
+		releaseErr := releaseRuntimeConfigFileLock(f, path)
+		if fnErr != nil {
+			return fnErr
+		}
+		return releaseErr
 	}
+	if lastPathErr != nil {
+		return fmt.Errorf("%w: %s after %d attempts: %v", errRuntimeConfigPathChanged, path, runtimeConfigLockAttempts, lastPathErr)
+	}
+	return fmt.Errorf("%w: %s after %d attempts", errRuntimeConfigPathChanged, path, runtimeConfigLockAttempts)
+}
+
+func runtimeConfigFileMatchesPath(f *os.File, path string) (bool, error) {
+	fileInfo, err := f.Stat()
 	if err != nil {
-		return fmt.Errorf("read existing runtime config %s: %w", path, err)
+		return false, err
 	}
-
-	existingStr := string(existing)
-	if start, end, ok := locateMarkerBlock(existingStr); ok {
-		// Replace the existing block in place. locateMarkerBlock already
-		// consumes the trailing newline that closed the previous block, so
-		// successive runs don't accumulate blank lines around the block.
-		// The managed separator (if any) lives in existingStr[:start] and
-		// is preserved untouched.
-		newContent := existingStr[:start] + block + existingStr[end:]
-		return os.WriteFile(path, []byte(newContent), 0o644)
+	pathInfo, err := os.Stat(path)
+	if err != nil {
+		return false, err
 	}
+	if !os.SameFile(fileInfo, pathInfo) {
+		return false, nil
+	}
+	return true, nil
+}
 
-	// No marker block present. Append the fixed managed separator followed
-	// by the block. The separator is unconditional — including for files
-	// that already end in two or more newlines — so the byte boundary
-	// between user content and the managed region is deterministic, which
-	// is what lets Cleanup roll back to the user's exact original bytes.
-	return os.WriteFile(path, []byte(existingStr+runtimeManagedSeparator+block), 0o644)
+func releaseRuntimeConfigFileLock(f *os.File, path string) error {
+	unlockErr := unlockFile(f)
+	closeErr := f.Close()
+	if unlockErr != nil {
+		return fmt.Errorf("unlock runtime config %s: %w", path, unlockErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close runtime config %s: %w", path, closeErr)
+	}
+	return nil
+}
+
+func readRuntimeConfigFile(f *os.File) ([]byte, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(f)
+}
+
+func writeRuntimeConfigFileContents(f *os.File, content []byte, path string) error {
+	if err := f.Truncate(0); err != nil {
+		return fmt.Errorf("truncate runtime config %s: %w", path, err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("seek runtime config %s: %w", path, err)
+	}
+	for len(content) > 0 {
+		n, err := f.Write(content)
+		if err != nil {
+			return fmt.Errorf("write runtime config %s: %w", path, err)
+		}
+		if n == 0 {
+			return fmt.Errorf("write runtime config %s: zero-byte write", path)
+		}
+		content = content[n:]
+	}
+	return nil
 }
 
 // locateMarkerBlock finds the [start, end) byte range of the Multica marker
@@ -351,46 +471,52 @@ func CleanupRuntimeConfig(workDir, provider string) error {
 	if path == "" {
 		return nil
 	}
-	existing, err := os.ReadFile(path)
+	err := withRuntimeConfigFileLock(path, false, func(f *os.File, _ bool) error {
+		existing, err := readRuntimeConfigFile(f)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read runtime config %s: %w", path, err)
+		}
+		existingStr := string(existing)
+		start, end, ok := locateMarkerBlock(existingStr)
+		if !ok {
+			return nil
+		}
+		pre := existingStr[:start]
+		post := existingStr[end:]
+
+		// Detect — and strip — the fixed managed separator that Inject puts
+		// immediately before the block whenever it appended to a file that
+		// pre-existed. The absence of the separator is the marker that says
+		// "Inject created this file from scratch", which is the only case
+		// where Cleanup is allowed to delete the file.
+		hadManagedSeparator := strings.HasSuffix(pre, runtimeManagedSeparator)
+		if hadManagedSeparator {
+			pre = pre[:len(pre)-len(runtimeManagedSeparator)]
+		}
+		remainder := pre + post
+
+		if !hadManagedSeparator && remainder == "" {
+			// Inject created the file (no managed separator → block was the
+			// only content). Restore the missing-file state.
+			if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("remove runtime config %s: %w", path, err)
+			}
+			return nil
+		}
+		// File pre-existed (possibly empty, possibly whitespace-only,
+		// possibly with user content) — write the remainder back exactly,
+		// without any normalisation. An empty `remainder` here means the
+		// user's original file was empty; we still write it (zero-byte file)
+		// so the file's existence is preserved.
+		return writeRuntimeConfigFileContents(f, []byte(remainder), path)
+	})
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("read runtime config %s: %w", path, err)
-	}
-	existingStr := string(existing)
-	start, end, ok := locateMarkerBlock(existingStr)
-	if !ok {
-		return nil
-	}
-	pre := existingStr[:start]
-	post := existingStr[end:]
-
-	// Detect — and strip — the fixed managed separator that Inject puts
-	// immediately before the block whenever it appended to a file that
-	// pre-existed. The absence of the separator is the marker that says
-	// "Inject created this file from scratch", which is the only case
-	// where Cleanup is allowed to delete the file.
-	hadManagedSeparator := strings.HasSuffix(pre, runtimeManagedSeparator)
-	if hadManagedSeparator {
-		pre = pre[:len(pre)-len(runtimeManagedSeparator)]
-	}
-	remainder := pre + post
-
-	if !hadManagedSeparator && remainder == "" {
-		// Inject created the file (no managed separator → block was the
-		// only content). Restore the missing-file state.
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("remove runtime config %s: %w", path, err)
-		}
-		return nil
-	}
-	// File pre-existed (possibly empty, possibly whitespace-only,
-	// possibly with user content) — write the remainder back exactly,
-	// without any normalisation. An empty `remainder` here means the
-	// user's original file was empty; we still write it (zero-byte file)
-	// so the file's existence is preserved.
-	return os.WriteFile(path, []byte(remainder), 0o644)
+	return err
 }
 
 // buildMetaSkillContent generates the meta skill markdown that teaches the

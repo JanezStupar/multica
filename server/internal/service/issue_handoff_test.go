@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -125,7 +126,7 @@ func TestIssueHandoffSourceCompletionQueuesOnceWithAtomicOwnerChange(t *testing.
 	if err = s.CheckClaim(ctx, task); err != nil {
 		t.Fatalf("recipient claim was rejected: %v", err)
 	}
-	retry := db.AgentTaskQueue{ID: dbid.NewV7(), IssueID: task.IssueID, AgentID: task.AgentID, RetryOfTaskID: task.ID}
+	retry := db.AgentTaskQueue{ID: dbid.NewV7(), IssueID: task.IssueID, AgentID: task.AgentID, RuntimeID: task.RuntimeID, RetryOfTaskID: task.ID}
 	if !handoffRecipientMatches(ctx, s.Tasks.Queries, got, retry) {
 		t.Fatal("same-scope retry lost recipient lineage")
 	}
@@ -134,6 +135,338 @@ func TestIssueHandoffSourceCompletionQueuesOnceWithAtomicOwnerChange(t *testing.
 	}
 	if err = s.CheckClaim(ctx, task); !errors.Is(err, ErrWakeupForbidden) {
 		t.Fatalf("stale recipient claim after reassignment: %v", err)
+	}
+}
+
+func retainedCommentHandoffFixture(t *testing.T) (principalFixture, *IssueWakeupService, db.IssueWakeup, db.AgentTaskQueue, string) {
+	t.Helper()
+	f, s, issue, sourceAgent, recipientAgent := handoffFixture(t)
+	ctx := context.Background()
+	source := handoffSourceTask(t, f, issue, sourceAgent)
+	w, err := s.CreateHandoff(ctx, issue, parseTestUUID(t, f.UserID), source, handoffInput(source, parseTestUUID(t, recipientAgent)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Exec(t, "UPDATE agent_task_queue SET status='completed',completed_at=now() WHERE id=$1", source)
+	wakeDispatch(t, s, w)
+	w, err = f.q.GetIssueWakeup(ctx, db.GetIssueWakeupParams{ID: w.ID, WorkspaceID: w.WorkspaceID})
+	if err != nil || !w.LastTaskID.Valid {
+		t.Fatalf("recipient missing: %+v, %v", w, err)
+	}
+	f.Exec(t, "UPDATE agent_task_queue SET status='completed',completed_at=now(),session_id='retained-recipient-session' WHERE id=$1", w.LastTaskID)
+	recipient, err := f.q.GetAgentTask(ctx, w.LastTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f, s, w, recipient, sourceAgent
+}
+
+func recordRetainedCommentTask(t *testing.T, f principalFixture, source db.AgentTaskQueue, coalesced bool) db.AgentTaskQueue {
+	t.Helper()
+	ctx := context.Background()
+	commentID := parseTestUUID(t, f.Comment(t, util.UUIDToString(source.IssueID), "Please continue this implementation."))
+	triggerID := commentID
+	coalescedIDs := []pgtype.UUID{}
+	if coalesced {
+		triggerID = parseTestUUID(t, f.Comment(t, util.UUIDToString(source.IssueID), "Newest comment"))
+		coalescedIDs = []pgtype.UUID{commentID}
+	}
+	id := parseTestUUID(t, f.Task(t, util.UUIDToString(source.AgentID), testutil.Cols{
+		"issue_id": source.IssueID, "runtime_id": source.RuntimeID, "status": "dispatched", "dispatched_at": testutil.Raw("now()"),
+		"trigger_comment_id": triggerID, "coalesced_comment_ids": coalescedIDs,
+	}))
+	task, err := f.q.GetAgentTask(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.q.SetTaskCommentResumeSource(ctx, db.SetTaskCommentResumeSourceParams{
+		TaskID: id, RuntimeID: source.RuntimeID, DispatchedAt: task.DispatchedAt,
+		SourceTaskID: source.ID, SessionID: source.SessionID.String,
+		ExpectedTriggerCommentID: triggerID, DeliveredCommentIds: []pgtype.UUID{commentID},
+	}); err != nil {
+		t.Fatalf("record exact server session source: %v", err)
+	}
+	f.Exec(t, "UPDATE agent_task_queue SET status='running',started_at=now(),session_id=$2,delivered_comment_ids=$3 WHERE id=$1", id, source.SessionID, []pgtype.UUID{commentID})
+	task, err = f.q.GetAgentTask(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task
+}
+
+func TestIssueHandoffRetainedCommentContinuationCanTransfer(t *testing.T) {
+	for _, status := range []string{"running", "waiting_local_directory", "completed"} {
+		t.Run(status, func(t *testing.T) {
+			f, s, w, recipient, nextAgent := retainedCommentHandoffFixture(t)
+			task := recordRetainedCommentTask(t, f, recipient, true)
+			f.Exec(t, "UPDATE agent_task_queue SET status=$2 WHERE id=$1", task.ID, status)
+			in := handoffInput(task.ID, parseTestUUID(t, nextAgent))
+			if _, err := s.CreateHandoff(context.Background(), w.IssueID, parseTestUUID(t, f.UserID), task.ID, in); err != nil {
+				t.Fatalf("retained ordinary comment cannot hand off: %v", err)
+			}
+		})
+	}
+}
+
+func TestIssueHandoffRetainedCommentContinuationSupportsMultipleTurnsAndRetry(t *testing.T) {
+	f, s, w, recipient, nextAgent := retainedCommentHandoffFixture(t)
+	first := recordRetainedCommentTask(t, f, recipient, false)
+	f.Exec(t, "UPDATE agent_task_queue SET status='completed',completed_at=now() WHERE id=$1", first.ID)
+	first.Status = "completed"
+	second := recordRetainedCommentTask(t, f, first, true)
+	f.Exec(t, "UPDATE agent_task_queue SET status='failed',completed_at=now() WHERE id=$1", second.ID)
+	// A system retry retains the server-recorded parent chain, even when the
+	// selected completed turn was several comments after the initial recipient.
+	retry := parseTestUUID(t, f.Task(t, util.UUIDToString(recipient.AgentID), testutil.Cols{
+		"issue_id": w.IssueID, "runtime_id": recipient.RuntimeID, "status": "running",
+		"session_id": recipient.SessionID, "retry_of_task_id": second.ID,
+	}))
+	if _, err := s.CreateHandoff(context.Background(), w.IssueID, parseTestUUID(t, f.UserID), retry, handoffInput(retry, parseTestUUID(t, nextAgent))); err != nil {
+		t.Fatalf("retained comment retry cannot hand off: %v", err)
+	}
+}
+
+func TestIssueHandoffFreshFallbackRevokesBorrowedAuthorityBeforeTerminal(t *testing.T) {
+	for _, lateSession := range []string{"retained-recipient-session", "fresh-provider-session"} {
+		t.Run(lateSession, func(t *testing.T) {
+			f, s, w, recipient, nextAgent := retainedCommentHandoffFixture(t)
+			task := recordRetainedCommentTask(t, f, recipient, false)
+			ctx := context.Background()
+			if _, err := f.q.InvalidateRetainedTaskContext(ctx, db.InvalidateRetainedTaskContextParams{
+				TaskID: task.ID, RuntimeID: task.RuntimeID, DispatchedAt: task.DispatchedAt,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			// Even a fresh backend echoing the abandoned session identifier may
+			// preserve crash state but cannot restore borrowed ancestry.
+			if err := f.q.UpdateAgentTaskSession(ctx, db.UpdateAgentTaskSessionParams{ID: task.ID, SessionID: pgtype.Text{String: lateSession, Valid: true}, AfterFreshReset: true}); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := f.q.GetAgentTask(ctx, task.ID)
+			if err != nil || stored.Status != "running" || !stored.RetainedContextInvalidated || stored.CommentResumeFromTaskID.Valid || stored.SessionID.String != lateSession {
+				t.Fatalf("fresh transition did not persist before terminal: task=%+v err=%v", stored, err)
+			}
+			if _, err = s.CreateHandoff(ctx, w.IssueID, parseTestUUID(t, f.UserID), task.ID, handoffInput(task.ID, parseTestUUID(t, nextAgent))); !errors.Is(err, ErrWakeupConflict) {
+				t.Fatalf("running fresh comment borrowed retained authority: %v", err)
+			}
+			// A later retry cannot borrow through the invalidated comment either.
+			f.Exec(t, "UPDATE agent_task_queue SET status='failed',completed_at=now() WHERE id=$1", task.ID)
+			retry := parseTestUUID(t, f.Task(t, util.UUIDToString(recipient.AgentID), testutil.Cols{
+				"issue_id": w.IssueID, "runtime_id": recipient.RuntimeID, "status": "running",
+				"session_id": recipient.SessionID, "retry_of_task_id": task.ID,
+			}))
+			if _, err = s.CreateHandoff(ctx, w.IssueID, parseTestUUID(t, f.UserID), retry, handoffInput(retry, parseTestUUID(t, nextAgent))); !errors.Is(err, ErrWakeupConflict) {
+				t.Fatalf("retry borrowed authority through invalidated comment: %v", err)
+			}
+		})
+	}
+}
+
+func TestIssueHandoffFreshFallbackPreservesExplicitRecipientAuthority(t *testing.T) {
+	for _, edge := range []string{"direct recipient", "retry_of_task_id", "rerun_of_task_id"} {
+		t.Run(edge, func(t *testing.T) {
+			f, s, w, recipient, nextAgent := retainedCommentHandoffFixture(t)
+			ctx := context.Background()
+			task := recipient
+			if edge != "direct recipient" {
+				id := parseTestUUID(t, f.Task(t, util.UUIDToString(recipient.AgentID), testutil.Cols{
+					"issue_id": w.IssueID, "runtime_id": recipient.RuntimeID, "status": "running",
+					"dispatched_at": testutil.Raw("now()"), "session_id": recipient.SessionID, edge: recipient.ID,
+				}))
+				var err error
+				task, err = f.q.GetAgentTask(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				f.Exec(t, "UPDATE agent_task_queue SET status='running',dispatched_at=now() WHERE id=$1", recipient.ID)
+				var err error
+				task, err = f.q.GetAgentTask(ctx, recipient.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := f.q.InvalidateRetainedTaskContext(ctx, db.InvalidateRetainedTaskContextParams{
+				TaskID: task.ID, RuntimeID: task.RuntimeID, DispatchedAt: task.DispatchedAt,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.q.UpdateAgentTaskSession(ctx, db.UpdateAgentTaskSessionParams{ID: task.ID, SessionID: pgtype.Text{String: "fresh-native-recipient-session", Valid: true}, AfterFreshReset: true}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.CreateHandoff(ctx, w.IssueID, parseTestUUID(t, f.UserID), task.ID, handoffInput(task.ID, parseTestUUID(t, nextAgent))); err != nil {
+				t.Fatalf("explicit recipient lost authority after fresh context: %v", err)
+			}
+		})
+	}
+}
+
+func TestIssueHandoffFreshFallbackRecipientCanSeedNewRetainedContinuation(t *testing.T) {
+	f, s, w, recipient, nextAgent := retainedCommentHandoffFixture(t)
+	ctx := context.Background()
+	f.Exec(t, "UPDATE agent_task_queue SET status='running',dispatched_at=now() WHERE id=$1", recipient.ID)
+	var err error
+	recipient, err = f.q.GetAgentTask(ctx, recipient.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.q.InvalidateRetainedTaskContext(ctx, db.InvalidateRetainedTaskContextParams{
+		TaskID: recipient.ID, RuntimeID: recipient.RuntimeID, DispatchedAt: recipient.DispatchedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.Exec(t, "UPDATE agent_task_queue SET status='completed',session_id='fresh-owned-recipient-session',completed_at=now() WHERE id=$1", recipient.ID)
+	recipient, err = f.q.GetAgentTask(ctx, recipient.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := recordRetainedCommentTask(t, f, recipient, false)
+	if _, err := s.CreateHandoff(ctx, w.IssueID, parseTestUUID(t, f.UserID), task.ID, handoffInput(task.ID, parseTestUUID(t, nextAgent))); err != nil {
+		t.Fatalf("fresh explicitly owned recipient could not seed retained comment: %v", err)
+	}
+}
+
+func TestIssueHandoffRetainedCommentContinuationRejectsReboundRuntime(t *testing.T) {
+	f, s, w, recipient, nextAgent := retainedCommentHandoffFixture(t)
+	task := recordRetainedCommentTask(t, f, recipient, false)
+	f.Exec(t, "UPDATE agent SET runtime_id=(SELECT runtime_id FROM agent WHERE id=$2) WHERE id=$1", recipient.AgentID, parseTestUUID(t, nextAgent))
+	if _, err := s.CreateHandoff(context.Background(), w.IssueID, parseTestUUID(t, f.UserID), task.ID, handoffInput(task.ID, parseTestUUID(t, nextAgent))); !errors.Is(err, ErrWakeupForbidden) {
+		t.Fatalf("stale runtime continuation accepted: %v", err)
+	}
+}
+
+func TestIssueHandoffSourceAgentRebindCannotRaceRecordedAuthority(t *testing.T) {
+	f, s, w, recipient, nextAgent := retainedCommentHandoffFixture(t)
+	task := recordRetainedCommentTask(t, f, recipient, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rebinding, err := f.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rebinding.Rollback(context.Background())
+	if _, err = rebinding.Exec(ctx, "UPDATE agent SET runtime_id=(SELECT runtime_id FROM agent WHERE id=$2) WHERE id=$1", recipient.AgentID, parseTestUUID(t, nextAgent)); err != nil {
+		t.Fatal(err)
+	}
+	in := handoffInput(task.ID, parseTestUUID(t, nextAgent))
+	if _, err = s.CreateHandoff(ctx, w.IssueID, parseTestUUID(t, f.UserID), task.ID, in); !errors.Is(err, ErrWakeupConflict) {
+		t.Fatalf("source agent contention did not return retryable conflict: %v", err)
+	}
+	if count := f.Count(t, "SELECT count(*) FROM issue_wakeup WHERE request_key=$1", mustHandoffUUID(in.RequestKey)); count != 0 {
+		t.Fatalf("contended binding recorded %d handoffs", count)
+	}
+	if err = rebinding.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.CreateHandoff(ctx, w.IssueID, parseTestUUID(t, f.UserID), task.ID, in); !errors.Is(err, ErrWakeupForbidden) {
+		t.Fatalf("committed rebind granted old runtime authority: %v", err)
+	}
+	if count := f.Count(t, "SELECT count(*) FROM issue_wakeup WHERE request_key=$1", mustHandoffUUID(in.RequestKey)); count != 0 {
+		t.Fatalf("stale binding recorded %d handoffs", count)
+	}
+}
+
+func TestIssueHandoffRetainedCommentCanResumeCompletedRecipientRetryOrRerun(t *testing.T) {
+	for _, state := range []string{"failed", "cancelled"} {
+		for _, edge := range []string{"retry_of_task_id", "rerun_of_task_id"} {
+			t.Run(state+"/"+edge, func(t *testing.T) {
+				f, s, w, original, nextAgent := retainedCommentHandoffFixture(t)
+				f.Exec(t, "UPDATE agent_task_queue SET status=$2,session_id=NULL WHERE id=$1", original.ID, state)
+				descendantID := parseTestUUID(t, f.Task(t, util.UUIDToString(original.AgentID), testutil.Cols{
+					"issue_id": w.IssueID, "runtime_id": original.RuntimeID, "status": "completed", "completed_at": testutil.Raw("now()"),
+					"session_id": "successful-recipient-descendant-session", "force_fresh_session": true, edge: original.ID,
+				}))
+				descendant, err := f.q.GetAgentTask(context.Background(), descendantID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				task := recordRetainedCommentTask(t, f, descendant, true)
+				if _, err = s.CreateHandoff(context.Background(), w.IssueID, parseTestUUID(t, f.UserID), task.ID, handoffInput(task.ID, parseTestUUID(t, nextAgent))); err != nil {
+					t.Fatalf("completed exact recipient descendant lost retained authority: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestIssueHandoffRetainedCommentSupportsManualRerunBetweenHumanTurns(t *testing.T) {
+	f, s, w, recipient, nextAgent := retainedCommentHandoffFixture(t)
+	first := recordRetainedCommentTask(t, f, recipient, false)
+	f.Exec(t, "UPDATE agent_task_queue SET status='completed',completed_at=now() WHERE id=$1", first.ID)
+	rerunID := parseTestUUID(t, f.Task(t, util.UUIDToString(recipient.AgentID), testutil.Cols{
+		"issue_id": w.IssueID, "runtime_id": recipient.RuntimeID, "status": "completed", "completed_at": testutil.Raw("now()"),
+		"session_id": recipient.SessionID, "force_fresh_session": true, "rerun_of_task_id": first.ID,
+	}))
+	rerun, err := f.q.GetAgentTask(context.Background(), rerunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := recordRetainedCommentTask(t, f, rerun, true)
+	if _, err = s.CreateHandoff(context.Background(), w.IssueID, parseTestUUID(t, f.UserID), second.ID, handoffInput(second.ID, parseTestUUID(t, nextAgent))); err != nil {
+		t.Fatalf("exact manual rerun between human turns lost retained authority: %v", err)
+	}
+}
+
+func TestIssueHandoffRetainedCommentContinuationRejectsUnverifiedLineage(t *testing.T) {
+	cases := []struct {
+		name   string
+		change func(*testing.T, principalFixture, db.IssueWakeup, db.AgentTaskQueue, db.AgentTaskQueue, string)
+	}{
+		{"forged wakeup context", func(t *testing.T, f principalFixture, w db.IssueWakeup, recipient, task db.AgentTaskQueue, other string) {
+			f.Exec(t, "UPDATE agent_task_queue SET comment_resume_from_task_id=NULL,context=$2 WHERE id=$1", task.ID, map[string]string{"wakeup_id": util.UUIDToString(w.ID), "comment_resume_from_task_id": util.UUIDToString(recipient.ID)})
+		}},
+		{"wrong agent", func(t *testing.T, f principalFixture, w db.IssueWakeup, recipient, task db.AgentTaskQueue, other string) {
+			f.Exec(t, "UPDATE agent_task_queue SET agent_id=$2 WHERE id=$1", task.ID, parseTestUUID(t, other))
+		}},
+		{"wrong runtime", func(t *testing.T, f principalFixture, w db.IssueWakeup, recipient, task db.AgentTaskQueue, other string) {
+			f.Exec(t, "UPDATE agent_task_queue SET runtime_id=(SELECT runtime_id FROM agent WHERE id=$2) WHERE id=$1", task.ID, parseTestUUID(t, other))
+		}},
+		{"fresh provider session", func(t *testing.T, f principalFixture, w db.IssueWakeup, recipient, task db.AgentTaskQueue, other string) {
+			f.Exec(t, "UPDATE agent_task_queue SET session_id='different-provider-session' WHERE id=$1", task.ID)
+		}},
+		{"forced fresh", func(t *testing.T, f principalFixture, w db.IssueWakeup, recipient, task db.AgentTaskQueue, other string) {
+			f.Exec(t, "UPDATE agent_task_queue SET force_fresh_session=true WHERE id=$1", task.ID)
+		}},
+		{"missing receipt", func(t *testing.T, f principalFixture, w db.IssueWakeup, recipient, task db.AgentTaskQueue, other string) {
+			f.Exec(t, "UPDATE agent_task_queue SET delivered_comment_ids='{}' WHERE id=$1", task.ID)
+		}},
+		{"deleted comment", func(t *testing.T, f principalFixture, w db.IssueWakeup, recipient, task db.AgentTaskQueue, other string) {
+			f.Exec(t, "UPDATE comment SET deleted_at=now() WHERE id=$1", task.TriggerCommentID)
+		}},
+		{"agent authored self mention", func(t *testing.T, f principalFixture, w db.IssueWakeup, recipient, task db.AgentTaskQueue, other string) {
+			f.Exec(t, "UPDATE comment SET author_type='agent',author_id=$2 WHERE id=$1", task.TriggerCommentID, recipient.AgentID)
+		}},
+		{"failed comment resume parent", func(t *testing.T, f principalFixture, w db.IssueWakeup, recipient, task db.AgentTaskQueue, other string) {
+			parent := parseTestUUID(t, f.Task(t, util.UUIDToString(recipient.AgentID), testutil.Cols{"issue_id": w.IssueID, "runtime_id": recipient.RuntimeID, "status": "failed", "session_id": recipient.SessionID, "comment_resume_from_task_id": recipient.ID}))
+			f.Exec(t, "UPDATE agent_task_queue SET comment_resume_from_task_id=$2 WHERE id=$1", task.ID, parent)
+		}},
+		{"failed source", func(t *testing.T, f principalFixture, w db.IssueWakeup, recipient, task db.AgentTaskQueue, other string) {
+			f.Exec(t, "UPDATE agent_task_queue SET status='failed' WHERE id=$1", recipient.ID)
+		}},
+		{"cancelled source", func(t *testing.T, f principalFixture, w db.IssueWakeup, recipient, task db.AgentTaskQueue, other string) {
+			f.Exec(t, "UPDATE agent_task_queue SET status='cancelled' WHERE id=$1", recipient.ID)
+		}},
+		{"unrelated exact source", func(t *testing.T, f principalFixture, w db.IssueWakeup, recipient, task db.AgentTaskQueue, other string) {
+			unrelated := parseTestUUID(t, f.Task(t, util.UUIDToString(recipient.AgentID), testutil.Cols{"issue_id": w.IssueID, "runtime_id": recipient.RuntimeID, "status": "completed", "session_id": recipient.SessionID}))
+			f.Exec(t, "UPDATE agent_task_queue SET comment_resume_from_task_id=$2 WHERE id=$1", task.ID, unrelated)
+		}},
+		{"cyclic source", func(t *testing.T, f principalFixture, w db.IssueWakeup, recipient, task db.AgentTaskQueue, other string) {
+			f.Exec(t, "UPDATE agent_task_queue SET status='completed',comment_resume_from_task_id=id WHERE id=$1", task.ID)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, s, w, recipient, nextAgent := retainedCommentHandoffFixture(t)
+			task := recordRetainedCommentTask(t, f, recipient, false)
+			tc.change(t, f, w, recipient, task, nextAgent)
+			want := ErrWakeupConflict
+			if tc.name == "wrong agent" || tc.name == "wrong runtime" {
+				want = ErrWakeupForbidden
+			}
+			if _, err := s.CreateHandoff(context.Background(), w.IssueID, parseTestUUID(t, f.UserID), task.ID, handoffInput(task.ID, parseTestUUID(t, nextAgent))); !errors.Is(err, want) {
+				t.Fatalf("unverified continuation accepted: %v", err)
+			}
+		})
 	}
 }
 

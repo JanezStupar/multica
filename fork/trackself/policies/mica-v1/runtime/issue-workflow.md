@@ -60,6 +60,11 @@ request shape and finish successfully after requesting acceptance. For an in-sco
 returned retained context options. Put technical findings and verdict details
 in the PR review, then link it from the ticket.
 
+An authorized human can accept an otherwise eligible current candidate on a
+nonterminal ticket without changing its status or assignee first. Do not ask
+for another approval merely to repair human-recipient bookkeeping. All exact
+candidate, review, provider, active-work and authority guards remain effective.
+
 Before returning work for human acceptance, reconcile prior approval using the
 carry-forward rule in `references/workflow.md`. A different SHA or corrected
 candidate metadata alone is not a new human decision. Delegated supervisors

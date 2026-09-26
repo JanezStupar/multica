@@ -43,31 +43,12 @@ func workflowHumanFeedbackTask(ctx context.Context, tx pgx.Tx, issue db.Issue, a
 	var allowed bool
 	err := tx.QueryRow(ctx, `SELECT EXISTS(
 		SELECT 1 FROM agent_task_queue task
-		JOIN issue_wakeup handoff ON handoff.id=task.trigger_evidence_ref_id
-		JOIN agent_task_queue coordinator ON coordinator.id=handoff.filter_task_id
 		WHERE task.id=$1 AND task.issue_id=$2 AND task.agent_id=$3
-		AND task.trigger_evidence_kind='workflow_human_comment'
+		AND task.context->'workflow_feedback'->>'candidate_id'=$4::uuid::text
 		AND ($5::uuid=task.trigger_comment_id OR $5::uuid=ANY(task.coalesced_comment_ids))
-		AND task.delegated_from_task_id=coordinator.id
-		AND task.context->'workflow_feedback'->>'candidate_id'=$4
-		AND task.context->'workflow_feedback'->>'handoff_id'=handoff.id::text
-		AND task.context->'workflow_feedback'->>'coordinator_task_id'=coordinator.id::text
-		AND task.context->'workflow_feedback'->>'comment_id'=task.trigger_comment_id::text
-		AND handoff.workspace_id=$6 AND handoff.issue_id=$2 AND handoff.handoff IS NOT NULL
-		AND handoff.disabled_at IS NULL AND handoff.handoff_completed_at IS NOT NULL
-		AND handoff.last_task_id IS NULL
-		AND handoff.source_task_id=coordinator.id
-		AND handoff.agent_id=coordinator.agent_id
-		AND handoff.filter_agent_id=task.agent_id
-		AND handoff.handoff->>'outgoing_task_id'=coordinator.id::text
-		AND handoff.handoff->>'assignee_type'='member'
-		AND handoff.handoff->>'assignee_id'=$7
-		AND handoff.id=(SELECT latest.id FROM issue_wakeup latest
-			WHERE latest.issue_id=$2 AND latest.workspace_id=$6 AND latest.handoff IS NOT NULL
-			AND latest.disabled_at IS NULL ORDER BY latest.id DESC LIMIT 1)
-		AND coordinator.issue_id=$2 AND coordinator.agent_id=$3 AND coordinator.status='completed')`,
-		taskID, issue.ID, agentID, util.UUIDToString(candidateID), util.UUIDToString(commentID),
-		issue.WorkspaceID, util.UUIDToString(issue.AssigneeID)).Scan(&allowed)
+		AND workflow_human_comment_task_current(task.id,task.issue_id)
+		AND workflow_recorded_comment_input_current(task.issue_id,task.agent_id,$5))`,
+		taskID, issue.ID, agentID, candidateID, commentID).Scan(&allowed)
 	return allowed, err
 }
 
@@ -107,38 +88,25 @@ func (s WorkflowAuthorityService) preserveSupersededWorkflowComments(ctx context
 		}
 		return preserved, nil
 	}
-	rows, err := tx.Query(ctx, `SELECT task.id,task.agent_id,task.runtime_id,task.originator_user_id,task.trigger_comment_id
+	rows, err := tx.Query(ctx, `SELECT task.id,task.agent_id,task.runtime_id,task.originator_user_id,feedback_comment.id
 		FROM agent_task_queue task
-		JOIN issue_wakeup handoff ON handoff.id=task.trigger_evidence_ref_id
-		JOIN agent_task_queue coordinator ON coordinator.id=handoff.filter_task_id
-		JOIN comment feedback_comment ON feedback_comment.id=task.trigger_comment_id AND feedback_comment.issue_id=$1 AND feedback_comment.workspace_id=$2
-		JOIN member m ON m.workspace_id=$2 AND m.user_id=feedback_comment.author_id
+		JOIN LATERAL (SELECT input.* FROM comment input
+			JOIN member m ON m.workspace_id=$2 AND m.user_id=input.author_id
+			WHERE input.issue_id=$1 AND input.workspace_id=$2
+			AND (input.id=task.trigger_comment_id OR input.id=ANY(task.coalesced_comment_ids))
+			AND input.author_type='member' AND input.type IN ('comment','progress_update') AND input.deleted_at IS NULL
+			AND input.author_id=task.originator_user_id AND input.author_id=task.accountable_user_id
+			AND btrim(input.content)<>'' AND input.content !~* '^\s*/note(\s|$)'
+			AND input.created_at>(SELECT candidate.created_at FROM issue_workflow_candidate candidate
+				WHERE candidate.id=$5 AND candidate.issue_id=$1)
+			AND (input.author_id=$4 OR m.role IN ('owner','admin'))
+			ORDER BY input.created_at DESC,input.id DESC LIMIT 1) feedback_comment ON true
 		WHERE task.issue_id=$1 AND task.status IN ('queued','deferred') AND task.started_at IS NULL
 		AND task.trigger_evidence_kind='workflow_human_comment'
 		AND task.context->'workflow_feedback'->>'candidate_id'=$3
-		AND task.context->'workflow_feedback'->>'handoff_id'=handoff.id::text
-		AND task.context->'workflow_feedback'->>'coordinator_task_id'=coordinator.id::text
-		AND task.context->'workflow_feedback'->>'comment_id'=feedback_comment.id::text
-		AND task.delegated_from_task_id=coordinator.id
-		AND task.agent_id=coordinator.agent_id AND task.runtime_id IS NOT NULL
-		AND task.originator_user_id=feedback_comment.author_id AND task.accountable_user_id=feedback_comment.author_id
-		AND handoff.workspace_id=$2 AND handoff.issue_id=$1 AND handoff.disabled_at IS NULL
-		AND handoff.handoff_completed_at IS NOT NULL AND handoff.last_task_id IS NULL
-		AND handoff.source_task_id=coordinator.id AND handoff.filter_agent_id=task.agent_id
-		AND handoff.handoff->>'outgoing_task_id'=coordinator.id::text
-		AND handoff.handoff->>'assignee_type'='member'
-		AND handoff.handoff->>'assignee_id'=$4
-		AND handoff.id=(SELECT latest.id FROM issue_wakeup latest
-			WHERE latest.issue_id=$1 AND latest.workspace_id=$2 AND latest.handoff IS NOT NULL
-			AND latest.disabled_at IS NULL ORDER BY latest.id DESC LIMIT 1)
-		AND coordinator.issue_id=$1 AND coordinator.status='completed'
-		AND feedback_comment.author_type='member' AND feedback_comment.type IN ('comment','progress_update')
-		AND feedback_comment.deleted_at IS NULL
-		AND feedback_comment.created_at>(SELECT candidate.created_at FROM issue_workflow_candidate candidate
-			WHERE candidate.id=$6 AND candidate.issue_id=$1)
-		AND (feedback_comment.author_id=$5 OR m.role IN ('owner','admin'))
+		AND workflow_human_comment_task_current(task.id,$1)
 		ORDER BY task.created_at,task.id FOR UPDATE OF task`, issue.ID, issue.WorkspaceID,
-		util.UUIDToString(candidateID), util.UUIDToString(issue.AssigneeID), issue.AssigneeID, candidateID)
+		util.UUIDToString(candidateID), issue.AssigneeID, candidateID)
 	if err != nil {
 		return preserved, err
 	}
@@ -190,8 +158,15 @@ func (s WorkflowAuthorityService) preserveSupersededWorkflowComments(ctx context
 		command, err := tx.Exec(ctx, `UPDATE agent_task_queue SET status='deferred',fire_at=clock_timestamp(),
 			priority=$2,context=COALESCE(context,'{}'::jsonb)-'workflow_feedback'-'head_sha',
 			trigger_evidence_kind=NULL,trigger_evidence_ref_id=NULL,delegated_from_task_id=NULL,
+			trigger_comment_id=$4,
+			coalesced_comment_ids=(SELECT COALESCE(array_agg(input.id),'{}'::uuid[]) FROM comment input
+			  WHERE input.issue_id=$5 AND input.workspace_id=$6 AND input.id<>$4
+			  AND (input.id=agent_task_queue.trigger_comment_id OR input.id=ANY(agent_task_queue.coalesced_comment_ids))
+			  AND input.author_type='member' AND input.author_id=agent_task_queue.originator_user_id
+			  AND input.type IN ('comment','progress_update') AND input.deleted_at IS NULL
+			  AND btrim(input.content)<>'' AND input.content !~* '^\s*/note(\s|$)'),
 			handoff_note=$3 WHERE id=$1 AND status IN ('queued','deferred')`, row.id,
-			priorityToInt(issue.Priority)-1, note)
+			priorityToInt(issue.Priority)-1, note, row.commentID, issue.ID, issue.WorkspaceID)
 		if err != nil {
 			return preserved, err
 		}
@@ -210,7 +185,7 @@ func (s WorkflowAuthorityService) preserveSupersededWorkflowComments(ctx context
 func (s WorkflowAuthorityService) preserveOrdinaryHumanComments(ctx context.Context, tx pgx.Tx, q *db.Queries, issue db.Issue, candidateID pgtype.UUID) (preservedWorkflowComments, error) {
 	var preserved preservedWorkflowComments
 	rows, err := tx.Query(ctx, `SELECT task.id,task.agent_id,task.runtime_id,task.originator_user_id,
-		task.trigger_comment_id,
+		COALESCE(primary_comment.id,task.trigger_comment_id),
 		COALESCE(primary_comment.author_type='member' AND primary_comment.deleted_at IS NULL
 			AND primary_comment.type IN ('comment','progress_update')
 			AND task.originator_source='direct_human'
@@ -220,13 +195,20 @@ func (s WorkflowAuthorityService) preserveOrdinaryHumanComments(ctx context.Cont
 			SELECT 1 FROM issue_wakeup w WHERE w.id::text=task.context->>'wakeup_id'
 			AND w.issue_id=$1 AND w.workspace_id=$2 AND w.disabled_at IS NULL AND w.handoff IS NULL))
 		FROM agent_task_queue task
-		LEFT JOIN comment primary_comment ON primary_comment.id=task.trigger_comment_id
-			AND primary_comment.issue_id=$1 AND primary_comment.workspace_id=$2
+		LEFT JOIN LATERAL (SELECT input.* FROM comment input
+			JOIN member m ON m.workspace_id=$2 AND m.user_id=input.author_id
+			WHERE input.issue_id=$1 AND input.workspace_id=$2
+			AND (input.id=task.trigger_comment_id OR input.id=ANY(task.coalesced_comment_ids))
+			AND input.author_type='member' AND input.author_id=task.originator_user_id
+			AND input.author_id=task.accountable_user_id AND input.type IN ('comment','progress_update')
+			AND input.deleted_at IS NULL AND btrim(input.content)<>'' AND input.content !~* '^\s*/note(\s|$)'
+			ORDER BY input.created_at DESC,input.id DESC LIMIT 1) primary_comment ON true
 		WHERE task.issue_id=$1 AND task.status IN ('queued','deferred') AND task.started_at IS NULL
 		AND task.trigger_evidence_kind IS DISTINCT FROM 'workflow_human_comment'
 		AND EXISTS (SELECT 1 FROM comment input WHERE input.issue_id=$1 AND input.workspace_id=$2
-			AND input.author_type='member' AND
-			(input.id=task.trigger_comment_id OR input.id=ANY(task.coalesced_comment_ids)))
+			AND input.author_type='member' AND input.type IN ('comment','progress_update') AND input.deleted_at IS NULL
+			AND btrim(input.content)<>'' AND input.content !~* '^\s*/note(\s|$)'
+			AND (input.id=task.trigger_comment_id OR input.id=ANY(task.coalesced_comment_ids)))
 		ORDER BY task.created_at,task.id FOR UPDATE OF task`, issue.ID, issue.WorkspaceID)
 	if err != nil {
 		return preserved, err
@@ -274,8 +256,16 @@ func (s WorkflowAuthorityService) preserveOrdinaryHumanComments(ctx context.Cont
 			util.UUIDToString(candidateID))
 		command, err := tx.Exec(ctx, `UPDATE agent_task_queue SET status='deferred',fire_at=clock_timestamp(),
 			priority=$2,context=COALESCE(context,'{}'::jsonb)-'workflow_feedback'-'head_sha',
+			trigger_comment_id=$4,
+			coalesced_comment_ids=(SELECT COALESCE(array_agg(input.id),'{}'::uuid[]) FROM comment input
+			  WHERE input.issue_id=$5 AND input.workspace_id=$6 AND input.id<>$4
+			  AND (input.id=agent_task_queue.trigger_comment_id OR input.id=ANY(agent_task_queue.coalesced_comment_ids))
+			  AND input.author_type='member'
+			  AND input.type IN ('comment','progress_update') AND input.deleted_at IS NULL
+			  AND btrim(input.content)<>'' AND input.content !~* '^\s*/note(\s|$)'),
 			handoff_note=concat_ws(E'\n',NULLIF(handoff_note,''),$3::text)
-			WHERE id=$1 AND status IN ('queued','deferred')`, row.id, priorityToInt(issue.Priority)-1, note)
+			WHERE id=$1 AND status IN ('queued','deferred')`, row.id, priorityToInt(issue.Priority)-1, note,
+			row.commentID, issue.ID, issue.WorkspaceID)
 		if err != nil {
 			return preserved, err
 		}
@@ -381,8 +371,14 @@ func (s WorkflowAuthorityService) rejectWorkflow(ctx context.Context, workspaceI
 	if err != nil {
 		return err
 	}
-	if !feedbackCommentID.Valid && issue.Status != "in_review" && issue.Status != "done" &&
-		(authority.FormatVersion != 2 || issue.Status != authority.AcceptedStatusKey) {
+	resumableStatus, err := workflowCorrectionStatus(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	if !resumableStatus {
+		if feedbackCommentID.Valid {
+			return fmt.Errorf("%w: closed issue requires explicit reopen before feedback continuation", ErrWorkflowAuthorityConflict)
+		}
 		return ErrWorkflowAuthorityConflict
 	}
 	candidate, err := loadCurrentWorkflowCandidate(ctx, tx, issue, pinned.Version)
@@ -398,7 +394,7 @@ func (s WorkflowAuthorityService) rejectWorkflow(ctx context.Context, workspaceI
 			AND status='delivered' AND (action='merge' OR merged_at IS NOT NULL)
 			UNION ALL
 			SELECT 1 FROM issue_workflow_acceptance WHERE workspace_id=$1 AND issue_id=$2 AND candidate_id=$3
-			AND outcome_complete AND revoked_at IS NULL)`, workspaceID, issue.ID, candidateID).Scan(&deliveredOrCompleted); err != nil {
+			AND state='accepted' AND outcome_complete AND revoked_at IS NULL)`, workspaceID, issue.ID, candidateID).Scan(&deliveredOrCompleted); err != nil {
 			return err
 		}
 		if deliveredOrCompleted {
@@ -487,6 +483,17 @@ func (s WorkflowAuthorityService) rejectWorkflow(ctx context.Context, workspaceI
 	}
 	ordinaryComments, err := s.preserveOrdinaryHumanComments(ctx, tx, q, issue, candidateID)
 	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE agent_task_queue task SET status='cancelled',completed_at=now(),
+		error='Human comment inputs withdrawn',cancelled_by_type='system',prepare_lease_expires_at=NULL
+		WHERE task.issue_id=$1 AND task.status IN ('queued','deferred') AND task.started_at IS NULL
+		AND EXISTS(SELECT 1 FROM comment primary_input WHERE primary_input.id=task.trigger_comment_id
+		  AND primary_input.issue_id=$1 AND primary_input.workspace_id=$2 AND primary_input.author_type='member')
+		AND NOT EXISTS(SELECT 1 FROM comment input WHERE input.issue_id=$1 AND input.workspace_id=$2
+		  AND (input.id=task.trigger_comment_id OR input.id=ANY(task.coalesced_comment_ids))
+		  AND input.author_type='member' AND input.type IN ('comment','progress_update') AND input.deleted_at IS NULL
+		  AND btrim(input.content)<>'' AND input.content !~* '^\s*/note(\s|$)')`, issue.ID, issue.WorkspaceID); err != nil {
 		return err
 	}
 	retainedComments, err := s.preserveSupersededWorkflowComments(ctx, tx, q, issue, candidateID)

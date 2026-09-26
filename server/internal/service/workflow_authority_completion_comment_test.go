@@ -14,14 +14,15 @@ import (
 
 func TestWorkflowNativeCompletionFallbackDoesNotInvalidatePendingAcceptance(t *testing.T) {
 	for _, tc := range []struct {
-		name, interveningComment string
-		wantAccepted             bool
-		wantRevisionDelta        int64
-		wantFallback             bool
+		name, interveningChange string
+		wantAccepted            bool
+		wantRevisionDelta       int64
+		wantFallback            bool
 	}{
 		{name: "only completion fallback", wantAccepted: true, wantFallback: true},
-		{name: "source task manual comment", interveningComment: "source", wantRevisionDelta: 1},
-		{name: "external member comment", interveningComment: "member", wantRevisionDelta: 2, wantFallback: true},
+		{name: "source task manual conversation", interveningChange: "source", wantAccepted: true, wantRevisionDelta: 1},
+		{name: "external member conversation", interveningChange: "member", wantAccepted: true, wantRevisionDelta: 2, wantFallback: true},
+		{name: "objective changed after request", interveningChange: "scope", wantRevisionDelta: 2, wantFallback: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, svc, issueID, reviewerTask, reviewerAgent := workflowSameReviewerAcceptanceFixture(t)
@@ -37,7 +38,7 @@ func TestWorkflowNativeCompletionFallbackDoesNotInvalidatePendingAcceptance(t *t
 			if err != nil || state != "requested" {
 				t.Fatalf("request acceptance: state=%s err=%v", state, err)
 			}
-			switch tc.interveningComment {
+			switch tc.interveningChange {
 			case "source":
 				svc.Tasks.createAgentComment(ctx, issueID, parseTestUUID(t, reviewerAgent),
 					"A manual note after the acceptance request", "comment", pgtype.UUID{}, reviewerTask)
@@ -47,6 +48,8 @@ func TestWorkflowNativeCompletionFallbackDoesNotInvalidatePendingAcceptance(t *t
 					AuthorID: parseTestUUID(t, f.UserID), Content: "A new member comment after the request", Type: "comment"}); err != nil {
 					t.Fatal(err)
 				}
+			case "scope":
+				f.Exec(t, `UPDATE issue SET description='The human changed the objective after this request.',revision=revision+1 WHERE id=$1`, issueID)
 			}
 			result, _ := json.Marshal(protocol.TaskCompletedPayload{TaskID: util.UUIDToString(reviewerTask), Output: "Final review finished."})
 			completed, transitioned, err := svc.Tasks.CompleteTaskWithTransition(ctx, reviewerTask, result,
@@ -78,7 +81,7 @@ func TestWorkflowNativeCompletionFallbackDoesNotInvalidatePendingAcceptance(t *t
 				wantState = "accepted"
 			}
 			if got := f.Count(t, `SELECT count(*) FROM issue_workflow_acceptance WHERE issue_id=$1 AND state=$2`, issueID, wantState); got != 1 {
-				t.Fatalf("intervening %q left %d %s acceptance rows", tc.interveningComment, got, wantState)
+				t.Fatalf("intervening %q left %d %s acceptance rows", tc.interveningChange, got, wantState)
 			}
 		})
 	}

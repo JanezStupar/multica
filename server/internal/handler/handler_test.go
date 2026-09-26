@@ -130,6 +130,11 @@ func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, s
 	`, workspaceID, userID); err != nil {
 		return "", "", err
 	}
+	// This fixture inserts its workspace directly, so seed the same canonical
+	// status catalog that workspace creation installs in production.
+	if err := db.New(pool).SeedIssueStatusEntries(ctx, parseUUID(workspaceID)); err != nil {
+		return "", "", err
+	}
 
 	var runtimeID string
 	if err := pool.QueryRow(ctx, `
@@ -176,6 +181,10 @@ func cleanupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) error {
 		if _, err := pool.Exec(ctx, `DELETE FROM client_usage_daily WHERE user_id IN (SELECT id FROM "user" WHERE email = $1)`, handlerTestEmail); err != nil {
 			return err
 		}
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM issue_status WHERE workspace_id IN
+		(SELECT id FROM workspace WHERE slug = $1)`, handlerTestWorkspaceSlug); err != nil {
+		return err
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM workspace WHERE slug = $1`, handlerTestWorkspaceSlug); err != nil {
 		return err

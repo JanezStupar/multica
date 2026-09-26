@@ -352,9 +352,11 @@ SELECT
     sqlc.narg(squad_id),
     CASE
         WHEN COALESCE(sqlc.narg('head_sha')::text, '') <> '' OR sqlc.narg('workflow_recovery')::jsonb IS NOT NULL
+          OR workflow_comment_obligation_context($3,$1,sqlc.narg(trigger_comment_id)::uuid) IS NOT NULL
         THEN jsonb_strip_nulls(jsonb_build_object(
             'head_sha', NULLIF(COALESCE(sqlc.narg('head_sha')::text, ''), ''),
-            'workflow_recovery', sqlc.narg('workflow_recovery')::jsonb
+            'workflow_recovery', sqlc.narg('workflow_recovery')::jsonb,
+            'workflow_comment_obligation', workflow_comment_obligation_context($3,$1,sqlc.narg(trigger_comment_id)::uuid)
         ))
         ELSE NULL
     END,
@@ -370,6 +372,7 @@ SELECT
     sqlc.narg(trigger_evidence_ref_id),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
+  AND workflow_comment_enqueue_allowed($3, $1, sqlc.narg(trigger_comment_id)::uuid)
 RETURNING *;
 
 -- name: CreateDeferredChannelIssueTask :one
@@ -398,7 +401,8 @@ SELECT
     sqlc.narg(squad_id),
     jsonb_strip_nulls(jsonb_build_object(
         'head_sha', NULLIF(COALESCE(sqlc.narg('head_sha')::text, ''), ''),
-        'channel_issue_media_pending', TRUE
+        'channel_issue_media_pending', TRUE,
+        'workflow_comment_obligation', workflow_comment_obligation_context($3,$1,sqlc.narg(trigger_comment_id)::uuid)
     )),
     sqlc.narg(originator_user_id),
     sqlc.narg(accountable_user_id),
@@ -413,6 +417,7 @@ SELECT
     @fire_at,
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
+  AND workflow_comment_enqueue_allowed($3, $1, sqlc.narg(trigger_comment_id)::uuid)
 RETURNING *;
 
 -- name: PromoteDeferredChannelIssueTask :one
@@ -1193,7 +1198,7 @@ WITH retired_sessions AS (
       )
 ), latest_per_session AS (
     SELECT DISTINCT ON (t.session_id)
-        t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error,
+        t.id, t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error,
         t.started_at, t.issue_snapshot, t.skill_bundle_fingerprint, t.workflow_profile_id,
         COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at) AS terminal_at
     FROM agent_task_queue t
@@ -1214,7 +1219,7 @@ WITH retired_sessions AS (
 -- and retired sessions, so it can legitimately return an OLDER run than the
 -- newest one. Measuring against the newest one would then tell an agent whose
 -- resumed memory predates an edit that the issue is unchanged.
-SELECT session_id, work_dir, runtime_id, status, started_at, issue_snapshot, skill_bundle_fingerprint, workflow_profile_id FROM latest_per_session
+SELECT id, session_id, work_dir, runtime_id, status, started_at, issue_snapshot, skill_bundle_fingerprint, workflow_profile_id FROM latest_per_session
 WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
   AND (
     status IN ('completed', 'cancelled')
@@ -1252,6 +1257,60 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
   )
 ORDER BY terminal_at DESC
 LIMIT 1;
+
+-- name: SetTaskCommentResumeSource :one
+-- Claim delivery alone records exact retained-session lineage. A redelivery
+-- clears an earlier selection when this response starts fresh. The claim CAS
+-- and comment receipt commit together through FinalizeTaskClaim.
+UPDATE agent_task_queue current_task
+SET comment_resume_from_task_id = sqlc.narg(source_task_id)::uuid
+WHERE current_task.id = sqlc.arg(task_id)
+  AND current_task.runtime_id = sqlc.arg(runtime_id)
+  AND current_task.status = 'dispatched'
+  AND current_task.dispatched_at = sqlc.arg(dispatched_at)
+  AND current_task.trigger_comment_id IS NOT DISTINCT FROM sqlc.narg(expected_trigger_comment_id)::uuid
+  AND (
+    sqlc.narg(source_task_id)::uuid IS NULL
+    OR (
+      NOT current_task.force_fresh_session
+      AND NOT current_task.retained_context_invalidated
+      AND EXISTS (
+        SELECT 1 FROM agent_task_queue source_task
+        WHERE source_task.id = sqlc.narg(source_task_id)::uuid
+          AND source_task.id <> current_task.id
+          AND source_task.issue_id = current_task.issue_id
+          AND source_task.agent_id = current_task.agent_id
+          AND source_task.runtime_id = current_task.runtime_id
+          AND source_task.status = 'completed'
+          AND source_task.session_id = sqlc.arg(session_id)::text
+      )
+      AND EXISTS (
+        SELECT 1 FROM comment c JOIN issue i ON i.id=c.issue_id AND i.workspace_id=c.workspace_id
+        WHERE c.id = ANY(sqlc.arg(delivered_comment_ids)::uuid[])
+          AND c.issue_id = current_task.issue_id AND c.deleted_at IS NULL AND c.author_type = 'member'
+      )
+    )
+  )
+RETURNING current_task.id;
+
+-- name: LockHandoffSourceAgent :one
+-- Stabilize the outgoing task's runtime and authority through handoff commit.
+-- NOWAIT avoids waiting in issue/task -> agent order against agent updates.
+SELECT * FROM agent
+WHERE id = sqlc.arg(agent_id) AND workspace_id = sqlc.arg(workspace_id) AND kind = 'user'
+FOR SHARE NOWAIT;
+
+-- name: InvalidateRetainedTaskContext :one
+-- Acknowledged before the daemon executes a same-task fresh provider prompt.
+-- Late session pins may still arrive, but cannot restore borrowed authority.
+UPDATE agent_task_queue
+SET retained_context_invalidated = true,
+    comment_resume_from_task_id = NULL,
+    session_id = NULL
+WHERE id = sqlc.arg(task_id) AND runtime_id = sqlc.arg(runtime_id)
+  AND dispatched_at = sqlc.arg(dispatched_at) AND status = 'running'
+  AND NOT retained_context_invalidated
+RETURNING id;
 
 -- name: GetLatestTaskRolloutMissing :one
 -- Reports whether the most recent terminal task for (agent_id, issue_id)
@@ -1339,6 +1398,9 @@ UPDATE agent_task_queue
 SET session_id = COALESCE(sqlc.narg('session_id'), session_id),
     work_dir  = COALESCE(sqlc.narg('work_dir'), work_dir)
 WHERE id = $1
+  -- Each task can make one acknowledged fresh-context transition. Pins from
+  -- its abandoned execution must not overwrite the fresh crash-resume pointer.
+  AND retained_context_invalidated = sqlc.arg(after_fresh_reset)::boolean
   AND (
     status IN ('dispatched', 'running')
     OR (status = 'cancelled' AND session_id IS NULL)
@@ -1973,7 +2035,9 @@ SET coalesced_comment_ids = (
     trigger_evidence_kind = sqlc.narg('new_trigger_evidence_kind'),
     trigger_evidence_ref_id = sqlc.narg('new_trigger_evidence_ref_id')::uuid,
     runtime_mcp_overlay = sqlc.narg('new_runtime_mcp_overlay'),
-    runtime_connected_apps = sqlc.narg('new_runtime_connected_apps')
+    runtime_connected_apps = sqlc.narg('new_runtime_connected_apps'),
+    context = CASE WHEN workflow_comment_obligation_context(issue_id,agent_id,@new_trigger_comment_id::uuid) IS NULL THEN context
+      ELSE COALESCE(context,'{}'::jsonb)||jsonb_build_object('workflow_comment_obligation',workflow_comment_obligation_context(issue_id,agent_id,@new_trigger_comment_id::uuid)) END
 WHERE id = (
     SELECT t.id FROM agent_task_queue t
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = @issue_id
@@ -1995,6 +2059,7 @@ WHERE id = (
     ORDER BY t.created_at DESC
     LIMIT 1
 )
+AND workflow_comment_enqueue_allowed(issue_id,agent_id,@new_trigger_comment_id::uuid)
 RETURNING id, coalesced_comment_ids;
 
 -- name: RegisterPlannedCommentForActiveTask :one

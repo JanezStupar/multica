@@ -131,7 +131,12 @@ func (s WorkflowAuthorityService) RegisterReview(ctx context.Context, workspaceI
 	if err != nil {
 		return err
 	}
-	if issue.WorkflowFrozen || issue.Status != "in_review" || issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID || issue.WorkflowCandidateID != candidateID {
+	if issue.WorkflowFrozen || issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID || issue.WorkflowCandidateID != candidateID {
+		return ErrWorkflowAuthorityConflict
+	}
+	if eligible, err := WorkflowNonterminalStatus(ctx, tx, issue); err != nil {
+		return err
+	} else if !eligible {
 		return ErrWorkflowAuthorityConflict
 	}
 	policy, err := s.Tasks.DecodeIssueWorkflowPolicy(issue.WorkflowPolicy)

@@ -113,6 +113,26 @@ func TestWorkflowClaimSerializesEnrolledIssueAcrossAgents(t *testing.T) {
 					retryAgent = result.agentID
 				}
 			}
+			if enrolled && claimed == 0 {
+				// Both provisional updates can hold the frozen-status trigger's
+				// SHARE lock, then both fail the NOWAIT upgrade before the other
+				// rollback releases it. Zero in that poll wave is a clean retry,
+				// not permission to dispatch two tasks on the enrolled issue.
+				if active := f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'dispatched'`, issue); active != 0 {
+					t.Fatalf("zero-result poll wave left %d provisional dispatches", active)
+				}
+				svc := NewTaskService(db.New(f.Pool), f.Pool, nil, events.New())
+				for _, agentID := range []string{firstAgent, secondAgent} {
+					task, err := svc.ClaimTask(context.Background(), util.MustParseUUID(agentID))
+					if err != nil {
+						t.Fatalf("enrolled claim after completed provisional rollbacks: %v", err)
+					}
+					if task != nil {
+						claimed++
+						break
+					}
+				}
+			}
 			if !enrolled && claimed == 1 {
 				// The short NOWAIT issue lock can make one simultaneous poll
 				// retry. Legacy parallelism means both may be active once the

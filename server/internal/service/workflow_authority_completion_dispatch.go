@@ -81,7 +81,7 @@ func (s WorkflowAuthorityService) RetryNextWorkflowCompletionDispatch(ctx contex
 	err = tx.QueryRow(ctx, `SELECT a.issue_id FROM issue_workflow_acceptance a
 		JOIN issue i ON i.id=a.issue_id AND i.workspace_id=a.workspace_id
 		WHERE a.completion_version=2 AND a.state='accepted' AND a.revoked_at IS NULL
-		AND (a.last_error_class='completion_reconcile_failed' OR
+		AND (a.last_error_class IN ('completion_reconcile_failed','human_feedback_pending') OR
 		     a.last_error_class='outcome_dispatch_failed' AND a.outcome_task_id IS NULL)
 		AND a.outcome_next_attempt_at<=now() AND i.workflow_candidate_id=a.candidate_id
 		AND i.status=a.accepted_status_key AND NOT i.workflow_frozen
@@ -109,7 +109,7 @@ func (s WorkflowAuthorityService) RetryNextWorkflowCompletionDispatch(ctx contex
 	err = tx.QueryRow(ctx, `SELECT id FROM issue_workflow_acceptance
 		WHERE issue_id=$1 AND workspace_id=$2 AND candidate_id=$3 AND state='accepted'
 		AND revoked_at IS NULL AND completion_version=2
-		AND (last_error_class='completion_reconcile_failed' OR
+		AND (last_error_class IN ('completion_reconcile_failed','human_feedback_pending') OR
 		     last_error_class='outcome_dispatch_failed' AND outcome_task_id IS NULL)
 		AND outcome_next_attempt_at<=now() AND accepted_status_key=$4
 		ORDER BY outcome_next_attempt_at,id LIMIT 1 FOR UPDATE`, issue.ID, workspaceID,

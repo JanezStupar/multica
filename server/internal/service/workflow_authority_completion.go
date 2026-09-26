@@ -164,6 +164,22 @@ func ReconcileWorkflowCompletion(ctx context.Context, tx pgx.Tx, q *db.Queries, 
 	if merged != expected {
 		return nil, false, nil
 	}
+	// Provider merge facts are already durable. Preserve the conversation's
+	// current recipient until its promised human input has been answered or
+	// explicitly withdrawn; assigning a different outcome agent would strand it.
+	pendingFeedback, err := WorkflowHasPendingHumanFeedback(ctx, tx, issue)
+	if err != nil {
+		return nil, false, err
+	}
+	if pendingFeedback {
+		_, err = tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET last_error_class='human_feedback_pending',
+			outcome_next_attempt_at=now()+interval '5 seconds' WHERE id=$1`, acceptanceID)
+		return nil, false, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET last_error_class=NULL,outcome_next_attempt_at=NULL
+		WHERE id=$1 AND last_error_class='human_feedback_pending'`, acceptanceID); err != nil {
+		return nil, false, err
+	}
 	if outcomeComplete {
 		var revision int64
 		err = tx.QueryRow(ctx, `UPDATE issue SET status='done',revision=revision+1,updated_at=now(),last_activity_at=now()

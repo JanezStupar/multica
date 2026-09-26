@@ -166,22 +166,24 @@ type AgentTaskQueue struct {
 	// The row id referenced by trigger_evidence_kind (a comment id, autopilot_run id, rule_version id, source task id, ...). No FK; resolvable per-kind in the app layer (MUL-4302 §2).
 	TriggerEvidenceRefID pgtype.UUID `json:"trigger_evidence_ref_id"`
 	// The one human accountable for this run, for audit / visibility / cost only — NEVER consulted for authorization (that is originator_user_id). Invariant: when originator_user_id IS NOT NULL, this equals it; the two diverge only when originator_user_id IS NULL (autopilot rule_owner / degraded owner_fallback name an accountable human while authorization carries none). No FK, no cascade (MUL-4302 §1/§7). NULL means no accountable human was resolved: a pre-migration row, OR a NEW row whose audit source is not-yet-resolved / unattributed (e.g. run_only autopilot until rule_owner lands) — NOT pre-migration only.
-	AccountableUserID         pgtype.UUID `json:"accountable_user_id"`
-	SessionRolloutMissing     bool        `json:"session_rollout_missing"`
-	RetiredSessionID          pgtype.Text `json:"retired_session_id"`
-	QuickActionsDisabled      bool        `json:"quick_actions_disabled"`
-	RegenerateQuickActionsFor pgtype.UUID `json:"regenerate_quick_actions_for"`
-	BranchName                pgtype.Text `json:"branch_name"`
-	DurableWorkDir            pgtype.Text `json:"durable_work_dir"`
-	ChannelContextRevision    pgtype.Int8 `json:"channel_context_revision"`
-	CommentThreadID           pgtype.UUID `json:"comment_thread_id"`
-	CancelledByType           pgtype.Text `json:"cancelled_by_type"`
-	CancelledByID             pgtype.UUID `json:"cancelled_by_id"`
-	CancelledByName           pgtype.Text `json:"cancelled_by_name"`
-	IssueSnapshot             []byte      `json:"issue_snapshot"`
-	SkillBundleFingerprint    pgtype.Text `json:"skill_bundle_fingerprint"`
-	WorkflowProfileID         pgtype.UUID `json:"workflow_profile_id"`
-	WorkflowPolicyVersion     pgtype.Text `json:"workflow_policy_version"`
+	AccountableUserID          pgtype.UUID `json:"accountable_user_id"`
+	SessionRolloutMissing      bool        `json:"session_rollout_missing"`
+	RetiredSessionID           pgtype.Text `json:"retired_session_id"`
+	QuickActionsDisabled       bool        `json:"quick_actions_disabled"`
+	RegenerateQuickActionsFor  pgtype.UUID `json:"regenerate_quick_actions_for"`
+	BranchName                 pgtype.Text `json:"branch_name"`
+	DurableWorkDir             pgtype.Text `json:"durable_work_dir"`
+	ChannelContextRevision     pgtype.Int8 `json:"channel_context_revision"`
+	CommentThreadID            pgtype.UUID `json:"comment_thread_id"`
+	CancelledByType            pgtype.Text `json:"cancelled_by_type"`
+	CancelledByID              pgtype.UUID `json:"cancelled_by_id"`
+	CancelledByName            pgtype.Text `json:"cancelled_by_name"`
+	IssueSnapshot              []byte      `json:"issue_snapshot"`
+	SkillBundleFingerprint     pgtype.Text `json:"skill_bundle_fingerprint"`
+	WorkflowProfileID          pgtype.UUID `json:"workflow_profile_id"`
+	WorkflowPolicyVersion      pgtype.Text `json:"workflow_policy_version"`
+	CommentResumeFromTaskID    pgtype.UUID `json:"comment_resume_from_task_id"`
+	RetainedContextInvalidated bool        `json:"retained_context_invalidated"`
 }
 
 type AgentToLabel struct {
@@ -1028,24 +1030,38 @@ type IssueWakeupReceipt struct {
 }
 
 type IssueWorkflowAcceptance struct {
-	ID                   pgtype.UUID        `json:"id"`
-	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
-	IssueID              pgtype.UUID        `json:"issue_id"`
-	CandidateID          pgtype.UUID        `json:"candidate_id"`
-	Mode                 string             `json:"mode"`
-	ActorType            string             `json:"actor_type"`
-	ActorID              pgtype.UUID        `json:"actor_id"`
-	SourceTaskID         pgtype.UUID        `json:"source_task_id"`
-	State                string             `json:"state"`
-	IssueRevision        pgtype.Int8        `json:"issue_revision"`
-	PolicyVersion        string             `json:"policy_version"`
-	AuthoritySnapshot    []byte             `json:"authority_snapshot"`
-	ClassificationReason pgtype.Text        `json:"classification_reason"`
-	RequestedAt          pgtype.Timestamptz `json:"requested_at"`
-	AcceptedAt           pgtype.Timestamptz `json:"accepted_at"`
-	RevokedAt            pgtype.Timestamptz `json:"revoked_at"`
-	NextAttemptAt        pgtype.Timestamptz `json:"next_attempt_at"`
-	LastErrorClass       pgtype.Text        `json:"last_error_class"`
+	ID                          pgtype.UUID        `json:"id"`
+	WorkspaceID                 pgtype.UUID        `json:"workspace_id"`
+	IssueID                     pgtype.UUID        `json:"issue_id"`
+	CandidateID                 pgtype.UUID        `json:"candidate_id"`
+	Mode                        string             `json:"mode"`
+	ActorType                   string             `json:"actor_type"`
+	ActorID                     pgtype.UUID        `json:"actor_id"`
+	SourceTaskID                pgtype.UUID        `json:"source_task_id"`
+	State                       string             `json:"state"`
+	IssueRevision               pgtype.Int8        `json:"issue_revision"`
+	PolicyVersion               string             `json:"policy_version"`
+	AuthoritySnapshot           []byte             `json:"authority_snapshot"`
+	ClassificationReason        pgtype.Text        `json:"classification_reason"`
+	RequestedAt                 pgtype.Timestamptz `json:"requested_at"`
+	AcceptedAt                  pgtype.Timestamptz `json:"accepted_at"`
+	RevokedAt                   pgtype.Timestamptz `json:"revoked_at"`
+	NextAttemptAt               pgtype.Timestamptz `json:"next_attempt_at"`
+	LastErrorClass              pgtype.Text        `json:"last_error_class"`
+	CompletionVersion           int16              `json:"completion_version"`
+	AcceptedStatusKey           pgtype.Text        `json:"accepted_status_key"`
+	OutcomeAgentID              pgtype.UUID        `json:"outcome_agent_id"`
+	HoldDelivery                bool               `json:"hold_delivery"`
+	HeldAt                      pgtype.Timestamptz `json:"held_at"`
+	ReleasedAt                  pgtype.Timestamptz `json:"released_at"`
+	OutcomeComplete             bool               `json:"outcome_complete"`
+	OutcomeCompletedAt          pgtype.Timestamptz `json:"outcome_completed_at"`
+	OutcomeTaskID               pgtype.UUID        `json:"outcome_task_id"`
+	OutcomeRequestTaskID        pgtype.UUID        `json:"outcome_request_task_id"`
+	OutcomeRequestedAt          pgtype.Timestamptz `json:"outcome_requested_at"`
+	OutcomeDispatchAttemptCount int32              `json:"outcome_dispatch_attempt_count"`
+	OutcomeNextAttemptAt        pgtype.Timestamptz `json:"outcome_next_attempt_at"`
+	HumanCommentObligations     []byte             `json:"human_comment_obligations"`
 }
 
 type IssueWorkflowCandidate struct {
@@ -1144,22 +1160,24 @@ type IssueWorkflowProfile struct {
 }
 
 type IssueWorkflowRejection struct {
-	ID             pgtype.UUID        `json:"id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	IssueID        pgtype.UUID        `json:"issue_id"`
-	CandidateID    pgtype.UUID        `json:"candidate_id"`
-	AcceptanceID   pgtype.UUID        `json:"acceptance_id"`
-	ActorType      string             `json:"actor_type"`
-	ActorID        pgtype.UUID        `json:"actor_id"`
-	SourceTaskID   pgtype.UUID        `json:"source_task_id"`
-	Kind           string             `json:"kind"`
-	Reason         string             `json:"reason"`
-	ResumeTaskID   pgtype.UUID        `json:"resume_task_id"`
-	ResumeAgentID  pgtype.UUID        `json:"resume_agent_id"`
-	IssueRevision  int64              `json:"issue_revision"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	ContextMode    string             `json:"context_mode"`
-	ContinuityNote pgtype.Text        `json:"continuity_note"`
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	CandidateID     pgtype.UUID        `json:"candidate_id"`
+	AcceptanceID    pgtype.UUID        `json:"acceptance_id"`
+	ActorType       string             `json:"actor_type"`
+	ActorID         pgtype.UUID        `json:"actor_id"`
+	SourceTaskID    pgtype.UUID        `json:"source_task_id"`
+	Kind            string             `json:"kind"`
+	Reason          string             `json:"reason"`
+	ResumeTaskID    pgtype.UUID        `json:"resume_task_id"`
+	ResumeAgentID   pgtype.UUID        `json:"resume_agent_id"`
+	IssueRevision   int64              `json:"issue_revision"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ContextMode     string             `json:"context_mode"`
+	ContinuityNote  pgtype.Text        `json:"continuity_note"`
+	CommentID       pgtype.UUID        `json:"comment_id"`
+	CommentRevision pgtype.Int8        `json:"comment_revision"`
 }
 
 type IssueWorkflowReview struct {
