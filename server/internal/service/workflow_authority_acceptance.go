@@ -70,7 +70,7 @@ func loadCurrentWorkflowCandidate(ctx context.Context, tx pgx.Tx, issue db.Issue
 	if err != nil {
 		return candidate, fmt.Errorf("%w: current candidate unavailable: %v", ErrWorkflowAuthorityConflict, err)
 	}
-	if candidate.PolicyVersion != policyVersion || candidate.ScopeDigest != WorkflowScopeDigest(issue, policyVersion) ||
+	if candidate.PolicyVersion != policyVersion ||
 		json.Unmarshal(raw, &candidate.PRs) != nil {
 		return workflowCandidateRecord{}, fmt.Errorf("%w: candidate scope or policy changed", ErrWorkflowAuthorityConflict)
 	}

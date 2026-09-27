@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // ValidateWorkflowCompletionConfig resolves configured identities in the issue's
@@ -30,22 +29,15 @@ func ValidateWorkflowCompletionConfig(ctx context.Context, tx pgx.Tx, issue db.I
 		return err
 	}
 	var category string
-	var system bool
-	err := tx.QueryRow(ctx, `SELECT category,is_system FROM issue_status
-		WHERE workspace_id=$1 AND key=$2 AND archived_at IS NULL`, issue.WorkspaceID, policy.AcceptedStatusKey).Scan(&category, &system)
-	if errors.Is(err, pgx.ErrNoRows) || category != "started" || system {
-		return fmt.Errorf("%w: accepted_status_key must resolve to an active custom started status", ErrWorkflowAuthorityConflict)
+	err := tx.QueryRow(ctx, `SELECT category FROM issue_status
+		WHERE workspace_id=$1 AND key=$2 AND archived_at IS NULL`, issue.WorkspaceID, policy.AcceptedStatusKey).Scan(&category)
+	if errors.Is(err, pgx.ErrNoRows) || category != "started" && category != "unstarted" {
+		return fmt.Errorf("%w: accepted_status_key must resolve to an active nonterminal status", ErrWorkflowAuthorityConflict)
 	}
 	if err != nil {
 		return err
 	}
-	var runtimeID pgtype.UUID
-	err = tx.QueryRow(ctx, `SELECT runtime_id FROM agent WHERE workspace_id=$1 AND id=$2`,
-		issue.WorkspaceID, mustAuthorityUUID(policy.OutcomeAgentID)).Scan(&runtimeID)
-	if errors.Is(err, pgx.ErrNoRows) || !runtimeID.Valid {
-		return fmt.Errorf("%w: outcome_agent_id must resolve to a workspace agent with a runtime", ErrWorkflowAuthorityConflict)
-	}
-	return err
+	return nil
 }
 
 func validateWorkflowActionReason(reason string) (string, error) {
@@ -123,27 +115,34 @@ func (s *TaskService) ValidateWorkflowOutcomeTask(ctx context.Context, task db.A
 	return validateWorkflowOutcomeTask(ctx, tx, task)
 }
 
-// ReconcileWorkflowCompletion runs with the issue row locked. Every caller
-// first records the provider result or outcome acknowledgment in the same
-// transaction, so the status transition cannot outrun either fact.
+// ReconcileWorkflowCompletion runs with the issue row locked. Recorded provider
+// merges complete the bound work; an old outcome flag is not a remaining-work
+// instruction. No-PR acceptance already records an explicit completion decision.
+// The returned task, if any, is a cancelled legacy outcome run to publish after
+// the owning transaction commits.
 func ReconcileWorkflowCompletion(ctx context.Context, tx pgx.Tx, q *db.Queries, issue db.Issue,
 	acceptanceID pgtype.UUID,
 ) (*db.AgentTaskQueue, bool, error) {
-	var candidateID, outcomeAgentID, outcomeTaskID pgtype.UUID
-	var state, acceptedStatus, policyVersion string
+	var candidateID, outcomeTaskID pgtype.UUID
+	var state, policyVersion string
 	var version int16
-	var outcomeComplete bool
-	err := tx.QueryRow(ctx, `SELECT candidate_id,state,completion_version,accepted_status_key,
-		outcome_agent_id,outcome_task_id,outcome_complete,policy_version
+	err := tx.QueryRow(ctx, `SELECT candidate_id,state,completion_version,outcome_task_id,policy_version
 		FROM issue_workflow_acceptance WHERE id=$1 AND issue_id=$2 AND workspace_id=$3 AND revoked_at IS NULL`,
-		acceptanceID, issue.ID, issue.WorkspaceID).Scan(&candidateID, &state, &version, &acceptedStatus,
-		&outcomeAgentID, &outcomeTaskID, &outcomeComplete, &policyVersion)
+		acceptanceID, issue.ID, issue.WorkspaceID).Scan(&candidateID, &state, &version, &outcomeTaskID, &policyVersion)
 	if err != nil {
 		return nil, false, err
 	}
-	if version != 2 || state != "accepted" || issue.WorkflowFrozen || issue.WorkflowCandidateID != candidateID ||
-		issue.Status != acceptedStatus {
+	if version != 2 || state != "accepted" || issue.WorkflowFrozen || issue.WorkflowCandidateID != candidateID {
 		return nil, false, nil
+	}
+	if issue.Status != "done" {
+		eligible, err := WorkflowNonterminalStatus(ctx, tx, issue)
+		if err != nil {
+			return nil, false, err
+		}
+		if !eligible {
+			return nil, false, nil
+		}
 	}
 	var pinnedVersion string
 	if err := tx.QueryRow(ctx, `SELECT workflow_policy->>'version' FROM issue WHERE id=$1`, issue.ID).Scan(&pinnedVersion); err != nil {
@@ -164,89 +163,51 @@ func ReconcileWorkflowCompletion(ctx context.Context, tx pgx.Tx, q *db.Queries, 
 	if merged != expected {
 		return nil, false, nil
 	}
-	// Provider merge facts are already durable. Preserve the conversation's
-	// current recipient until its promised human input has been answered or
-	// explicitly withdrawn; assigning a different outcome agent would strand it.
-	pendingFeedback, err := WorkflowHasPendingHumanFeedback(ctx, tx, issue)
+	cancelled, err := cancelWorkflowOutcomeTask(ctx, q, outcomeTaskID, "Bound work completed; legacy outcome run retired")
 	if err != nil {
 		return nil, false, err
 	}
-	if pendingFeedback {
-		_, err = tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET last_error_class='human_feedback_pending',
-			outcome_next_attempt_at=now()+interval '5 seconds' WHERE id=$1`, acceptanceID)
+	if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET outcome_complete=true,
+		outcome_completed_at=COALESCE(outcome_completed_at,now()),outcome_request_task_id=NULL,
+		last_error_class=NULL,outcome_next_attempt_at=NULL WHERE id=$1`, acceptanceID); err != nil {
 		return nil, false, err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET last_error_class=NULL,outcome_next_attempt_at=NULL
-		WHERE id=$1 AND last_error_class='human_feedback_pending'`, acceptanceID); err != nil {
-		return nil, false, err
+	if issue.Status == "done" {
+		return cancelled, false, nil
 	}
-	if outcomeComplete {
-		var revision int64
-		err = tx.QueryRow(ctx, `UPDATE issue SET status='done',revision=revision+1,updated_at=now(),last_activity_at=now()
-			WHERE id=$1 AND workspace_id=$2 AND revision=$3 AND status=$4 RETURNING revision`,
-			issue.ID, issue.WorkspaceID, issue.Revision, acceptedStatus).Scan(&revision)
-		if err != nil || revision != issue.Revision+1 {
-			return nil, false, fmt.Errorf("%w: final completion changed: %v", ErrWorkflowAuthorityConflict, err)
-		}
-		return nil, true, nil
+	var revision int64
+	err = tx.QueryRow(ctx, `UPDATE issue SET status='done',revision=revision+1,updated_at=now(),last_activity_at=now()
+		WHERE id=$1 AND workspace_id=$2 AND revision=$3 RETURNING revision`,
+		issue.ID, issue.WorkspaceID, issue.Revision).Scan(&revision)
+	if err != nil || revision != issue.Revision+1 {
+		return nil, false, fmt.Errorf("%w: final completion changed: %v", ErrWorkflowAuthorityConflict, err)
 	}
-	if outcomeTaskID.Valid {
-		return nil, false, nil
+	return cancelled, true, nil
+}
+
+func cancelWorkflowOutcomeTask(ctx context.Context, q *db.Queries, taskID pgtype.UUID, reason string) (*db.AgentTaskQueue, error) {
+	if !taskID.Valid {
+		return nil, nil
 	}
-	agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: outcomeAgentID, WorkspaceID: issue.WorkspaceID})
-	if err != nil || !agent.RuntimeID.Valid {
-		return nil, false, fmt.Errorf("%w: outcome agent unavailable: %v", ErrWorkflowAuthorityUnavailable, err)
-	}
-	var writerTaskID pgtype.UUID
-	var writerAgentID, writerRuntimeID pgtype.UUID
-	var writerProfileID, selectedProfileID pgtype.UUID
-	var writerSession string
-	err = tx.QueryRow(ctx, `SELECT c.writer_task_id,t.agent_id,t.runtime_id,COALESCE(t.session_id,''),t.workflow_profile_id
-		FROM issue_workflow_candidate c JOIN agent_task_queue t ON t.id=c.writer_task_id
-		WHERE c.id=$1 AND c.issue_id=$2`, candidateID, issue.ID).Scan(
-		&writerTaskID, &writerAgentID, &writerRuntimeID, &writerSession, &writerProfileID)
-	if err != nil {
-		return nil, false, err
-	}
-	err = tx.QueryRow(ctx, `SELECT id FROM issue_workflow_profile
-		WHERE workspace_id=$1 AND issue_id=$2 AND agent_id=$3 AND policy_version=$4
-		ORDER BY revision DESC LIMIT 1`, issue.WorkspaceID, issue.ID, outcomeAgentID, policyVersion).Scan(&selectedProfileID)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, err
-	}
-	var resume pgtype.UUID
-	continuity := "A fresh outcome context is required; reconcile the ticket, candidate, PR evidence and current repository state."
-	if writerAgentID == outcomeAgentID && writerRuntimeID == agent.RuntimeID && writerSession != "" &&
-		writerProfileID == selectedProfileID {
-		resume = writerTaskID
-		continuity = "Resume the retained candidate writer context after reconciling intervening delivery and repository changes."
-	} else if writerAgentID == outcomeAgentID && writerProfileID != selectedProfileID {
-		continuity = "The selected agent profile changed after the writer run; use a fresh outcome context and reconcile the ticket, candidate and delivery evidence."
-	}
-	note := "Accepted candidate " + util.UUIDToString(candidateID) + " has merged all required PRs. " +
-		"Complete remaining deployment, QA or other outcome work, then acknowledge the actual outcome on this exact acceptance. " + continuity
-	context, _ := json.Marshal(map[string]string{"kind": "workflow_outcome", "acceptance_id": util.UUIDToString(acceptanceID),
-		"candidate_id": util.UUIDToString(candidateID)})
-	task, err := q.CreateAgentTask(ctx, db.CreateAgentTaskParams{
-		ID: dbid.NewV7(), AgentID: outcomeAgentID, RuntimeID: agent.RuntimeID, IssueID: issue.ID,
-		Priority: priorityToInt(issue.Priority), ForceFreshSession: pgtype.Bool{Bool: true, Valid: true},
-		RerunOfTaskID: resume, HandoffNote: pgtype.Text{String: note, Valid: true},
+	task, err := q.CancelAgentTaskWithReason(ctx, db.CancelAgentTaskWithReasonParams{
+		ID: taskID, Error: pgtype.Text{String: reason, Valid: true},
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE agent_task_queue SET context=jsonb_build_object('workflow_outcome',$2::jsonb)
-		WHERE id=$1 AND issue_id=$3`, task.ID, context, issue.ID); err != nil {
-		return nil, false, err
+	if err := SettleDeliveredDelegatedFailureRecoveries(ctx, q, task); err != nil {
+		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET outcome_task_id=$2 WHERE id=$1 AND outcome_task_id IS NULL`,
-		acceptanceID, task.ID); err != nil {
-		return nil, false, err
+	return &task, nil
+}
+
+// NotifyWorkflowCompletionTask publishes the legacy outcome cancellation only
+// after its completion transaction is durable.
+func (s *TaskService) NotifyWorkflowCompletionTask(ctx context.Context, workspaceID pgtype.UUID, task *db.AgentTaskQueue) {
+	if task != nil {
+		s.BroadcastCancelledTasks(ctx, util.UUIDToString(workspaceID), []db.AgentTaskQueue{*task})
 	}
-	if _, err := tx.Exec(ctx, `UPDATE issue SET assignee_type='agent',assignee_id=$2,
-		revision=revision+1,updated_at=now(),last_activity_at=now()
-		WHERE id=$1 AND workspace_id=$3 AND revision=$4`, issue.ID, outcomeAgentID, issue.WorkspaceID, issue.Revision); err != nil {
-		return nil, false, err
-	}
-	return &task, false, nil
 }

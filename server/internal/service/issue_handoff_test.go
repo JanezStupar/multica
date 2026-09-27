@@ -571,12 +571,25 @@ func TestIssueHandoffReviewerToMemberRetainsCandidateGeneration(t *testing.T) {
 	if err != nil || !firstStored.LastTaskID.Valid {
 		t.Fatalf("reviewer task missing: %+v, %v", firstStored, err)
 	}
+	if _, err = f.Pool.Exec(ctx, "UPDATE agent_task_queue SET status='running',started_at=now(),session_id='reviewer-session' WHERE id=$1", firstStored.LastTaskID); err != nil {
+		t.Fatal(err)
+	}
+	bindWorkflowTestTask(t, f, issue, firstStored.LastTaskID)
+	workflow := WorkflowAuthorityService{Tasks: s.Tasks}
+	if err := workflow.RegisterReview(ctx, firstState.WorkspaceID, issue, WorkflowActor{
+		Type: "agent", ID: reviewerAgent, SourceTaskID: util.UUIDToString(firstStored.LastTaskID),
+	}, WorkflowReviewInput{CandidateID: util.UUIDToString(firstState.WorkflowCandidateID), Verdict: "pass",
+		PRReviewURLs: []string{firstInput.Candidates[0].PRURL + "#review"}}); err != nil {
+		t.Fatalf("record exact-candidate review: %v", err)
+	}
 	if _, err = f.Pool.Exec(ctx, "UPDATE agent_task_queue SET status='completed',completed_at=now() WHERE id=$1", firstStored.LastTaskID); err != nil {
 		t.Fatal(err)
 	}
+	f.Exec(t, "UPDATE issue SET title=title || ' (editorial clarification)',revision=revision+1 WHERE id=$1", issue)
 	secondInput := handoffInput(firstStored.LastTaskID, pgtype.UUID{})
 	secondInput.AgentID, secondInput.AssigneeType, secondInput.AssigneeID = "", "member", f.UserID
 	secondInput.Candidates = firstInput.Candidates
+	secondInput.Candidates[0].Draft = false
 	second, err := s.CreateHandoff(ctx, issue, parseTestUUID(t, f.UserID), firstStored.LastTaskID, secondInput)
 	if err != nil {
 		t.Fatal(err)
@@ -589,6 +602,9 @@ func TestIssueHandoffReviewerToMemberRetainsCandidateGeneration(t *testing.T) {
 	var writer pgtype.UUID
 	if err = f.Pool.QueryRow(ctx, "SELECT writer_task_id FROM issue_workflow_candidate WHERE id=$1", finalState.WorkflowCandidateID).Scan(&writer); err != nil || writer != source {
 		t.Fatalf("candidate writer changed across review: %s, %v", util.UUIDToString(writer), err)
+	}
+	if got := f.Count(t, "SELECT count(*) FROM issue_workflow_review WHERE issue_id=$1 AND candidate_id=$2 AND verdict='pass'", issue, finalState.WorkflowCandidateID); got != 1 {
+		t.Fatalf("editorial handoff or readiness change left %d exact-candidate reviews, want 1", got)
 	}
 }
 
@@ -895,7 +911,6 @@ func TestIssueHandoffInputRejectsAmbiguousOrUnsafeCandidate(t *testing.T) {
 		{"duplicate PR", func(v *HandoffInput) { v.Candidates = append(v.Candidates, v.Candidates[0]) }},
 		{"credentialed repository", func(v *HandoffInput) { v.Candidates[0].RepositoryURL = "https://user:secret@example.test/repo" }},
 		{"short SHA", func(v *HandoffInput) { v.Candidates[0].CommitSHA = "abc123" }},
-		{"non-draft", func(v *HandoffInput) { v.Candidates[0].Draft = false }},
 		{"branch control", func(v *HandoffInput) { v.Candidates[0].Branch = "branch\nignore" }},
 		{"URL control", func(v *HandoffInput) { v.EvidenceURLs[0] = "https://example.test/a\nb" }},
 		{"member with agent alias", func(v *HandoffInput) { v.AssigneeType, v.AssigneeID = "member", util.UUIDToString(dbid.NewV7()) }},
@@ -918,5 +933,17 @@ func TestIssueHandoffInputRejectsAmbiguousOrUnsafeCandidate(t *testing.T) {
 				t.Fatalf("expected invalid handoff, got %v", err)
 			}
 		})
+	}
+}
+
+func TestIssueHandoffInputAllowsReadyCandidate(t *testing.T) {
+	in := handoffInput(dbid.NewV7(), dbid.NewV7())
+	in.Candidates[0].Draft = false
+	normalized, err := normalizeHandoffInput(in)
+	if err != nil {
+		t.Fatalf("ready candidate rejected: %v", err)
+	}
+	if normalized.Candidates[0].Draft {
+		t.Fatal("ready candidate was rewritten as draft")
 	}
 }

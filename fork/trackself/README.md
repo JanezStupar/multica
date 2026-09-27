@@ -86,7 +86,8 @@ and evidence URLs. Agent requests may use legacy `agent_id` or
 fresh context; no agent task is created for that recipient. Resume mode also
 requires an exact completed `resume_task_id` for the same agent, runtime and
 issue. A candidate records `repository_url`,
-`pr_url`, `branch`, full 40- or 64-character `commit_sha` and `draft: true`.
+`pr_url`, `branch`, full 40- or 64-character `commit_sha` and observed `draft` state.
+An already ready PR remains a valid code handoff.
 Use `"candidates": []` for non-code work. These PR and commit references are
 declared inputs; the handoff does not verify provider state or compare the
 current PR head with the declared commit.
@@ -212,23 +213,20 @@ the evidence and limits. The deployed `v0.5.1-janez.2` supports this policy;
 `v0.5.1-janez.1` wrote `done` at acceptance and has been withdrawn.
 Use the workflow operations for acceptance rather than moving the status card.
 
-The format-2 authority file adds `accepted_status_key` (an existing custom
-workspace status in the `started` category) and `outcome_agent_id` (a configured
-workspace agent). Acceptance explicitly supplies `outcome_complete` and may
-set `hold_delivery`. Held work can become ready, but cannot merge until release.
-`workflow hold|release|complete|retry-outcome` require the acceptance ID and a
-JSON body with `candidate_id`, `expected_revision` and `reason`. Read current
-`available_actions`; a visible acceptance is not authority to change it.
+The format-2 authority file names an active nonterminal `accepted_status_key`;
+`outcome_agent_id` is optional. These fields remain compatible with existing
+clients. Acceptance may set `hold_delivery`, but does not require an
+`outcome_complete` acknowledgment. An authorized completed provider merge is
+already a fact, including when an agent merge was held or blocked.
 
-Required merges and the actual outcome must both be complete before Done.
-When outcome work remains, the pinned agent receives a bound task; its outcome
-acknowledgment takes effect only after that task succeeds. Failed or cancelled
-outcome work preserves its history and supports an authorized explicit retry.
-If scheduling fails before an outcome task exists, the verified merge remains
-recorded and scheduling retries automatically with bounded backoff. Held PRs
-merged externally are observed without releasing the hold or issuing a merge.
-Format-1 pins retain their released semantics. The policy envelope itself
-remains format 1; this version refers to `runtime/policy.json` inside the bundle.
+Backend `v0.5.1-janez.6` closes accepted work once all required bound PRs merge;
+explicit no-PR acceptance finishes directly. It reconciles previously merged
+tickets and retires legacy outcome runs while keeping their traces. It does
+not automatically dispatch postmerge work. Preserve unperformed deployment or
+QA honestly as separately requested follow-up work. Authenticated access,
+independent review defaults, policy pins and exact-head checks before an
+automated outbound merge remain enforced. Status and editorial ticket text
+are not acceptance credentials.
 
 The optional `runtime/policy.json` in a policy source directory configures
 machine-enforced authority. Its contents participate in the immutable bundle

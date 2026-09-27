@@ -121,12 +121,12 @@ JOIN agent recipient ON recipient.id=r.agent_id AND recipient.workspace_id=i.wor
 	blocked := func(reason DispatchReasonCode) (bool, error) {
 		return recordAttempt("workflow_comment_recovery_blocked", reason, true)
 	}
-	var scopeDigest string
-	if err := w.h.DB.QueryRow(ctx, `SELECT scope_digest FROM issue_workflow_candidate
-	 WHERE id=$1 AND issue_id=$2 AND workspace_id=$3`, candidateID, issueID, workspaceID).Scan(&scopeDigest); err != nil {
+	var candidatePolicy string
+	if err := w.h.DB.QueryRow(ctx, `SELECT policy_version FROM issue_workflow_candidate
+	 WHERE id=$1 AND issue_id=$2 AND workspace_id=$3`, candidateID, issueID, workspaceID).Scan(&candidatePolicy); err != nil {
 		return true, err
 	}
-	if scopeDigest != service.WorkflowScopeDigest(issue, pinned.Version) {
+	if candidatePolicy != pinned.Version {
 		return blocked(ReasonTargetUnavailable)
 	}
 	var current bool

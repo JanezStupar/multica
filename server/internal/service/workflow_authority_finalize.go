@@ -264,7 +264,7 @@ func (s WorkflowAuthorityService) FinalizeNextRequestedAcceptance(ctx context.Co
 		return true, err
 	}
 	if outcomeTask != nil {
-		s.Tasks.NotifyTaskEnqueued(ctx, *outcomeTask)
+		s.Tasks.NotifyWorkflowCompletionTask(ctx, issue.WorkspaceID, outcomeTask)
 	}
 	s.PublishWorkflowIssueChange(ctx, issue, WorkflowActor{Type: "agent", ID: util.UUIDToString(actorID)})
 	return true, nil

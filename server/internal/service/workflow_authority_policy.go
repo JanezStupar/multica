@@ -115,8 +115,8 @@ func ParseWorkflowAuthorityPolicy(bundle AgentSkillData) (WorkflowAuthorityPolic
 		if policy.AcceptedStatusKey == "" || policy.AcceptedStatusKey == "done" || policy.AcceptedStatusKey == "cancelled" {
 			return WorkflowAuthorityPolicy{}, errors.New("runtime/policy.json format 2 requires accepted_status_key")
 		}
-		if _, err := util.ParseUUID(policy.OutcomeAgentID); err != nil {
-			return WorkflowAuthorityPolicy{}, errors.New("runtime/policy.json format 2 requires outcome_agent_id UUID")
+		if _, err := util.ParseUUID(policy.OutcomeAgentID); policy.OutcomeAgentID != "" && err != nil {
+			return WorkflowAuthorityPolicy{}, errors.New("runtime/policy.json outcome_agent_id must be a UUID when provided")
 		}
 	} else if input.AcceptedStatusKey != "" || input.OutcomeAgentID != "" {
 		return WorkflowAuthorityPolicy{}, errors.New("runtime/policy.json format 1 cannot set format 2 fields")

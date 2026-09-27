@@ -310,9 +310,6 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 		return "", err
 	}
 	if authority.FormatVersion == 2 {
-		if request.OutcomeComplete == nil {
-			return "", fmt.Errorf("%w: outcome_complete is required for format 2", ErrWorkflowAuthorityInput)
-		}
 		if err := ValidateWorkflowCompletionConfig(ctx, tx, issue, authority); err != nil {
 			return "", err
 		}
@@ -434,9 +431,12 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 	completionVersion := authority.FormatVersion
 	var acceptedStatus, outcomeAgent any
 	if completionVersion == 2 {
-		acceptedStatus, outcomeAgent = authority.AcceptedStatusKey, mustAuthorityUUID(authority.OutcomeAgentID)
+		acceptedStatus = authority.AcceptedStatusKey
+		if authority.OutcomeAgentID != "" {
+			outcomeAgent = mustAuthorityUUID(authority.OutcomeAgentID)
+		}
 	}
-	outcomeComplete := request.OutcomeComplete != nil && *request.OutcomeComplete
+	outcomeComplete := len(ordered) == 0 || request.OutcomeComplete != nil && *request.OutcomeComplete
 	_, err = tx.Exec(ctx, `INSERT INTO issue_workflow_acceptance
 		(id,workspace_id,issue_id,candidate_id,mode,actor_type,actor_id,source_task_id,state,issue_revision,
 		policy_version,authority_snapshot,classification_reason,accepted_at,completion_version,accepted_status_key,
@@ -461,7 +461,7 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 		return "", err
 	}
 	if outcomeTask != nil {
-		s.Tasks.NotifyTaskEnqueued(ctx, *outcomeTask)
+		s.Tasks.NotifyWorkflowCompletionTask(ctx, issue.WorkspaceID, outcomeTask)
 	}
 	s.PublishWorkflowIssueChange(ctx, issue, actor)
 	return state, nil
@@ -472,7 +472,7 @@ func finalizeWorkflowAcceptance(ctx context.Context, tx pgx.Tx, q *db.Queries, i
 	action, method string, authority WorkflowAuthorityPolicy, request workflowAcceptanceRequest,
 ) (*db.AgentTaskQueue, error) {
 	targetStatus := "done"
-	if authority.FormatVersion == 2 && (len(ordered) > 0 || request.OutcomeComplete == nil || !*request.OutcomeComplete) {
+	if authority.FormatVersion == 2 && len(ordered) > 0 {
 		targetStatus = authority.AcceptedStatusKey
 	}
 	// A human may approve while a permission-checked ordinary question is
@@ -505,15 +505,7 @@ func finalizeWorkflowAcceptance(ctx context.Context, tx pgx.Tx, q *db.Queries, i
 		AND workflow_comment_obligation_context(issue_id,agent_id,trigger_comment_id) IS NOT NULL`, issue.ID); err != nil {
 		return nil, err
 	}
-	if authority.FormatVersion == 2 && len(ordered) == 0 && targetStatus == "done" {
-		pendingFeedback, err := WorkflowHasPendingHumanFeedback(ctx, tx, issue)
-		if err != nil {
-			return nil, err
-		}
-		if pendingFeedback {
-			targetStatus = authority.AcceptedStatusKey
-		}
-	}
+
 	// Retire unstarted work, preserving only exact already-promised human
 	// conversations. Acceptance does not cancel an answer; those tasks retain
 	// conversation authority while completion/rework guards remain separate.

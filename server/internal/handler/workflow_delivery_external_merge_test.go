@@ -81,54 +81,36 @@ func TestWorkflowFormat2ExternalMergedHeadPolicyClosesWithoutMergePost(t *testin
 	}
 }
 
-func TestWorkflowFormat2OldPinNeedsCandidateScopedExternalMergeGrant(t *testing.T) {
+func TestWorkflowFormat2OldPinRecordsChangedHeadMergeWithoutGrant(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("handler test fixture unavailable")
 	}
 	mergeCalls := 0
 	server := externalMergeProvider(t, workflowDeliveryChangedHead, &mergeCalls)
 	defer server.Close()
-	issueID, candidateID, acceptanceID, ids := workflowFormat2DeliveryFixture(t, server, 1, "merge", false, true)
-	dbfx.Exec(t, `UPDATE issue_workflow_delivery SET readiness_done_at=now() WHERE id=$1`, ids[0])
+	issueID, _, acceptanceID, ids := workflowFormat2DeliveryFixture(t, server, 1, "merge", false, false)
+	// Provider failure does not remove the obligation to observe later facts.
+	dbfx.Exec(t, `UPDATE issue_workflow_delivery SET status='blocked',last_error_class='closed_unmerged' WHERE id=$1`, ids[0])
 	worker := NewWorkflowDeliveryWorker(testHandler)
 	worker.client = server.Client()
 	worked, err := worker.ProcessNext(context.Background())
 	if err != nil || !worked {
-		t.Fatalf("old pin observation: worked=%v err=%v", worked, err)
+		t.Fatalf("old pin blocked-delivery observation: worked=%v err=%v", worked, err)
 	}
-	if status, _ := deliveryStatus(t, ids[0]); status != "stale" {
-		t.Fatalf("old pin silently trusted changed head: %s", status)
-	}
-	var issueStatus, acceptanceState string
-	if err := testPool.QueryRow(context.Background(), `SELECT i.status,a.state FROM issue i
-		JOIN issue_workflow_acceptance a ON a.issue_id=i.id WHERE a.id=$1`, acceptanceID).
-		Scan(&issueStatus, &acceptanceState); err != nil || issueStatus != "pr_ready" || acceptanceState != "accepted" {
-		t.Fatalf("old pin state issue=%s acceptance=%s err=%v", issueStatus, acceptanceState, err)
-	}
-	grant := map[string]any{"candidate_id": candidateID, "expected_revision": workflowIssueRevision(t, issueID),
-		"scope": "external_merge", "grant_details": map[string]any{"accept_merged_head": true},
-		"reason":       "The bound PR was merged by the provider after branch integration",
-		"consequences": "Treat only its verified merge as delivery; do not authorize a Multica merge POST"}
-	request := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/workflow/exceptions", grant), "id", issueID)
-	testutil.Call(t, testHandler.GrantIssueWorkflowException, request).Want(http.StatusCreated)
-	worked, err = worker.ProcessNext(context.Background())
-	if err != nil || !worked {
-		t.Fatalf("candidate-scoped external merge observation: worked=%v err=%v", worked, err)
-	}
-	assertExternalMergedDelivery(t, issueID, acceptanceID, ids[0], "exception")
+	assertExternalMergedDelivery(t, issueID, acceptanceID, ids[0], "provider")
 	if mergeCalls != 0 {
-		t.Fatalf("old pin exception caused %d merge POSTs", mergeCalls)
+		t.Fatalf("observed merge caused %d merge POSTs", mergeCalls)
 	}
 }
 
-func TestWorkflowFormat2PreviouslyRevokedStaleAcceptanceRecoversOnlyAfterGrant(t *testing.T) {
+func TestWorkflowFormat2PreviouslyRevokedStaleAcceptanceRecoversProviderFact(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("handler test fixture unavailable")
 	}
 	mergeCalls := 0
 	server := externalMergeProvider(t, workflowDeliveryChangedHead, &mergeCalls)
 	defer server.Close()
-	issueID, candidateID, acceptanceID, ids := workflowFormat2DeliveryFixture(t, server, 1, "merge", true, true)
+	issueID, _, acceptanceID, ids := workflowFormat2DeliveryFixture(t, server, 1, "merge", true, false)
 	dbfx.Exec(t, `UPDATE issue_workflow_acceptance SET state='revoked',revoked_at=now(),last_error_class='stale_head' WHERE id=$1`, acceptanceID)
 	dbfx.Exec(t, `UPDATE issue_workflow_delivery SET status='stale',last_error_class='stale_head',next_attempt_at=now() WHERE id=$1`, ids[0])
 	dbfx.Exec(t, `UPDATE issue SET status='in_review',revision=revision+1 WHERE id=$1`, issueID)
@@ -136,23 +118,9 @@ func TestWorkflowFormat2PreviouslyRevokedStaleAcceptanceRecoversOnlyAfterGrant(t
 	worker.client = server.Client()
 	worked, err := worker.ProcessNext(context.Background())
 	if err != nil || !worked {
-		t.Fatalf("revoked old pin probe: worked=%v err=%v", worked, err)
+		t.Fatalf("recover stale provider merge: worked=%v err=%v", worked, err)
 	}
-	var state string
-	if err := testPool.QueryRow(context.Background(), `SELECT state FROM issue_workflow_acceptance WHERE id=$1`, acceptanceID).Scan(&state); err != nil || state != "revoked" {
-		t.Fatalf("revoked approval silently restored: state=%s err=%v", state, err)
-	}
-	grant := map[string]any{"candidate_id": candidateID, "expected_revision": workflowIssueRevision(t, issueID),
-		"scope": "external_merge", "grant_details": map[string]any{"accept_merged_head": true},
-		"reason":       "The already accepted bound PR was externally merged after branch integration",
-		"consequences": "Restore only this stale-head approval and record the provider merge; no merge POST"}
-	request := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/workflow/exceptions", grant), "id", issueID)
-	testutil.Call(t, testHandler.GrantIssueWorkflowException, request).Want(http.StatusCreated)
-	worked, err = worker.ProcessNext(context.Background())
-	if err != nil || !worked {
-		t.Fatalf("recover old stale acceptance: worked=%v err=%v", worked, err)
-	}
-	assertExternalMergedDelivery(t, issueID, acceptanceID, ids[0], "exception")
+	assertExternalMergedDelivery(t, issueID, acceptanceID, ids[0], "provider")
 	var held bool
 	if err := testPool.QueryRow(context.Background(), `SELECT hold_delivery FROM issue_workflow_acceptance WHERE id=$1`, acceptanceID).Scan(&held); err != nil || !held {
 		t.Fatalf("recovery lost delivery hold: held=%v err=%v", held, err)
@@ -162,7 +130,7 @@ func TestWorkflowFormat2PreviouslyRevokedStaleAcceptanceRecoversOnlyAfterGrant(t
 	}
 }
 
-func TestWorkflowFormat2ExternalMergeRespectsAllPRAndOutcomeGates(t *testing.T) {
+func TestWorkflowFormat2ExternalMergeCompletesOnlyAfterAllBoundPRs(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("handler test fixture unavailable")
 	}
@@ -224,12 +192,12 @@ func TestWorkflowFormat2ExternalMergeRespectsAllPRAndOutcomeGates(t *testing.T) 
 	if err != nil || !worked {
 		t.Fatalf("second external merge: worked=%v err=%v", worked, err)
 	}
-	if err := testPool.QueryRow(context.Background(), `SELECT status FROM issue WHERE id=$1`, issueID).Scan(&status); err != nil || status != "pr_ready" {
-		t.Fatalf("merged PRs bypassed pending outcome: status=%q err=%v", status, err)
+	if err := testPool.QueryRow(context.Background(), `SELECT status FROM issue WHERE id=$1`, issueID).Scan(&status); err != nil || status != "done" {
+		t.Fatalf("all merged PRs did not complete: status=%q err=%v", status, err)
 	}
 	var outcomeTask pgtype.UUID
-	if err := testPool.QueryRow(context.Background(), `SELECT outcome_task_id FROM issue_workflow_acceptance WHERE id=$1`, acceptanceID).Scan(&outcomeTask); err != nil || !outcomeTask.Valid {
-		t.Fatalf("pending outcome task=%v err=%v", outcomeTask, err)
+	if err := testPool.QueryRow(context.Background(), `SELECT outcome_task_id FROM issue_workflow_acceptance WHERE id=$1`, acceptanceID).Scan(&outcomeTask); err != nil || outcomeTask.Valid {
+		t.Fatalf("merge spawned an unrequested outcome task=%v err=%v", outcomeTask, err)
 	}
 	worked, err = worker.ProcessNext(context.Background())
 	if err != nil || worked || mergeCalls != 0 {

@@ -153,7 +153,8 @@ func (w *WorkflowDeliveryWorker) ProcessNext(ctx context.Context) (bool, error) 
 		AND i.workflow_candidate_id=d.candidate_id
 		AND NOT i.workflow_frozen
 		AND (a.completion_version=1 AND i.status='done' OR
-		     a.completion_version=2 AND i.status=a.accepted_status_key)
+		     a.completion_version=2 AND EXISTS(SELECT 1 FROM issue_status status
+		       WHERE status.workspace_id=i.workspace_id AND status.key=i.status AND status.category IN ('unstarted','started')))
 		AND NOT (a.completion_version=2 AND a.hold_delivery AND d.action='merge' AND d.readiness_done_at IS NOT NULL)
 		AND NOT EXISTS (
 			SELECT 1 FROM issue_workflow_delivery prior
@@ -219,8 +220,13 @@ func (w *WorkflowDeliveryWorker) ProcessNext(ctx context.Context) (bool, error) 
 		return true, fmt.Errorf("lock workflow delivery intent: %w", err)
 	}
 	d.readinessDone = readinessAt.Valid
-	validStatus := d.completionVersion == 1 && issueStatus == "done" ||
-		d.completionVersion == 2 && issueStatus == d.acceptedStatus
+	validStatus := d.completionVersion == 1 && issueStatus == "done"
+	if d.completionVersion == 2 {
+		if err := tx.QueryRow(workCtx, `SELECT EXISTS(SELECT 1 FROM issue_status
+			WHERE workspace_id=$1 AND key=$2 AND category IN ('unstarted','started'))`, d.workspaceID, issueStatus).Scan(&validStatus); err != nil {
+			return true, err
+		}
+	}
 	if issueFrozen {
 		return false, nil
 	}
@@ -351,10 +357,10 @@ func (w *WorkflowDeliveryWorker) ProcessNext(ctx context.Context) (bool, error) 
 			return true, err
 		}
 		if dispatchErr != nil {
-			slog.Warn("workflow delivery merged but outcome dispatch deferred", "issue_id", d.issueID, "error", dispatchErr)
+			slog.Warn("workflow delivery merged but completion reconciliation deferred", "issue_id", d.issueID, "error", dispatchErr)
 		}
 		if outcomeTask != nil {
-			w.h.TaskService.NotifyTaskEnqueued(ctx, *outcomeTask)
+			w.h.TaskService.NotifyWorkflowCompletionTask(ctx, d.workspaceID, outcomeTask)
 		}
 		w.h.workflowAuthorityService().PublishWorkflowIssueChange(ctx, issue, service.WorkflowActor{Type: "system"})
 		return true, nil
@@ -371,8 +377,8 @@ func (w *WorkflowDeliveryWorker) ProcessNextReadyObservation(ctx context.Context
 		JOIN issue i ON i.id=d.issue_id AND i.workspace_id=d.workspace_id
 		WHERE a.completion_version=2 AND i.workflow_candidate_id=d.candidate_id
 		AND NOT i.workflow_frozen
-		AND ((a.state='accepted' AND a.revoked_at IS NULL AND i.status=a.accepted_status_key
-		  AND (d.status='stale' OR d.action='ready' AND d.status='delivered' OR
+		AND ((a.state='accepted' AND a.revoked_at IS NULL
+		  AND (d.status IN ('stale','blocked') OR d.action='ready' AND d.status='delivered' OR
 		       d.action='merge' AND d.status IN ('pending','retry') AND
 		       d.readiness_done_at IS NOT NULL AND a.hold_delivery))
 		 OR (a.state='revoked' AND a.last_error_class='stale_head' AND a.revoked_at IS NOT NULL
@@ -415,7 +421,7 @@ func (w *WorkflowDeliveryWorker) ProcessNextReadyObservation(ctx context.Context
 		FROM issue_workflow_delivery d JOIN issue_workflow_acceptance a ON a.id=d.acceptance_id
 		WHERE d.id=$1 AND d.issue_id=$2 AND
 		((a.state='accepted' AND a.revoked_at IS NULL AND
-		  (d.status='stale' OR d.action='ready' AND d.status='delivered' OR
+		  (d.status IN ('stale','blocked') OR d.action='ready' AND d.status='delivered' OR
 		   d.action='merge' AND d.status IN ('pending','retry') AND
 		   d.readiness_done_at IS NOT NULL AND a.hold_delivery)) OR
 		 (a.state='revoked' AND a.last_error_class='stale_head' AND a.revoked_at IS NOT NULL AND d.status='stale'))
@@ -431,8 +437,7 @@ func (w *WorkflowDeliveryWorker) ProcessNextReadyObservation(ctx context.Context
 	if err != nil {
 		return true, err
 	}
-	if issueFrozen || currentCandidate != d.candidateID ||
-		acceptanceState == "accepted" && issueStatus != d.acceptedStatus {
+	if issueFrozen || currentCandidate != d.candidateID {
 		return false, nil
 	}
 	q := w.h.Queries.WithTx(tx)
@@ -452,7 +457,7 @@ func (w *WorkflowDeliveryWorker) ProcessNextReadyObservation(ctx context.Context
 			return true, err
 		}
 		if outcomeTask != nil {
-			w.h.TaskService.NotifyTaskEnqueued(ctx, *outcomeTask)
+			w.h.TaskService.NotifyWorkflowCompletionTask(ctx, d.workspaceID, outcomeTask)
 		}
 		if publish {
 			w.h.workflowAuthorityService().PublishWorkflowIssueChange(ctx, issue, service.WorkflowActor{Type: "system"})
@@ -561,15 +566,6 @@ func (w *WorkflowDeliveryWorker) externalMergedHeadAllowed(ctx context.Context, 
 	if pinned == nil || pinned.Version != d.policyVersion {
 		return false, "", service.ErrWorkflowAuthorityConflict
 	}
-	var candidateScope string
-	if err := tx.QueryRow(ctx, `SELECT scope_digest FROM issue_workflow_candidate
-		WHERE id=$1 AND workspace_id=$2 AND issue_id=$3 AND policy_version=$4`,
-		d.candidateID, d.workspaceID, d.issueID, d.policyVersion).Scan(&candidateScope); err != nil {
-		return false, "", err
-	}
-	if candidateScope != service.WorkflowScopeDigest(issue, d.policyVersion) {
-		return false, "", service.ErrWorkflowAuthorityConflict
-	}
 	if strings.EqualFold(observedSHA, d.expectedSHA) {
 		return true, "exact_head", nil
 	}
@@ -595,7 +591,10 @@ func (w *WorkflowDeliveryWorker) externalMergedHeadAllowed(ctx context.Context, 
 	if granted {
 		return true, "exception", nil
 	}
-	return false, "", nil
+	// A completed provider merge is an observed fact, independent of the
+	// authority Multica would have needed to send a merge request. Keep the
+	// old policy/grant source as audit metadata when present.
+	return true, "provider", nil
 }
 
 func (w *WorkflowDeliveryWorker) pauseChangedHead(ctx context.Context, tx pgx.Tx,
@@ -603,7 +602,7 @@ func (w *WorkflowDeliveryWorker) pauseChangedHead(ctx context.Context, tx pgx.Tx
 	if _, err := tx.Exec(ctx, `UPDATE issue_workflow_delivery SET status='stale',
 		attempt_count=attempt_count+1,next_attempt_at=now()+interval '30 seconds',
 		last_error_class='head_changed',updated_at=now()
-		WHERE id=$1 AND status IN ('pending','retry','delivered','stale') AND merged_at IS NULL`, d.id); err != nil {
+		WHERE id=$1 AND status IN ('pending','retry','delivered','stale','blocked') AND merged_at IS NULL`, d.id); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO issue_workflow_delivery_attempt
@@ -649,8 +648,8 @@ func (w *WorkflowDeliveryWorker) recordObservedMergeConflict(ctx context.Context
 
 // finishObservedMerge records provider truth, including the reported account.
 // That account is audit identity only: service-account merges do not establish
-// which human initiated them. The policy or candidate-scoped grant supplies
-// authority to treat an off-head provider merge as delivery closure.
+// which human initiated them. Observation never grants permission for a merge
+// request, and old exact-head policy does not erase a completed provider merge.
 func (w *WorkflowDeliveryWorker) finishObservedMerge(workCtx, publishCtx context.Context, tx pgx.Tx,
 	issue db.Issue, d workflowDeliveryIntent, pr workflowdelivery.PullRequest, authoritySource string,
 	recoverRevoked bool) (bool, error) {
@@ -757,10 +756,10 @@ func (w *WorkflowDeliveryWorker) finishObservedMerge(workCtx, publishCtx context
 		return true, err
 	}
 	if dispatchErr != nil {
-		slog.Warn("workflow external merge observed but outcome dispatch deferred", "issue_id", d.issueID, "error", dispatchErr)
+		slog.Warn("workflow external merge observed but completion reconciliation deferred", "issue_id", d.issueID, "error", dispatchErr)
 	}
 	if outcomeTask != nil {
-		w.h.TaskService.NotifyTaskEnqueued(publishCtx, *outcomeTask)
+		w.h.TaskService.NotifyWorkflowCompletionTask(publishCtx, d.workspaceID, outcomeTask)
 	}
 	w.h.workflowAuthorityService().PublishWorkflowIssueChange(publishCtx, issue, service.WorkflowActor{Type: "system"})
 	return true, nil

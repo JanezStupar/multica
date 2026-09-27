@@ -62,19 +62,14 @@ func TestWorkflowStaleExternalMergeRecoveryAcrossNonterminalStatuses(t *testing.
 			mergeCalls := 0
 			server := externalMergeProvider(t, workflowDeliveryChangedHead, &mergeCalls)
 			defer server.Close()
-			issueID, candidateID, acceptanceID, ids := workflowFormat2DeliveryFixture(t, server, 1, "merge", true, true)
+			issueID, _, acceptanceID, ids := workflowFormat2DeliveryFixture(t, server, 1, "merge", true, false)
 			seedWorkflowStaleAcceptance(t, issueID, acceptanceID, ids[0], status)
 			worker := NewWorkflowDeliveryWorker(testHandler)
 			worker.client = server.Client()
 			if worked, err := worker.ProcessNextReadyObservation(context.Background()); err != nil || !worked {
-				t.Fatalf("ungranted stale observation worked=%v error=%v", worked, err)
+				t.Fatalf("provider merge recovery worked=%v error=%v", worked, err)
 			}
-			assertWorkflowStaleAcceptance(t, issueID, acceptanceID, ids[0], status)
-			grantWorkflowExternalMerge(t, issueID, candidateID)
-			if worked, err := worker.ProcessNextReadyObservation(context.Background()); err != nil || !worked {
-				t.Fatalf("granted stale recovery worked=%v error=%v", worked, err)
-			}
-			assertExternalMergedDelivery(t, issueID, acceptanceID, ids[0], "exception")
+			assertExternalMergedDelivery(t, issueID, acceptanceID, ids[0], "provider")
 			if mergeCalls != 0 {
 				t.Fatalf("recovery made %d provider mutation requests", mergeCalls)
 			}
@@ -148,8 +143,8 @@ func TestWorkflowStaleRecoveryDoesNotReviveCancelledWork(t *testing.T) {
 	}
 }
 
-func TestWorkflowStaleRecoveryPreservesAuthorityAndWorkGuards(t *testing.T) {
-	for _, guard := range []string{"active_work", "queued_work", "deferred_work", "pending_handoff", "changed_scope", "wrong_candidate_grant", "wrong_policy_grant", "revoked_grant", "wrong_revocation", "open_changed_head"} {
+func TestWorkflowStaleRecoveryPreservesNewerWorkAndExplicitRevocation(t *testing.T) {
+	for _, guard := range []string{"active_work", "queued_work", "deferred_work", "pending_handoff", "wrong_revocation", "open_changed_head"} {
 		t.Run(guard, func(t *testing.T) {
 			if testHandler == nil {
 				t.Skip("handler test fixture unavailable")
@@ -169,7 +164,7 @@ func TestWorkflowStaleRecoveryPreservesAuthorityAndWorkGuards(t *testing.T) {
 			defer server.Close()
 			issueID, candidateID, acceptanceID, ids := workflowFormat2DeliveryFixture(t, server, 1, "merge", false, true)
 			seedWorkflowStaleAcceptance(t, issueID, acceptanceID, ids[0], "blocked")
-			exceptionID := grantWorkflowExternalMerge(t, issueID, candidateID)
+			_ = grantWorkflowExternalMerge(t, issueID, candidateID)
 			var newTaskID string
 			switch guard {
 			case "active_work", "queued_work", "deferred_work":
@@ -188,14 +183,6 @@ func TestWorkflowStaleRecoveryPreservesAuthorityAndWorkGuards(t *testing.T) {
 					"issue_id": issueID, "agent_id": agentID, "created_by": testUserID,
 					"instruction": "Pending exact candidate continuation", "kind": "at", "mode": "once",
 					"enabled": true, "handoff": testutil.Raw("'{}'::jsonb")})
-			case "changed_scope":
-				dbfx.Exec(t, `UPDATE issue SET title=title||' changed',revision=revision+1 WHERE id=$1`, issueID)
-			case "wrong_candidate_grant":
-				dbfx.Exec(t, `UPDATE issue_workflow_exception SET candidate_id=$2 WHERE id=$1`, exceptionID, dbid.NewV7())
-			case "wrong_policy_grant":
-				dbfx.Exec(t, `UPDATE issue_workflow_exception SET base_policy_version='different-policy' WHERE id=$1`, exceptionID)
-			case "revoked_grant":
-				dbfx.Exec(t, `UPDATE issue_workflow_exception SET revoked_at=now() WHERE id=$1`, exceptionID)
 			case "wrong_revocation":
 				dbfx.Exec(t, `UPDATE issue_workflow_acceptance SET last_error_class='rejected' WHERE id=$1`, acceptanceID)
 			}
@@ -233,6 +220,50 @@ func TestWorkflowStaleRecoveryPreservesAuthorityAndWorkGuards(t *testing.T) {
 			}
 			if mergeCalls != 0 {
 				t.Fatalf("guard %s made %d provider mutation requests", guard, mergeCalls)
+			}
+		})
+	}
+}
+
+func TestWorkflowStaleRecoveryDoesNotRequireEditorialOrGrantCeremony(t *testing.T) {
+	for _, condition := range []string{"editorial_update", "wrong_candidate_grant", "wrong_policy_grant", "revoked_grant"} {
+		t.Run(condition, func(t *testing.T) {
+			if testHandler == nil {
+				t.Skip("handler test fixture unavailable")
+			}
+			mergeCalls := 0
+			server := externalMergeProvider(t, workflowDeliveryChangedHead, &mergeCalls)
+			defer server.Close()
+			issueID, candidateID, acceptanceID, ids := workflowFormat2DeliveryFixture(t, server, 1, "merge", true, false)
+			seedWorkflowStaleAcceptance(t, issueID, acceptanceID, ids[0], "blocked")
+			if condition == "editorial_update" {
+				dbfx.Exec(t, `UPDATE issue SET title=title||' clarified',description='QA remains unperformed',revision=revision+1 WHERE id=$1`, issueID)
+			} else {
+				exceptionID := grantWorkflowExternalMerge(t, issueID, candidateID)
+				switch condition {
+				case "wrong_candidate_grant":
+					dbfx.Exec(t, `UPDATE issue_workflow_exception SET candidate_id=$2 WHERE id=$1`, exceptionID, dbid.NewV7())
+				case "wrong_policy_grant":
+					dbfx.Exec(t, `UPDATE issue_workflow_exception SET base_policy_version='different-policy' WHERE id=$1`, exceptionID)
+				case "revoked_grant":
+					dbfx.Exec(t, `UPDATE issue_workflow_exception SET revoked_at=now() WHERE id=$1`, exceptionID)
+				}
+			}
+			worker := NewWorkflowDeliveryWorker(testHandler)
+			worker.client = server.Client()
+			if worked, err := worker.ProcessNextReadyObservation(context.Background()); err != nil || !worked {
+				t.Fatalf("provider fact blocked: %v %v", worked, err)
+			}
+			assertExternalMergedDelivery(t, issueID, acceptanceID, ids[0], "provider")
+			if condition == "editorial_update" {
+				var description string
+				dbfx.QueryRow(t, `SELECT description FROM issue WHERE id=$1`, issueID).Scan(&description)
+				if description != "QA remains unperformed" {
+					t.Fatalf("completion rewrote evidence: %q", description)
+				}
+			}
+			if mergeCalls != 0 {
+				t.Fatalf("observation issued %d merge requests", mergeCalls)
 			}
 		})
 	}

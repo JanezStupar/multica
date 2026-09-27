@@ -158,8 +158,8 @@ the delegated deliverable boundary above.
 | `in_review`, review/fix agent | The agent has executable review work, including routine in-scope corrections. |
 | `in_review`, independent final reviewer | A fresh context evaluates the current resulting surface. |
 | `in_review`, human | Required engineering work and agent review are complete; a human decision is needed only when valid prior approval or an authorized completed merge does not already establish acceptance. |
-| `PR Ready`, accepted work with delivery or outcome work remaining | Required review and acceptance passed for the exact candidate; delivery may be pending, held or failed, or merged work may still require deployment or validation. |
-| `done`, completed work | All required PRs have merged and the ticket’s actual outcome is complete; work requiring no PR may finish directly after acceptance. |
+| `PR Ready`, accepted work awaiting delivery | Required review and acceptance passed; delivery may be pending, held or failed. |
+| `done`, completed work | All required bound PRs have merged, or work needing no PR has been explicitly accepted. Closing does not claim unperformed deployment or validation. |
 
 Routine corrections remain within the review/fix cycle. Material work that must
 return to implementation can move back to `in_progress` and the appropriate
@@ -298,13 +298,10 @@ Primary or the service account at the user's direction, is acceptance and
 delivery evidence. Observe the provider's completed merge before applying
 changed-head rules. It does not require another acceptance action and an agent
 no-merge hold does not invalidate a merge already performed by the user. Close
-when all required PRs are merged and the requested outcome is complete; preserve
-separately agreed deployment or other outcome work when it remains. The policy
-makes external-merge authority configurable through format-2
-`delivery.external_merged_head`: `exact` (default for existing bundles) or
-`accepted` (explicit delegation to the provider-authorized completed merge of
-the already accepted, bound PR as acceptance/delivery even after a head change). Existing tickets can receive a candidate-scoped `external_merge`
-exception with `accept_merged_head: true` without changing their policy pin.
+when all required bound PRs are merged. Preserve unperformed deployment or QA
+as evidence and separately owned follow-up work; do not invent a second completion acknowledgment. The retained `delivery.external_merged_head` and candidate `external_merge`
+fields remain readable for compatibility, but do not suppress completed provider
+facts. Automated outbound merge authority remains separately guarded.
 Record observed head, merge commit and provider actor; a service-account actor
 is not itself evidence of which human instructed it. Observing an authorized
 merge never grants an agent permission to perform a different merge.
@@ -324,10 +321,10 @@ not merge a different revision or duplicate completed actions.
 Accept-but-hold means accepted work stays `PR Ready` with an explicit delivery
 hold. Preserve the hold across retries and restarts until an authorized release;
 acceptance or a retry alone must not clear it. Ordinary automatic delivery goes
-through `PR Ready` to `done` after all required merges and the actual outcome
-are complete. If deployment or runtime validation is part of the objective,
-merging alone is not completion. Work with no PR may finish directly after
-acceptance when its outcome is complete; do not manufacture a PR.
+through `PR Ready` to `done` after all required bound PRs merge. Explicit
+acceptance of work with no PR may finish directly; do not manufacture a PR
+or require an internal outcome flag. Separately requested deployment or runtime
+validation remains visible as follow-up work, with its own actual evidence.
 
 Substantive feature changes require affected engineering evaluation. Parent/base
 integration alone does not. Reconcile the current head before an agent-initiated
@@ -462,12 +459,12 @@ Linux deployment and links the owning configuration evidence;
 The [agreed production policy](#agreed-production-policy) settles classification,
 ordinary review, supervisor authority and squash merging. Human acceptance
 merges automatically unless explicitly held; format 2 keeps accepted work in
-PR Ready until delivery and the actual outcome are complete.
+PR Ready until the required bound PRs merge.
 
 The selected [runtime policy](policies/mica-v1/runtime/policy.json) binds the
 three Linux Mica identities as autonomous acceptors and review/acceptance/delivery
-supervisors, owner/admin human acceptance, and main Linux Mica for outstanding
-outcome work. Supervisor acceptance scope is limited by this policy to carrying
+supervisors and owner/admin human acceptance. The retained outcome-agent
+identity does not require or automatically dispatch a postmerge run. Supervisor acceptance scope is limited by this policy to carrying
 forward documented human approval after the required delta evaluation. It does
 not delegate approval of new or materially changed substantive work. Workspace-control
 owns actual agent/runtime identities, model/effort selection and review routes
@@ -501,7 +498,7 @@ and ownership. No blanket migration accompanies activation.
 | Cross-repository work | One ticket coordinates several PRs and identifies their candidate commits; acceptance and subsequent delivery cannot silently cover changed commits. |
 | Human acceptance | Work not covered by valid prior approval reaches the human in `in_review`; eligible prior approval carries forward with delta evidence. Acceptance records actor, authority and exact candidate, then enters `PR Ready` while required PRs remain unmerged. |
 | Accept but hold | Acceptance with an explicit hold leaves the ticket `PR Ready`; retries and restarts preserve it until authorized release. |
-| Outcome completion | `done` requires all required PRs merged and the actual objective complete; no-PR work can finish directly after acceptance. Partial delivery and outstanding deployment/QA remain visible. |
+| Outcome completion | Merged bound PRs close the ticket without another acknowledgment; no-PR acceptance finishes directly. Partial delivery stays open, and unperformed deployment/QA remains recorded. |
 | Human rejection | An in-scope defect resumes the appropriate retained context, preserves evidence and invalidates affected acceptance; a new request is explicitly distinguished. |
 | Autonomous trivial work | A policy-qualified trivial ticket completes required checks/review, is accepted by an agent and merges without a human acceptance step. |
 | Classification change | Work that ceases to qualify as trivial loses autonomous acceptance eligibility and follows the human path. |
@@ -525,3 +522,21 @@ their checks do not block Linux activation or repeat server-side delivery proof.
 Distinguish code-level evidence from
 actual daemon/provider execution and human acceptance. No operational issue,
 implementation or rollout is created by this specification alone.
+
+## Fact-based completion amendment (2026-09-27)
+
+User decisions and provider facts outrank internal bookkeeping. `outcome_complete`
+is a compatibility field, not an additional user obligation. Do not automatically
+create an outcome-agent run after merging. A failed delivery attempt must not
+prevent observing a later completed provider merge. Record completed merge facts
+even when policy would forbid an agent from initiating that merge. This never
+grants permission for an outbound merge of different code.
+
+Ticket status and editorial text are presentation and context, not acceptance
+credentials. Record scope snapshots, including acceptance criteria; reconcile
+substantive changes through agent judgment and affected evaluation. Do not revoke
+approval merely because the title or description changed. A new candidate can
+retain prior approval as evidence while requiring current engineering evaluation
+and an authorized carry-forward decision. Scoped exceptions do not require a
+fictional rejection of accepted work. Authenticated access, concurrency checks,
+independent review defaults and exact-head checks before automated merges remain.

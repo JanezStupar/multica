@@ -1,6 +1,29 @@
 # Mica release and deployment
 
-## Current backend: v0.5.1-janez.5
+## Prepared backend patch: v0.5.1-janez.6
+
+The 2026-09-27 patch removes process gates that obstructed recorded user
+decisions. Required bound PR merges close accepted tickets without an outcome
+checkbox or automatically dispatched outcome run; explicit no-PR acceptance
+finishes directly. Existing merged work is reconciled on upgrade. Completed
+provider facts are recorded for blocked deliveries and changed heads, while
+automated outbound merges still check the evaluated head. Cancellation,
+authenticated access and independent review defaults remain.
+
+Editorial ticket changes and PR readiness do not erase the current candidate or
+review. A replacement candidate retains prior approval evidence but requires
+current engineering evaluation and authorized acceptance/carry-forward. Scoped
+exceptions no longer require a fictitious rejection. Explicit delivery Retry
+reschedules immediately across nonterminal presentation statuses.
+
+Migration 585 removes outcome/status/text fences and the mandatory outcome-agent
+constraint. Rollback retains this schema; reversing the migration requires an
+explicit reconciliation. Existing ticket policy pins and agent identities are
+not migrated. Server-only publication and rollout leave `.5` clients unchanged.
+The user requested focused regressions and deployment, deferring broad QA until
+the workflow is usable. Closing a code ticket does not claim unperformed QA.
+
+## Previous backend: v0.5.1-janez.5
 
 Deployed on 2026-09-26 from independently reviewed commit
 `d3ae217b9a1e616f633195f80631622e803bec10`. Backend image digest:

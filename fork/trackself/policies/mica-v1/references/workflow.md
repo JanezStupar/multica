@@ -49,10 +49,9 @@ action:
 - After required agent review, `in_review` assigned to a human means human
   acceptance is due for nontrivial work not covered by valid prior approval.
 - `PR Ready` means required review and acceptance passed for the exact candidate
-  but required delivery or outcome work remains. Delivery may be pending, held
-  or failed; merged work may still need deployment or validation.
-- `done` means required PRs merged and the actual ticket outcome is complete.
-  No-PR work may finish directly after acceptance when its outcome is complete.
+  but required PR delivery remains pending, held or failed.
+- `done` follows all required bound PR merges, or explicit no-PR acceptance.
+  Preserve unperformed deployment or validation as separately owned follow-up work.
 
 These semantics require format-2 completion, external-merge reconciliation
 and exact-comment feedback continuation from backend and agent CLI
@@ -133,12 +132,10 @@ head without creating a new human decision.
 
 A user-directed provider merge, including Primary acting through the service
 account, records acceptance and actual delivery. Reconcile that completed merge
-before stale-head handling, then close once every required PR and actual outcome
-is complete. An agent delivery hold does not undo the user's completed merge.
+before stale-head handling, then close once every required bound PR is merged. An agent delivery hold does not undo the user's completed merge.
 Do not request another acceptance or review solely because parent integration
-changed the SHA. External-merge authority follows the configured policy: `external_merged_head:
-"accepted"` explicitly delegates the completion signal to the provider-authorized
-merge of the already accepted, bound PR. Record the provider actor without
+changed the SHA. Completed provider merges are facts, including a changed head. Observing those
+facts never grants an agent permission to initiate a different merge. Record the provider actor without
 claiming it identifies a human. This does not authorize an agent to initiate an
 otherwise forbidden merge.
 

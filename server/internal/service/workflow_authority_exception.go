@@ -163,7 +163,7 @@ func (s WorkflowAuthorityService) GrantException(ctx context.Context, workspaceI
 	if in.Scope == "external_merge" && authority.FormatVersion != 2 {
 		return "", ErrWorkflowAuthorityConflict
 	}
-	if eligible, err := WorkflowNonterminalStatus(ctx, tx, issue); err != nil {
+	if eligible, err := workflowCorrectionStatus(ctx, tx, issue); err != nil {
 		return "", err
 	} else if !eligible {
 		return "", ErrWorkflowAuthorityConflict
@@ -178,9 +178,6 @@ func (s WorkflowAuthorityService) GrantException(ctx context.Context, workspaceI
 	state, err := workflowExceptionAcceptanceState(ctx, tx, issue, candidateID)
 	if err != nil {
 		return "", err
-	}
-	if state == "accepted" && in.Scope != "external_merge" {
-		return "", fmt.Errorf("%w: reject the accepted candidate before changing authority", ErrWorkflowAuthorityConflict)
 	}
 	if state == "requested" && in.Scope == "external_merge" {
 		return "", fmt.Errorf("%w: a newer acceptance request must resolve before external merge reconciliation", ErrWorkflowAuthorityConflict)
@@ -232,8 +229,8 @@ func (s WorkflowAuthorityService) GrantException(ctx context.Context, workspaceI
 }
 
 // RevokeException retains the original grant and records an explicit reason
-// and actor. A requested acceptance is blocked; an accepted decision needs a
-// rejection, preserving its already-issued delivery intent.
+// and actor. A requested acceptance is blocked; an accepted decision keeps its
+// immutable authority and delivery snapshots.
 func (s WorkflowAuthorityService) RevokeException(ctx context.Context, workspaceID, issueID, exceptionID pgtype.UUID,
 	actor WorkflowActor, in WorkflowExceptionRevokeInput) error {
 	if s.Tasks == nil || s.Tasks.TxStarter == nil {
@@ -285,7 +282,7 @@ func (s WorkflowAuthorityService) RevokeException(ctx context.Context, workspace
 	if scope == "external_merge" && authority.FormatVersion != 2 {
 		return ErrWorkflowAuthorityConflict
 	}
-	if eligible, err := WorkflowNonterminalStatus(ctx, tx, issue); err != nil {
+	if eligible, err := workflowCorrectionStatus(ctx, tx, issue); err != nil {
 		return err
 	} else if !eligible {
 		return ErrWorkflowAuthorityConflict
@@ -300,9 +297,6 @@ func (s WorkflowAuthorityService) RevokeException(ctx context.Context, workspace
 	state, err := workflowExceptionAcceptanceState(ctx, tx, issue, candidateID)
 	if err != nil {
 		return err
-	}
-	if state == "accepted" && scope != "external_merge" {
-		return fmt.Errorf("%w: reject the accepted candidate before revoking authority", ErrWorkflowAuthorityConflict)
 	}
 	if state == "requested" && scope == "external_merge" {
 		return fmt.Errorf("%w: a newer acceptance request must resolve before external merge revocation", ErrWorkflowAuthorityConflict)

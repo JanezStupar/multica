@@ -308,7 +308,7 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 	if state.Candidate == nil {
 		block("candidate_missing")
 	} else {
-		if state.Candidate.ScopeDigest != WorkflowScopeDigest(issue, policy.Version) {
+		if state.Candidate.ScopeDigest == "" {
 			block("scope_changed")
 		} else {
 			candidate, candidateErr := loadCurrentWorkflowCandidate(ctx, tx, issue, policy.Version)
@@ -486,7 +486,7 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 	}
 	if authority.FormatVersion == 2 && state.Acceptance != nil && state.Acceptance.State == "accepted" &&
 		state.Candidate != nil && state.Acceptance.CandidateID == state.Candidate.ID &&
-		issue.Status == authority.AcceptedStatusKey && !issue.WorkflowFrozen {
+		nonterminalStatus && !issue.WorkflowFrozen {
 		if actor.Type == "member" {
 			role, memberID, roleErr := workflowMemberRole(ctx, tx, workspaceID, actor)
 			if roleErr == nil {
@@ -504,18 +504,6 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 				state.AvailableActions.HoldDelivery = allowed && !state.Acceptance.HoldDelivery && pendingMerge
 				state.AvailableActions.ReleaseDelivery = allowed && state.Acceptance.HoldDelivery
 				state.AvailableActions.CompleteOutcome = allowed && !state.Acceptance.OutcomeComplete
-				state.AvailableActions.RetryOutcome = allowed && !state.Acceptance.OutcomeComplete &&
-					state.Acceptance.OutcomeTaskID == "" && state.Acceptance.Blocker == "outcome_dispatch_failed"
-				if allowed && !state.Acceptance.OutcomeComplete && state.Acceptance.OutcomeTaskID != "" {
-					var outcomeStatus string
-					if err := tx.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id=$1 AND issue_id=$2`,
-						mustAuthorityUUID(state.Acceptance.OutcomeTaskID), issue.ID).Scan(&outcomeStatus); err != nil {
-						return state, err
-					}
-					state.AvailableActions.CompleteOutcome = outcomeStatus != "dispatched" && outcomeStatus != "running" &&
-						outcomeStatus != "waiting_local_directory"
-					state.AvailableActions.RetryOutcome = outcomeStatus == "failed" || outcomeStatus == "cancelled"
-				}
 			}
 		} else if actor.Type == "agent" && state.Acceptance.OutcomeTaskID == actor.SourceTaskID {
 			var taskStatus string

@@ -76,12 +76,12 @@ func (s *TaskService) ReplaceUnclaimedWorkflowCommentRuntime(ctx context.Context
 	if err != nil || policy == nil {
 		return false, ErrAttributionFailClosed
 	}
-	var digest string
-	if err := tx.QueryRow(ctx, `SELECT scope_digest FROM issue_workflow_candidate
-	 WHERE id=$1 AND issue_id=$2 AND workspace_id=$3`, candidateID, issue.ID, issue.WorkspaceID).Scan(&digest); err != nil {
+	var candidatePolicy string
+	if err := tx.QueryRow(ctx, `SELECT policy_version FROM issue_workflow_candidate
+	 WHERE id=$1 AND issue_id=$2 AND workspace_id=$3`, candidateID, issue.ID, issue.WorkspaceID).Scan(&candidatePolicy); err != nil {
 		return false, err
 	}
-	if digest != WorkflowScopeDigest(current, policy.Version) {
+	if candidatePolicy != policy.Version {
 		return false, ErrAttributionFailClosed
 	}
 	var staleID pgtype.UUID

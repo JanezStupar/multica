@@ -10,10 +10,9 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// TryReconcileWorkflowCompletion isolates task creation from a previously
-// verified provider merge. A failed enqueue rolls back only its savepoint;
-// the caller can still commit the exact merged-head delivery fact and this
-// durable retry marker in the owning issue transaction.
+// TryReconcileWorkflowCompletion isolates ticket reconciliation from a verified
+// provider merge. A failed completion rolls back only its savepoint; the caller
+// can still commit the merge fact and its durable retry marker.
 func TryReconcileWorkflowCompletion(ctx context.Context, tx pgx.Tx, q *db.Queries, issue db.Issue,
 	acceptanceID pgtype.UUID,
 ) (*db.AgentTaskQueue, bool, error, error) {
@@ -39,9 +38,8 @@ func TryReconcileWorkflowCompletion(ctx context.Context, tx pgx.Tx, q *db.Querie
 		return nil, false, dispatchErr, err
 	}
 	var attempts int
-	var outcomeComplete bool
-	if err := tx.QueryRow(ctx, `SELECT outcome_dispatch_attempt_count,outcome_complete
-		FROM issue_workflow_acceptance WHERE id=$1 FOR UPDATE`, acceptanceID).Scan(&attempts, &outcomeComplete); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT outcome_dispatch_attempt_count
+		FROM issue_workflow_acceptance WHERE id=$1 FOR UPDATE`, acceptanceID).Scan(&attempts); err != nil {
 		return nil, false, dispatchErr, err
 	}
 	attempts++
@@ -53,10 +51,7 @@ func TryReconcileWorkflowCompletion(ctx context.Context, tx pgx.Tx, q *db.Querie
 	if delay > 5*time.Minute {
 		delay = 5 * time.Minute
 	}
-	class := "outcome_dispatch_failed"
-	if outcomeComplete {
-		class = "completion_reconcile_failed"
-	}
+	class := "completion_reconcile_failed"
 	if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET last_error_class=$2,
 		outcome_dispatch_attempt_count=$3,outcome_next_attempt_at=$4
 		WHERE id=$1 AND revoked_at IS NULL`, acceptanceID, class, attempts, time.Now().Add(delay)); err != nil {
@@ -65,9 +60,9 @@ func TryReconcileWorkflowCompletion(ctx context.Context, tx pgx.Tx, q *db.Querie
 	return nil, false, dispatchErr, nil
 }
 
-// RetryNextWorkflowCompletionDispatch is the durable, bounded retry path for
-// a merge that succeeded while outcome-task dispatch did not. Executed tasks
-// that failed or were cancelled are never automatically retried.
+// RetryNextWorkflowCompletionDispatch reconciles already-delivered acceptances,
+// including tickets retained by the former outcome-acknowledgment gate. It never
+// dispatches or retries agent work.
 func (s WorkflowAuthorityService) RetryNextWorkflowCompletionDispatch(ctx context.Context) (bool, error) {
 	if s.Tasks == nil || s.Tasks.TxStarter == nil {
 		return false, ErrWorkflowAuthorityUnavailable
@@ -80,12 +75,14 @@ func (s WorkflowAuthorityService) RetryNextWorkflowCompletionDispatch(ctx contex
 	var issueID pgtype.UUID
 	err = tx.QueryRow(ctx, `SELECT a.issue_id FROM issue_workflow_acceptance a
 		JOIN issue i ON i.id=a.issue_id AND i.workspace_id=a.workspace_id
+		JOIN issue_workflow_candidate c ON c.id=a.candidate_id AND c.issue_id=a.issue_id
+		JOIN issue_status status ON status.workspace_id=i.workspace_id AND status.key=i.status
 		WHERE a.completion_version=2 AND a.state='accepted' AND a.revoked_at IS NULL
-		AND (a.last_error_class IN ('completion_reconcile_failed','human_feedback_pending') OR
-		     a.last_error_class='outcome_dispatch_failed' AND a.outcome_task_id IS NULL)
-		AND a.outcome_next_attempt_at<=now() AND i.workflow_candidate_id=a.candidate_id
-		AND i.status=a.accepted_status_key AND NOT i.workflow_frozen
-		ORDER BY a.outcome_next_attempt_at,a.id LIMIT 1`).Scan(&issueID)
+		AND i.workflow_candidate_id=a.candidate_id AND status.category IN ('unstarted','started') AND NOT i.workflow_frozen
+		AND (a.outcome_next_attempt_at IS NULL OR a.outcome_next_attempt_at<=now())
+		AND (SELECT count(*) FROM issue_workflow_delivery d WHERE d.acceptance_id=a.id
+		     AND d.status='delivered' AND d.merged_at IS NOT NULL)=jsonb_array_length(c.pr_set)
+		ORDER BY a.outcome_next_attempt_at NULLS FIRST,a.id LIMIT 1`).Scan(&issueID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -106,14 +103,15 @@ func (s WorkflowAuthorityService) RetryNextWorkflowCompletionDispatch(ctx contex
 		return true, err
 	}
 	var acceptanceID pgtype.UUID
-	err = tx.QueryRow(ctx, `SELECT id FROM issue_workflow_acceptance
-		WHERE issue_id=$1 AND workspace_id=$2 AND candidate_id=$3 AND state='accepted'
-		AND revoked_at IS NULL AND completion_version=2
-		AND (last_error_class IN ('completion_reconcile_failed','human_feedback_pending') OR
-		     last_error_class='outcome_dispatch_failed' AND outcome_task_id IS NULL)
-		AND outcome_next_attempt_at<=now() AND accepted_status_key=$4
-		ORDER BY outcome_next_attempt_at,id LIMIT 1 FOR UPDATE`, issue.ID, workspaceID,
-		issue.WorkflowCandidateID, issue.Status).Scan(&acceptanceID)
+	err = tx.QueryRow(ctx, `SELECT a.id FROM issue_workflow_acceptance a
+		JOIN issue_workflow_candidate c ON c.id=a.candidate_id AND c.issue_id=a.issue_id
+		WHERE a.issue_id=$1 AND a.workspace_id=$2 AND a.candidate_id=$3 AND a.state='accepted'
+		AND a.revoked_at IS NULL AND a.completion_version=2
+		AND (a.outcome_next_attempt_at IS NULL OR a.outcome_next_attempt_at<=now())
+		AND (SELECT count(*) FROM issue_workflow_delivery d WHERE d.acceptance_id=a.id
+		     AND d.status='delivered' AND d.merged_at IS NOT NULL)=jsonb_array_length(c.pr_set)
+		ORDER BY a.outcome_next_attempt_at NULLS FIRST,a.id LIMIT 1 FOR UPDATE OF a`,
+		issue.ID, workspaceID, issue.WorkflowCandidateID).Scan(&acceptanceID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -128,7 +126,7 @@ func (s WorkflowAuthorityService) RetryNextWorkflowCompletionDispatch(ctx contex
 		return true, err
 	}
 	if task != nil {
-		s.Tasks.NotifyTaskEnqueued(ctx, *task)
+		s.Tasks.NotifyWorkflowCompletionTask(ctx, issue.WorkspaceID, task)
 	}
 	s.PublishWorkflowIssueChange(ctx, issue, WorkflowActor{Type: "system"})
 	if dispatchErr != nil {

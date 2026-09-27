@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -32,6 +33,9 @@ func (s WorkflowAuthorityService) ChangeCompletion(ctx context.Context, workspac
 	if err != nil || in.ExpectedRevision < 1 {
 		return false, fmt.Errorf("%w: candidate_id and positive expected_revision are required", ErrWorkflowAuthorityInput)
 	}
+	if action == "complete" && actor.Type == "member" && strings.TrimSpace(in.Reason) == "" {
+		in.Reason = "Completion confirmed by human"
+	}
 	in.Reason, err = validateWorkflowActionReason(in.Reason)
 	if err != nil {
 		return false, err
@@ -53,7 +57,14 @@ func (s WorkflowAuthorityService) ChangeCompletion(ctx context.Context, workspac
 	if err != nil {
 		return false, err
 	}
-	if authority.FormatVersion != 2 || issue.Status != authority.AcceptedStatusKey {
+	if authority.FormatVersion != 2 {
+		return false, ErrWorkflowAuthorityConflict
+	}
+	eligible, err := WorkflowNonterminalStatus(ctx, tx, issue)
+	if err != nil {
+		return false, err
+	}
+	if !eligible {
 		return false, ErrWorkflowAuthorityConflict
 	}
 	var state, acceptedStatus, acceptedPolicy, actorType string
@@ -68,7 +79,7 @@ func (s WorkflowAuthorityService) ChangeCompletion(ctx context.Context, workspac
 		&state, &version, &acceptedStatus, &acceptedPolicy, &actorType, &actorID,
 		&outcomeAgentID, &outcomeTaskID, &pendingTaskID, &held, &outcomeComplete, &lastErrorClass)
 	if errors.Is(err, pgx.ErrNoRows) || state != "accepted" || version != 2 ||
-		acceptedStatus != issue.Status || acceptedPolicy != pinned.Version {
+		acceptedPolicy != pinned.Version {
 		return false, ErrWorkflowAuthorityConflict
 	}
 	if err != nil {
@@ -98,7 +109,7 @@ func (s WorkflowAuthorityService) ChangeCompletion(ctx context.Context, workspac
 		}
 	}
 	var changed bool
-	var queuedOutcome *db.AgentTaskQueue
+	var completionTask *db.AgentTaskQueue
 	switch action {
 	case "hold":
 		if actor.Type != "member" || held {
@@ -138,25 +149,9 @@ func (s WorkflowAuthorityService) ChangeCompletion(ctx context.Context, workspac
 				outcome_requested_at=now() WHERE id=$1 AND outcome_complete=false`, acceptanceID, outcomeTaskID)
 			changed = true
 		} else {
-			if outcomeTaskID.Valid {
-				var taskStatus string
-				if err := tx.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id=$1`, outcomeTaskID).Scan(&taskStatus); err != nil {
-					return false, err
-				}
-				if taskStatus == "running" || taskStatus == "dispatched" || taskStatus == "waiting_local_directory" {
-					return false, ErrWorkflowAuthorityConflict
-				}
-				if taskStatus == "queued" || taskStatus == "deferred" {
-					cancelled, err := tx.Exec(ctx, `UPDATE agent_task_queue SET status='cancelled',completed_at=now(),
-						error='Outcome acknowledged by human',cancelled_by_type='system'
-						WHERE id=$1 AND status IN ('queued','deferred') AND started_at IS NULL`, outcomeTaskID)
-					if err != nil {
-						return false, err
-					}
-					if cancelled.RowsAffected() != 1 {
-						return false, ErrWorkflowAuthorityConflict
-					}
-				}
+			completionTask, err = cancelWorkflowOutcomeTask(ctx, q, outcomeTaskID, "Completion confirmed by human; legacy outcome run retired")
+			if err != nil {
+				return false, err
 			}
 			_, err = tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET outcome_complete=true,
 				outcome_completed_at=now(),outcome_request_task_id=NULL WHERE id=$1`, acceptanceID)
@@ -166,43 +161,19 @@ func (s WorkflowAuthorityService) ChangeCompletion(ctx context.Context, workspac
 		if actor.Type != "member" || outcomeComplete {
 			return false, ErrWorkflowAuthorityConflict
 		}
-		if !outcomeTaskID.Valid {
-			if lastErrorClass.String != "outcome_dispatch_failed" {
-				return false, ErrWorkflowAuthorityConflict
-			}
-			if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET outcome_next_attempt_at=now()
-				WHERE id=$1 AND outcome_task_id IS NULL AND last_error_class='outcome_dispatch_failed'`,
-				acceptanceID); err != nil {
-				return false, err
-			}
-			changed = true
-			break
-		}
-		var taskStatus string
-		if err := tx.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id=$1 AND issue_id=$2`,
-			outcomeTaskID, issueID).Scan(&taskStatus); err != nil {
-			return false, err
-		}
-		if taskStatus != "failed" && taskStatus != "cancelled" {
-			return false, ErrWorkflowAuthorityConflict
-		}
-		if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET outcome_task_id=NULL,
-			outcome_request_task_id=NULL,outcome_requested_at=NULL,last_error_class=NULL
-			WHERE id=$1 AND outcome_task_id=$2`, acceptanceID, outcomeTaskID); err != nil {
-			return false, err
-		}
-		queuedOutcome, _, err = ReconcileWorkflowCompletion(ctx, tx, q, issue, acceptanceID)
-		if err != nil {
-			return false, err
-		}
+		completionTask, _, err = ReconcileWorkflowCompletion(ctx, tx, q, issue, acceptanceID)
 		changed = true
 	}
 	if err != nil {
 		return false, err
 	}
 	if action == "complete" && actor.Type == "member" {
-		if _, _, err := ReconcileWorkflowCompletion(ctx, tx, q, issue, acceptanceID); err != nil {
-			return false, err
+		reconciledTask, _, reconcileErr := ReconcileWorkflowCompletion(ctx, tx, q, issue, acceptanceID)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+		if reconciledTask != nil {
+			completionTask = reconciledTask
 		}
 	}
 	var currentRevision int64
@@ -231,9 +202,7 @@ func (s WorkflowAuthorityService) ChangeCompletion(ctx context.Context, workspac
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
-	if queuedOutcome != nil {
-		s.Tasks.NotifyTaskEnqueued(ctx, *queuedOutcome)
-	}
+	s.Tasks.NotifyWorkflowCompletionTask(ctx, issue.WorkspaceID, completionTask)
 	if changed {
 		s.PublishWorkflowIssueChange(ctx, issue, actor)
 	}
@@ -290,7 +259,7 @@ func (s WorkflowAuthorityService) FinalizeNextOutcomeAcknowledgment(ctx context.
 		return false, err
 	}
 	if taskStatus != "completed" || issue.WorkflowFrozen || issue.WorkflowCandidateID != candidateID ||
-		issue.Status != acceptedStatus || issue.WorkflowPolicy == nil {
+		issue.WorkflowPolicy == nil {
 		if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET outcome_request_task_id=NULL,
 			last_error_class='outcome_task_failed' WHERE id=$1 AND outcome_request_task_id=$2`, acceptanceID, taskID); err != nil {
 			return true, err
@@ -305,34 +274,19 @@ func (s WorkflowAuthorityService) FinalizeNextOutcomeAcknowledgment(ctx context.
 	if err != nil || pinned == nil || pinned.Version != policyVersion {
 		return false, ErrWorkflowAuthorityConflict
 	}
-	// Agent completion cannot consume a still-unclassified human correction.
-	// Keep the exact successful acknowledgment pending for the normal retry;
-	// explicit human completion retains its separate authority path.
-	pendingFeedback, err := WorkflowHasPendingHumanFeedback(ctx, tx, issue)
-	if err != nil {
-		return true, err
-	}
-	if pendingFeedback {
-		if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET last_error_class='human_feedback_pending',
-			outcome_next_attempt_at=now()+interval '5 seconds' WHERE id=$1 AND outcome_request_task_id=$2`, acceptanceID, taskID); err != nil {
-			return true, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return true, err
-		}
-		return true, nil
-	}
 	if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET outcome_complete=true,
 		outcome_completed_at=now(),outcome_request_task_id=NULL,last_error_class=NULL
 		WHERE id=$1 AND outcome_request_task_id=$2 AND outcome_complete=false`, acceptanceID, taskID); err != nil {
 		return true, err
 	}
-	if _, _, err := ReconcileWorkflowCompletion(ctx, tx, q, issue, acceptanceID); err != nil {
+	completionTask, _, err := ReconcileWorkflowCompletion(ctx, tx, q, issue, acceptanceID)
+	if err != nil {
 		return true, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return true, err
 	}
+	s.Tasks.NotifyWorkflowCompletionTask(ctx, issue.WorkspaceID, completionTask)
 	s.PublishWorkflowIssueChange(ctx, issue, WorkflowActor{Type: "agent"})
 	return true, nil
 }

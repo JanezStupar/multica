@@ -88,21 +88,17 @@ observing the user's merge and permission for an agent to initiate a merge.
 If the runtime cannot reconcile this, report a technical limitation to Primary
 instead of asking the user to approve again or claiming a fresh review is due.
 
-For this format-2 policy, acceptance must state `outcome_complete`: true only
-when the requested outcome is already established, otherwise false. Human
-acceptance permits automatic merge unless explicitly held. Use `hold_delivery`
-on acceptance or `workflow hold` afterwards to record a durable hold; use
-`workflow release` to lift it. These post-acceptance commands require the
-acceptance ID, exact candidate, current revision and a reason. PR readiness may
-proceed while held. Never promise that a hold succeeded until the API confirms
-it; an already executing merge may prevent the hold.
+For format-2 acceptance, `outcome_complete` is a compatibility field, not a
+required second acknowledgment. Human acceptance permits automatic merge unless
+explicitly held. Preserve `hold_delivery` across retries until an authorized
+release; a completed user-directed provider merge is already a fact and overrides
+the agent's hold.
 
-Accepted work stays PR Ready until required PRs merge and the actual outcome is
-complete. If outcome work remains after merge, Multica dispatches it to the
-policy's pinned Mica. Inspect the merged revisions and required evidence before
-requesting `workflow complete`; an agent's request becomes effective only when
-that authorized outcome task succeeds. A successful implementation, acceptance
-or merge alone does not prove a deployment, migration or validation outcome.
+Close the ticket when all required bound PRs merge. Explicit acceptance can finish
+work needing no PR directly. Do not automatically dispatch an outcome agent or
+ask the human to confirm completion again. Preserve unperformed deployment,
+migration or validation honestly in the work record and separately requested
+follow-up work. A closed code ticket does not manufacture that runtime evidence.
 
 Read `references/workflow.md` and the repository-owned requirements or
 decisions relevant to the task. For Multica command effects, open only the

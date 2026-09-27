@@ -135,8 +135,8 @@ func normalizeHandoffInput(in HandoffInput) (HandoffInput, error) {
 	for i := range in.Candidates {
 		c := &in.Candidates[i]
 		c.CommitSHA = strings.ToLower(c.CommitSHA)
-		if !handoffHTTPURL(c.RepositoryURL) || !handoffHTTPURL(c.PRURL) || strings.TrimSpace(c.Branch) != c.Branch || c.Branch == "" || len(c.Branch) > 500 || strings.IndexFunc(c.Branch, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 || !fullHandoffCommit.MatchString(c.CommitSHA) || !c.Draft {
-			return bad("candidate requires repository and PR HTTP URLs, branch, full commit SHA and draft=true")
+		if !handoffHTTPURL(c.RepositoryURL) || !handoffHTTPURL(c.PRURL) || strings.TrimSpace(c.Branch) != c.Branch || c.Branch == "" || len(c.Branch) > 500 || strings.IndexFunc(c.Branch, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 || !fullHandoffCommit.MatchString(c.CommitSHA) {
+			return bad("candidate requires repository and PR HTTP URLs, branch and full commit SHA")
 		}
 		if _, exists := seenPRs[c.PRURL]; exists {
 			return bad("each PR may appear only once")

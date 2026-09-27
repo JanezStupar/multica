@@ -144,7 +144,7 @@ func workflowOutcomeAgent(t *testing.T, acceptanceID string) (agentID, runtimeID
 	return agentID, runtimeID
 }
 
-func TestWorkflowFormat2MergedFactSurvivesOutcomeDispatchFailureAndRetries(t *testing.T) {
+func TestWorkflowFormat2MergedWorkCompletesWithoutOutcomeAgent(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("handler test fixture unavailable")
 	}
@@ -210,39 +210,16 @@ func TestWorkflowFormat2MergedFactSurvivesOutcomeDispatchFailureAndRetries(t *te
 	}
 	view, err := testHandler.workflowAuthorityService().ReadState(context.Background(), parseUUID(testWorkspaceID), parseUUID(issueID),
 		service.WorkflowActor{Type: "member", ID: testUserID})
-	if err != nil || view.Acceptance == nil || view.Acceptance.Blocker != "outcome_dispatch_failed" || view.Acceptance.OutcomeTaskID != "" {
-		t.Fatalf("durable outcome dispatch blocker state=%+v err=%v", view.Acceptance, err)
+	if err != nil || view.Acceptance == nil || view.Acceptance.Blocker != "" || view.Acceptance.OutcomeTaskID != "" || !view.Acceptance.OutcomeComplete {
+		t.Fatalf("merged work manufactured outcome dependency: %+v %v", view.Acceptance, err)
 	}
-	var errorClass string
-	var attempts int
-	var retryScheduled bool
-	if err := testPool.QueryRow(context.Background(), `SELECT last_error_class,outcome_dispatch_attempt_count,
-		outcome_next_attempt_at>now() FROM issue_workflow_acceptance WHERE id=$1`, acceptanceID).
-		Scan(&errorClass, &attempts, &retryScheduled); err != nil || errorClass != "outcome_dispatch_failed" || attempts != 1 || !retryScheduled {
-		t.Fatalf("durable retry marker class=%q attempts=%d scheduled=%t err=%v", errorClass, attempts, retryScheduled, err)
+	var issueStatus string
+	if err := testPool.QueryRow(context.Background(), `SELECT status FROM issue WHERE id=$1`, issueID).Scan(&issueStatus); err != nil || issueStatus != "done" {
+		t.Fatalf("merged work not completed: status=%s err=%v", issueStatus, err)
 	}
 	worked, err = worker.ProcessNext(context.Background())
 	if err != nil || worked || mergeCalls.Load() != 1 {
-		t.Fatalf("delivered PR repeated after dispatch failure: worked=%v merge_calls=%d err=%v", worked, mergeCalls.Load(), err)
-	}
-	dbfx.Exec(t, `UPDATE agent SET runtime_id=$2 WHERE id=$1`, outcomeAgentID, runtimeID)
-	dbfx.Exec(t, `UPDATE issue_workflow_acceptance SET outcome_next_attempt_at=now() WHERE id=$1`, acceptanceID)
-	worked, err = testHandler.workflowAuthorityService().RetryNextWorkflowCompletionDispatch(context.Background())
-	if err != nil || !worked {
-		t.Fatalf("automatic outcome dispatch retry worked=%v err=%v", worked, err)
-	}
-	view, err = testHandler.workflowAuthorityService().ReadState(context.Background(), parseUUID(testWorkspaceID), parseUUID(issueID),
-		service.WorkflowActor{Type: "member", ID: testUserID})
-	if err != nil || view.Acceptance == nil || view.Acceptance.Blocker != "" || view.Acceptance.OutcomeTaskID == "" {
-		t.Fatalf("outcome dispatch retry state=%+v err=%v", view.Acceptance, err)
-	}
-	var taskCount int
-	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM agent_task_queue
-		WHERE issue_id=$1 AND context->'workflow_outcome'->>'acceptance_id'=$2`, issueID, acceptanceID).Scan(&taskCount); err != nil || taskCount != 1 {
-		t.Fatalf("outcome task count=%d err=%v, want exactly one", taskCount, err)
-	}
-	if mergeCalls.Load() != 1 {
-		t.Fatalf("outcome retry repeated provider merge: calls=%d", mergeCalls.Load())
+		t.Fatalf("delivered PR repeated: worked=%v merge_calls=%d err=%v", worked, mergeCalls.Load(), err)
 	}
 }
 
@@ -743,5 +720,54 @@ func TestWorkflowFormat2ChangedOpenHeadPausesWithoutRevokingAcceptance(t *testin
 	}
 	if queued != 1 || resumedFrom != 1 {
 		t.Fatalf("explicit rejection queued=%d resumes=%d", queued, resumedFrom)
+	}
+}
+
+func TestWorkflowFormat2BlockedOpenChangedHeadBacksOff(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture unavailable")
+	}
+	var mutations atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			mutations.Add(1)
+			t.Errorf("observer mutated open changed head: %s", r.Method)
+			return
+		}
+		if r.URL.Path != "/api/v1/repos/team/project/pulls/1" || r.Header.Get("Authorization") != "token delivery-token" {
+			t.Errorf("wrong provider observation request: path=%s", r.URL.Path)
+			http.Error(w, "unexpected provider identity", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"title": "Accepted work", "head": map[string]string{"sha": workflowDeliveryChangedHead}, "state": "open", "draft": false, "merged": false})
+	}))
+	defer server.Close()
+	issueID, _, acceptanceID, ids := workflowFormat2DeliveryFixture(t, server, 1, "merge", false, false)
+	dbfx.Exec(t, `UPDATE issue_workflow_delivery SET status='blocked',last_error_class='closed_unmerged' WHERE id=$1`, ids[0])
+	worker := NewWorkflowDeliveryWorker(testHandler)
+	worker.client = server.Client()
+	if worked, err := worker.ProcessNext(context.Background()); err != nil || !worked {
+		t.Fatalf("blocked observation: %v %v", worked, err)
+	}
+	var status, lastError string
+	var attempts int
+	var backedOff bool
+	dbfx.QueryRow(t, `SELECT status,last_error_class,attempt_count,next_attempt_at>now() FROM issue_workflow_delivery WHERE id=$1`, ids[0]).Scan(&status, &lastError, &attempts, &backedOff)
+	if status != "stale" || lastError != "head_changed" || attempts != 1 || !backedOff {
+		t.Fatalf("blocked transition failed: status=%s class=%s attempts=%d backed_off=%v", status, lastError, attempts, backedOff)
+	}
+	if count := dbfx.Count(t, `SELECT count(*) FROM issue_workflow_delivery_attempt WHERE delivery_id=$1 AND operation='reconcile' AND outcome='stale' AND observed_head_sha=$2`, ids[0], workflowDeliveryChangedHead); count != 1 {
+		t.Fatalf("changed head provenance count=%d", count)
+	}
+	var issueStatus, acceptanceStatus string
+	dbfx.QueryRow(t, `SELECT i.status,a.state FROM issue i JOIN issue_workflow_acceptance a ON a.issue_id=i.id WHERE i.id=$1 AND a.id=$2`, issueID, acceptanceID).Scan(&issueStatus, &acceptanceStatus)
+	if issueStatus != "pr_ready" || acceptanceStatus != "accepted" {
+		t.Fatalf("open head completed or rejected ticket: issue=%s acceptance=%s", issueStatus, acceptanceStatus)
+	}
+	if worked, err := worker.ProcessNext(context.Background()); err != nil || worked {
+		t.Fatalf("blocked changed-head observer hot loop: %v %v", worked, err)
+	}
+	if mutations.Load() != 0 {
+		t.Fatalf("changed-head observation sent %d mutations", mutations.Load())
 	}
 }

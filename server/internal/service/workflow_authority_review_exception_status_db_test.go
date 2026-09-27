@@ -13,12 +13,13 @@ import (
 func TestWorkflowReviewAndExceptionAuthorityAcrossStatusCategories(t *testing.T) {
 	for _, tc := range []struct {
 		status, category string
-		allowed          bool
+		reviewAllowed    bool
+		exceptionAllowed bool
 	}{
-		{"backlog", "", true}, {"todo", "", true}, {"in_progress", "", true},
-		{"in_review", "", true}, {"blocked", "", true},
-		{"custom_unstarted", "unstarted", true}, {"custom_started", "started", true},
-		{"cancelled", "", false}, {"done", "", false}, {"custom_closed", "closed", false},
+		{"backlog", "", true, true}, {"todo", "", true, true}, {"in_progress", "", true, true},
+		{"in_review", "", true, true}, {"blocked", "", true, true},
+		{"custom_unstarted", "unstarted", true, true}, {"custom_started", "started", true, true},
+		{"cancelled", "", false, false}, {"done", "", false, true}, {"custom_closed", "closed", false, false},
 	} {
 		t.Run(tc.status, func(t *testing.T) {
 			f, svc, issueID, taskID, reviewer := workflowReviewOriginFixture(t, "fresh")
@@ -62,18 +63,18 @@ func TestWorkflowReviewAndExceptionAuthorityAcrossStatusCategories(t *testing.T)
 			err = svc.RegisterReview(ctx, issue.WorkspaceID, issueID,
 				WorkflowActor{Type: "agent", ID: reviewer, SourceTaskID: util.UUIDToString(taskID)},
 				WorkflowReviewInput{CandidateID: candidateID, Verdict: "pass", PRReviewURLs: []string{}})
-			if tc.allowed && err != nil || !tc.allowed && !errors.Is(err, ErrWorkflowAuthorityConflict) {
-				t.Fatalf("review status eligibility allowed=%v error=%v", tc.allowed, err)
+			if tc.reviewAllowed && err != nil || !tc.reviewAllowed && !errors.Is(err, ErrWorkflowAuthorityConflict) {
+				t.Fatalf("review status eligibility allowed=%v error=%v", tc.reviewAllowed, err)
 			}
 			actor := WorkflowActor{Type: "member", ID: f.UserID}
 			input := WorkflowExceptionInput{CandidateID: candidateID, ExpectedRevision: issue.Revision,
 				Scope: "review", GrantDetails: map[string]any{"waive": true},
 				Reason: "Review exception for this exact candidate", Consequences: "Waive its passing review requirement"}
 			exceptionID, err := svc.GrantException(ctx, issue.WorkspaceID, issueID, actor, input)
-			if tc.allowed && err != nil || !tc.allowed && !errors.Is(err, ErrWorkflowAuthorityConflict) {
-				t.Fatalf("exception status eligibility allowed=%v error=%v", tc.allowed, err)
+			if tc.exceptionAllowed && err != nil || !tc.exceptionAllowed && !errors.Is(err, ErrWorkflowAuthorityConflict) {
+				t.Fatalf("exception status eligibility allowed=%v error=%v", tc.exceptionAllowed, err)
 			}
-			if !tc.allowed {
+			if !tc.exceptionAllowed {
 				if count := f.Count(t, `SELECT count(*) FROM issue_workflow_review WHERE issue_id=$1`, issueID); count != baselineReviews {
 					t.Fatalf("terminal work changed review count from %d to %d", baselineReviews, count)
 				}

@@ -300,7 +300,7 @@ func TestWorkflowDeliveryStillRecordsExternalMergeWithPendingFeedback(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			if issue.Status != "pr_ready" || (!assigned && (issue.AssigneeType.String != "member" || issue.AssigneeID != parseUUID(testUserID))) || (assigned && (issue.AssigneeType.String != "agent" || issue.AssigneeID != parseUUID(f.coordinatorID))) {
+			if issue.Status != "done" || (!assigned && (issue.AssigneeType.String != "member" || issue.AssigneeID != parseUUID(testUserID))) || (assigned && (issue.AssigneeType.String != "agent" || issue.AssigneeID != parseUUID(f.coordinatorID))) {
 				t.Fatalf("external merge reassigned the unanswered conversation: status=%s type=%s assignee=%s", issue.Status, issue.AssigneeType.String, uuidToString(issue.AssigneeID))
 			}
 			claim := claimWorkflowTask(t, f.runtimeID, protocol.DaemonCapabilityPlatformSkillV1)
@@ -314,14 +314,11 @@ func TestWorkflowDeliveryStillRecordsExternalMergeWithPendingFeedback(t *testing
 				t.Fatalf("postmerge answer reopened merged work: %v", err)
 			}
 			dbfx.Exec(t, `UPDATE agent_task_queue SET status='completed',completed_at=now() WHERE id=$1`, taskID)
-			dbfx.Exec(t, `UPDATE issue_workflow_acceptance SET outcome_next_attempt_at=now() WHERE id=$1`, f.acceptanceID)
-			if processed, err := testHandler.workflowAuthorityService().RetryNextWorkflowCompletionDispatch(ctx); err != nil || !processed {
-				t.Fatalf("answered input did not resume outcome dispatch: processed=%v error=%v", processed, err)
+			if processed, err := testHandler.workflowAuthorityService().RetryNextWorkflowCompletionDispatch(ctx); err != nil || processed {
+				t.Fatalf("answered input manufactured outcome work: processed=%v error=%v", processed, err)
 			}
-			outcomeAgent, _ := workflowOutcomeAgent(t, f.acceptanceID)
-			issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(f.issueID))
-			if err != nil || issue.AssigneeType.String != "agent" || issue.AssigneeID != parseUUID(outcomeAgent) || outcomeAgent == f.coordinatorID {
-				t.Fatalf("answered input did not reach distinct outcome owner: issue=%+v outcome=%s error=%v", issue, outcomeAgent, err)
+			if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->'workflow_outcome' IS NOT NULL`, f.issueID); count != 0 {
+				t.Fatalf("merged work spawned %d unrequested outcome runs", count)
 			}
 		})
 	}

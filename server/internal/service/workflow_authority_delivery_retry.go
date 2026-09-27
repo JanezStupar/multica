@@ -96,8 +96,16 @@ func (s WorkflowAuthorityService) RetryDelivery(ctx context.Context, workspaceID
 	if err != nil {
 		return false, err
 	}
-	if authority.FormatVersion == 2 && issue.Status != authority.AcceptedStatusKey ||
-		authority.FormatVersion == 1 && issue.Status != "done" {
+	if authority.FormatVersion == 2 {
+		eligible, statusErr := WorkflowNonterminalStatus(ctx, tx, issue)
+		if statusErr != nil {
+			return false, statusErr
+		}
+		if !eligible {
+			return false, ErrWorkflowAuthorityConflict
+		}
+	}
+	if authority.FormatVersion == 1 && issue.Status != "done" {
 		return false, ErrWorkflowAuthorityConflict
 	}
 	candidate, err := loadCurrentWorkflowCandidate(ctx, tx, issue, pinned.Version)
@@ -157,15 +165,12 @@ func (s WorkflowAuthorityService) RetryDelivery(ctx context.Context, workspaceID
 	if newerHeadKnown {
 		return false, fmt.Errorf("%w: a different PR head was observed; evaluate a new candidate", ErrWorkflowAuthorityConflict)
 	}
-	if row.status == "pending" || row.status == "retry" {
-		return false, tx.Commit(ctx)
-	}
 	_, actorID, err := workflowMemberRole(ctx, tx, workspaceID, actor)
 	if err != nil {
 		return false, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE issue_workflow_delivery SET status='retry',next_attempt_at=now(),
-		last_error_class=NULL,updated_at=now() WHERE id=$1 AND workspace_id=$2 AND issue_id=$3 AND status='blocked'`,
+		last_error_class=NULL,updated_at=now() WHERE id=$1 AND workspace_id=$2 AND issue_id=$3 AND status IN ('blocked','pending','retry')`,
 		deliveryID, workspaceID, issueID); err != nil {
 		return false, err
 	}

@@ -63,3 +63,10 @@ func TestWorkflowAuthorityPolicyExternalMergedHeadIsExplicitFormat2Authority(t *
 		t.Fatal("unsupported external merge authority was accepted")
 	}
 }
+
+func TestWorkflowFormat2DoesNotRequireAnOutcomeAgent(t *testing.T) {
+	policy, err := ParseWorkflowAuthorityPolicy(AgentSkillData{Files: []AgentSkillFileData{{Path: "runtime/policy.json", Content: `{"format_version":2,"accepted_status_key":"in_progress"}`}}})
+	if err != nil || policy.OutcomeAgentID != "" {
+		t.Fatalf("ordinary completion must not require another agent: %+v, %v", policy, err)
+	}
+}
