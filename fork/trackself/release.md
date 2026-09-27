@@ -46,8 +46,9 @@ Targeted recovery confirmed running tasks:
 
 These are verified dispatches, not completed product review, human acceptance,
 merge, deployment or native qualification. Comment/review webhook events are
-enabled. PR synchronization remains disabled; the user was asked to enable it
-for future open-PR pushes. No hook secret or connection credentials changed.
+enabled. The user also enabled PR synchronization; read-back confirmed that
+the existing active organization hook selects it. Future open-PR pushes can
+notify the backend. No hook secret or connection credentials changed.
 
 ## Previous backend: v0.5.1-janez.6
 
