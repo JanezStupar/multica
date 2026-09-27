@@ -625,6 +625,20 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if agent.ID.Valid && agent.RuntimeID != candidate.RuntimeID {
 		return tx.Commit(ctx)
 	}
+	// Internal child inputs follow the current parent owner and selected
+	// workflow. Reassignment must not dispatch a former owner's continuation.
+	if w.ChildIssueID.Valid && (issue.AssigneeType.String != "agent" || issue.AssigneeID != w.AgentID || !s.UsesChildContinuation(issue.WorkflowPolicy)) {
+		active = false
+	}
+	if w.ChildIssueID.Valid {
+		child, childErr := q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: w.ChildIssueID, WorkspaceID: w.WorkspaceID})
+		if childErr != nil && !errors.Is(childErr, pgx.ErrNoRows) {
+			return childErr
+		}
+		if childErr != nil || child.ParentIssueID != issue.ID {
+			active = false
+		}
+	}
 	authErr := s.authorize(ctx, q, w.WorkspaceID, w.CreatedBy, agent)
 	if w.DisabledAt.Valid || !active || authErr != nil {
 		if authErr != nil && !errors.Is(authErr, ErrWakeupForbidden) {
@@ -691,6 +705,21 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		}
 	}
 	task, err := q.FindPendingWakeupTask(ctx, util.UUIDToString(w.ID))
+	if errors.Is(err, pgx.ErrNoRows) && w.ChildIssueID.Valid {
+		// Different children are useful inputs to the same retained parent,
+		// not a requirement for one queued run per child. A claimed prompt is
+		// immutable; preserve additional receipts until it can be reconciled.
+		var existingID pgtype.UUID
+		findErr := tx.QueryRow(ctx, `SELECT t.id FROM agent_task_queue t
+		 JOIN issue_wakeup owner ON owner.id::text=t.context->>'wakeup_id'
+		 WHERE owner.child_issue_id IS NOT NULL AND t.issue_id=$1 AND t.agent_id=$2
+		  AND t.status IN ('queued','dispatched') ORDER BY t.id LIMIT 1`, issue.ID, w.AgentID).Scan(&existingID)
+		if findErr == nil {
+			task, err = q.GetAgentTask(ctx, existingID)
+		} else if !errors.Is(findErr, pgx.ErrNoRows) {
+			return findErr
+		}
+	}
 	if err == nil && task.Status == "dispatched" {
 		// A claimed prompt is immutable. Recovery belongs to the ordinary
 		// claim/prepare lease, not a second wakeup-specific task timeout.
@@ -724,7 +753,18 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if w.Mode == "once" {
 		enabled = false
 	}
-	note, evidence := mergeWakeupEvidence(w, task, receipts)
+	evidenceConfig := w
+	if w.ChildIssueID.Valid && taskExists {
+		var provenance struct {
+			WakeupID string `json:"wakeup_id"`
+		}
+		if json.Unmarshal(task.Context, &provenance) == nil {
+			if ownerID, parseErr := util.ParseUUID(provenance.WakeupID); parseErr == nil {
+				evidenceConfig.ID = ownerID
+			}
+		}
+	}
+	note, evidence := mergeWakeupEvidence(evidenceConfig, task, receipts)
 	if taskExists {
 		task, err = q.ReplaceWakeupEvidence(ctx, db.ReplaceWakeupEvidenceParams{ID: task.ID, HandoffNote: pgtype.Text{String: note, Valid: true}, WakeupEvidence: evidence})
 	} else {
@@ -844,6 +884,12 @@ func (s *IssueWakeupService) checkClaimWithQueries(ctx context.Context, q *db.Qu
 	}
 	if w.DisabledAt.Valid || w.Revision != source.Revision || w.IssueID != task.IssueID || w.AgentID != task.AgentID || w.CreatedBy != task.OriginatorUserID {
 		return ErrWakeupForbidden
+	}
+	if w.ChildIssueID.Valid {
+		parent, err := q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: w.IssueID, WorkspaceID: w.WorkspaceID})
+		if err != nil || parent.AssigneeType.String != "agent" || parent.AssigneeID != task.AgentID {
+			return ErrWakeupForbidden
+		}
 	}
 	if len(w.Handoff) != 0 {
 		intent, err := handoffIntent(w)

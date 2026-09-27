@@ -542,6 +542,8 @@ deleted_wakeup_receipts AS (
  DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE workspace_id=$1)
 ), deleted_wakeups AS (
  DELETE FROM issue_wakeup WHERE workspace_id=$1
+), deleted_provider_inputs AS (
+ DELETE FROM vcs_workflow_input WHERE workspace_id=$1 AND (SELECT count(*) FROM locked_issues)>=0
 ), deleted_workflow_profiles AS (
  DELETE FROM issue_workflow_profile WHERE workspace_id=$1
 ), deleted_workflow_candidates AS (

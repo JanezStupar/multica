@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -310,7 +311,17 @@ func (s *IssueWakeupService) CreateHandoff(ctx context.Context, issueID, member,
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return empty, err
 	}
-	if err == nil && !previous.DisabledAt.Valid {
+	directAssignment := err == nil && s.handoffHumanAssignmentMatches(ctx, q, issue, sourceAgent, previous, outgoing)
+	childContinuation, e := childCompletionContinuation(ctx, tx, issue, outgoing)
+	if e != nil {
+		return empty, e
+	}
+	providerContinuation, e := workflowProviderFeedbackTaskMatches(ctx, tx, issue, outgoing)
+	if e != nil {
+		return empty, e
+	}
+	authorizedContinuation := directAssignment || childContinuation || providerContinuation
+	if err == nil && !previous.DisabledAt.Valid && !authorizedContinuation {
 		if !previous.LastTaskID.Valid {
 			return empty, fmt.Errorf("%w: previous handoff is awaiting its recipient", ErrWakeupConflict)
 		}
@@ -330,6 +341,32 @@ func (s *IssueWakeupService) CreateHandoff(ctx context.Context, issueID, member,
 	}
 	if otherActive {
 		return empty, fmt.Errorf("%w: another issue run is active", ErrWakeupConflict)
+	}
+	retirePrevious := authorizedContinuation && previous.ID.Valid && !previous.DisabledAt.Valid && !previous.LastTaskID.Valid && !previous.HandoffCompletedAt.Valid
+	if authorizedContinuation && previous.ID.Valid && !previous.DisabledAt.Valid && previous.LastTaskID.Valid && previous.LastTaskID != outgoing.ID {
+		priorRecipient, e := q.GetAgentTask(ctx, previous.LastTaskID)
+		if e != nil {
+			return empty, e
+		}
+		retirePrevious = !priorRecipient.StartedAt.Valid && (priorRecipient.Status == "queued" || priorRecipient.Status == "deferred")
+	}
+	var cancelled []db.AgentTaskQueue
+	if retirePrevious {
+		// Withdraw an obsolete transfer before it can race the replacement.
+		// Keep its intent and history as evidence of the earlier instruction.
+		if _, err = tx.Exec(ctx, "UPDATE issue_wakeup SET enabled=false,disabled_at=COALESCE(disabled_at,now()),updated_at=now() WHERE id=$1", previous.ID); err != nil {
+			return empty, err
+		}
+		if err = q.DiscardWakeupReceipts(ctx, previous.ID); err != nil {
+			return empty, err
+		}
+		cancelled, err = q.CancelUnstartedWakeupTasks(ctx, util.UUIDToString(previous.ID))
+		if err != nil {
+			return empty, err
+		}
+		if err = SettleDeliveredDelegatedFailureRecoveries(ctx, q, cancelled...); err != nil {
+			return empty, err
+		}
 	}
 	intent := issueHandoffIntent{HandoffInput: in, ExpectedStatus: issue.Status, ExpectedAssigneeType: issue.AssigneeType.String, ExpectedAssigneeID: nullableUUIDString(issue.AssigneeID)}
 	payload, err := json.Marshal(intent)
@@ -353,7 +390,24 @@ func (s *IssueWakeupService) CreateHandoff(ctx context.Context, issueID, member,
 	if err = tx.Commit(ctx); err != nil {
 		return empty, err
 	}
+	s.Tasks.BroadcastCancelledTasks(ctx, util.UUIDToString(workspace), cancelled)
 	return w, nil
+}
+
+// A human-attributed run for the current assigned agent is an authorized turn,
+// independent of earlier workflow recipients. Enqueue can resolve its human
+// from the assigning actor or the issue creator; revalidate that person's access
+// rather than requiring an artificial recipient ancestry or a new assignment.
+func (s *IssueWakeupService) handoffHumanAssignmentMatches(ctx context.Context, q *db.Queries, issue db.Issue, agent db.Agent, previous db.IssueWakeup, task db.AgentTaskQueue) bool {
+	if issue.AssigneeType.String != "agent" || issue.AssigneeID != task.AgentID ||
+		task.IssueID != issue.ID || task.AgentID != agent.ID || task.RuntimeID != agent.RuntimeID ||
+		!task.OriginatorSource.Valid || task.OriginatorSource.String != string(attribution.SourceDirectHuman) ||
+		!task.TriggerEvidenceKind.Valid || task.TriggerEvidenceKind.String != string(attribution.EvidenceIssueAssignment) ||
+		task.TriggerEvidenceRefID != issue.ID || !task.OriginatorUserID.Valid ||
+		!task.CreatedAt.Valid || !previous.CreatedAt.Valid || task.CreatedAt.Time.Before(previous.CreatedAt.Time) {
+		return false
+	}
+	return s.authorize(ctx, q, issue.WorkspaceID, task.OriginatorUserID, agent) == nil
 }
 
 func handoffIssueSnapshotMatches(issue db.Issue, intent issueHandoffIntent) bool {

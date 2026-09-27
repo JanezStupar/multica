@@ -15,6 +15,9 @@ import (
 // between this check and a provider mutation. Ordinary notes and unrelated work
 // do not acquire candidate authority merely by remaining active.
 func WorkflowHasPendingHumanFeedback(ctx context.Context, tx pgx.Tx, issue db.Issue) (bool, error) {
+	if pending, err := workflowHasProviderFeedback(ctx, tx, issue); err != nil || pending {
+		return pending, err
+	}
 	if !issue.WorkflowCandidateID.Valid {
 		return false, nil
 	}

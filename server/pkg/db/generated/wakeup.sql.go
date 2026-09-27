@@ -218,7 +218,7 @@ const completeIssueHandoff = `-- name: CompleteIssueHandoff :one
 UPDATE issue_wakeup SET enabled=false,next_fire_at=NULL,last_task_id=$1::uuid,
     handoff_completed_at=clock_timestamp(),last_error=NULL,updated_at=clock_timestamp()
 WHERE id=$2::uuid AND handoff IS NOT NULL AND handoff_completed_at IS NULL
-RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at, child_issue_id, child_completion_revision
 `
 
 type CompleteIssueHandoffParams struct {
@@ -260,6 +260,8 @@ func (q *Queries) CompleteIssueHandoff(ctx context.Context, arg CompleteIssueHan
 		&i.Handoff,
 		&i.RequestKey,
 		&i.HandoffCompletedAt,
+		&i.ChildIssueID,
+		&i.ChildCompletionRevision,
 	)
 	return i, err
 }
@@ -280,7 +282,7 @@ func (q *Queries) ConsumeWakeupReceipts(ctx context.Context, arg ConsumeWakeupRe
 
 const createIssueHandoff = `-- name: CreateIssueHandoff :one
 INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,source_task_id,instruction,kind,mode,event_types,filter_agent_id,filter_task_id,timezone,force_fresh_session,handoff,request_key)
-VALUES($1,$2,$3,$4,$5,$6,$7,'event','once',ARRAY['task.completed','task.failed','task.cancelled']::text[],$8,$6,'UTC',true,$9,$10) RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at
+VALUES($1,$2,$3,$4,$5,$6,$7,'event','once',ARRAY['task.completed','task.failed','task.cancelled']::text[],$8,$6,'UTC',true,$9,$10) RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at, child_issue_id, child_completion_revision
 `
 
 type CreateIssueHandoffParams struct {
@@ -341,13 +343,15 @@ func (q *Queries) CreateIssueHandoff(ctx context.Context, arg CreateIssueHandoff
 		&i.Handoff,
 		&i.RequestKey,
 		&i.HandoffCompletedAt,
+		&i.ChildIssueID,
+		&i.ChildCompletionRevision,
 	)
 	return i, err
 }
 
 const createIssueWakeup = `-- name: CreateIssueWakeup :one
 INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,source_task_id,parent_comment_id,instruction,kind,mode,event_types,filter_agent_id,filter_task_id,filter_actor_type,filter_actor_id,interval_seconds,cron_expression,timezone,next_fire_at,force_fresh_session)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at, child_issue_id, child_completion_revision
 `
 
 type CreateIssueWakeupParams struct {
@@ -428,6 +432,8 @@ func (q *Queries) CreateIssueWakeup(ctx context.Context, arg CreateIssueWakeupPa
 		&i.Handoff,
 		&i.RequestKey,
 		&i.HandoffCompletedAt,
+		&i.ChildIssueID,
+		&i.ChildCompletionRevision,
 	)
 	return i, err
 }
@@ -727,7 +733,7 @@ func (q *Queries) FindPendingWakeupTask(ctx context.Context, wakeupID string) (A
 }
 
 const getIssueHandoffByRequestKey = `-- name: GetIssueHandoffByRequestKey :one
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at FROM issue_wakeup WHERE issue_id = $1 AND request_key = $2
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at, child_issue_id, child_completion_revision FROM issue_wakeup WHERE issue_id = $1 AND request_key = $2
 `
 
 type GetIssueHandoffByRequestKeyParams struct {
@@ -769,12 +775,14 @@ func (q *Queries) GetIssueHandoffByRequestKey(ctx context.Context, arg GetIssueH
 		&i.Handoff,
 		&i.RequestKey,
 		&i.HandoffCompletedAt,
+		&i.ChildIssueID,
+		&i.ChildCompletionRevision,
 	)
 	return i, err
 }
 
 const getIssueWakeup = `-- name: GetIssueWakeup :one
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at FROM issue_wakeup WHERE id= $1 AND workspace_id= $2
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at, child_issue_id, child_completion_revision FROM issue_wakeup WHERE id= $1 AND workspace_id= $2
 `
 
 type GetIssueWakeupParams struct {
@@ -816,6 +824,8 @@ func (q *Queries) GetIssueWakeup(ctx context.Context, arg GetIssueWakeupParams) 
 		&i.Handoff,
 		&i.RequestKey,
 		&i.HandoffCompletedAt,
+		&i.ChildIssueID,
+		&i.ChildCompletionRevision,
 	)
 	return i, err
 }
@@ -839,7 +849,7 @@ func (q *Queries) HasActiveWorkflowWriterExcept(ctx context.Context, arg HasActi
 }
 
 const latestActiveIssueHandoff = `-- name: LatestActiveIssueHandoff :one
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at FROM issue_wakeup WHERE issue_id = $1 AND handoff IS NOT NULL AND disabled_at IS NULL ORDER BY id DESC LIMIT 1
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at, child_issue_id, child_completion_revision FROM issue_wakeup WHERE issue_id = $1 AND handoff IS NOT NULL AND disabled_at IS NULL ORDER BY id DESC LIMIT 1
 `
 
 func (q *Queries) LatestActiveIssueHandoff(ctx context.Context, issueID pgtype.UUID) (IssueWakeup, error) {
@@ -876,12 +886,14 @@ func (q *Queries) LatestActiveIssueHandoff(ctx context.Context, issueID pgtype.U
 		&i.Handoff,
 		&i.RequestKey,
 		&i.HandoffCompletedAt,
+		&i.ChildIssueID,
+		&i.ChildCompletionRevision,
 	)
 	return i, err
 }
 
 const latestIssueHandoff = `-- name: LatestIssueHandoff :one
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at FROM issue_wakeup WHERE issue_id = $1 AND handoff IS NOT NULL ORDER BY id DESC LIMIT 1
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at, child_issue_id, child_completion_revision FROM issue_wakeup WHERE issue_id = $1 AND handoff IS NOT NULL ORDER BY id DESC LIMIT 1
 `
 
 func (q *Queries) LatestIssueHandoff(ctx context.Context, issueID pgtype.UUID) (IssueWakeup, error) {
@@ -918,6 +930,8 @@ func (q *Queries) LatestIssueHandoff(ctx context.Context, issueID pgtype.UUID) (
 		&i.Handoff,
 		&i.RequestKey,
 		&i.HandoffCompletedAt,
+		&i.ChildIssueID,
+		&i.ChildCompletionRevision,
 	)
 	return i, err
 }
@@ -938,7 +952,7 @@ LEFT JOIN member actor_member ON w.filter_actor_type='member' AND actor_member.u
 LEFT JOIN "user" actor_user ON actor_user.id=actor_member.user_id
 LEFT JOIN agent source ON source.id=w.filter_agent_id AND source.workspace_id=w.workspace_id AND source.id=ANY($1::uuid[])
 LEFT JOIN agent_task_queue t ON t.id=w.last_task_id AND t.issue_id=w.issue_id AND t.agent_id=w.agent_id
-WHERE w.workspace_id= $2 AND w.issue_id= $3 ORDER BY w.created_at,w.id
+WHERE w.workspace_id= $2 AND w.issue_id= $3 AND w.child_issue_id IS NULL ORDER BY w.created_at,w.id
 `
 
 type ListIssueWakeupsParams struct {
@@ -1085,7 +1099,7 @@ WITH candidates AS (
  UNION
  SELECT wakeup_id FROM issue_wakeup_receipt WHERE processed_at IS NULL
 )
-SELECT w.id, w.workspace_id, w.issue_id, w.agent_id, w.created_by, w.source_task_id, w.parent_comment_id, w.instruction, w.kind, w.mode, w.event_types, w.filter_agent_id, w.filter_task_id, w.interval_seconds, w.cron_expression, w.timezone, w.next_fire_at, w.enabled, w.disabled_at, w.revision, w.last_task_id, w.last_error, w.created_at, w.updated_at, w.filter_actor_type, w.filter_actor_id, w.force_fresh_session, w.handoff, w.request_key, w.handoff_completed_at FROM candidates c JOIN issue_wakeup w ON w.id=c.id
+SELECT w.id, w.workspace_id, w.issue_id, w.agent_id, w.created_by, w.source_task_id, w.parent_comment_id, w.instruction, w.kind, w.mode, w.event_types, w.filter_agent_id, w.filter_task_id, w.interval_seconds, w.cron_expression, w.timezone, w.next_fire_at, w.enabled, w.disabled_at, w.revision, w.last_task_id, w.last_error, w.created_at, w.updated_at, w.filter_actor_type, w.filter_actor_id, w.force_fresh_session, w.handoff, w.request_key, w.handoff_completed_at, w.child_issue_id, w.child_completion_revision FROM candidates c JOIN issue_wakeup w ON w.id=c.id
 ORDER BY w.updated_at,w.id LIMIT 100
 `
 
@@ -1129,6 +1143,8 @@ func (q *Queries) ListReadyWakeups(ctx context.Context) ([]IssueWakeup, error) {
 			&i.Handoff,
 			&i.RequestKey,
 			&i.HandoffCompletedAt,
+			&i.ChildIssueID,
+			&i.ChildCompletionRevision,
 		); err != nil {
 			return nil, err
 		}
@@ -1158,7 +1174,7 @@ WITH ranked AS (
 LEFT JOIN member actor_member ON w.filter_actor_type='member' AND actor_member.user_id=w.filter_actor_id AND actor_member.workspace_id=w.workspace_id
 LEFT JOIN "user" actor_user ON actor_user.id=actor_member.user_id
 LEFT JOIN agent source ON source.id=w.filter_agent_id AND source.workspace_id=w.workspace_id AND source.id=ANY($1::uuid[])
- WHERE w.workspace_id= $2 AND w.enabled
+ WHERE w.workspace_id= $2 AND w.enabled AND w.child_issue_id IS NULL
   AND i.status NOT IN ('done','cancelled')
   AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category IN ('done','closed'))
 )
@@ -1233,7 +1249,7 @@ func (q *Queries) ListWorkspaceWakeupSummaryRows(ctx context.Context, arg ListWo
 }
 
 const lockIssueWakeup = `-- name: LockIssueWakeup :one
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at FROM issue_wakeup WHERE id= $1 FOR UPDATE
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at, child_issue_id, child_completion_revision FROM issue_wakeup WHERE id= $1 FOR UPDATE
 `
 
 func (q *Queries) LockIssueWakeup(ctx context.Context, id pgtype.UUID) (IssueWakeup, error) {
@@ -1270,6 +1286,8 @@ func (q *Queries) LockIssueWakeup(ctx context.Context, id pgtype.UUID) (IssueWak
 		&i.Handoff,
 		&i.RequestKey,
 		&i.HandoffCompletedAt,
+		&i.ChildIssueID,
+		&i.ChildCompletionRevision,
 	)
 	return i, err
 }
@@ -1401,7 +1419,7 @@ func (q *Queries) LockWakeupSourceTask(ctx context.Context, arg LockWakeupSource
 }
 
 const locklessWakeup = `-- name: LocklessWakeup :one
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at FROM issue_wakeup WHERE id= $1
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, force_fresh_session, handoff, request_key, handoff_completed_at, child_issue_id, child_completion_revision FROM issue_wakeup WHERE id= $1
 `
 
 func (q *Queries) LocklessWakeup(ctx context.Context, id pgtype.UUID) (IssueWakeup, error) {
@@ -1438,6 +1456,8 @@ func (q *Queries) LocklessWakeup(ctx context.Context, id pgtype.UUID) (IssueWake
 		&i.Handoff,
 		&i.RequestKey,
 		&i.HandoffCompletedAt,
+		&i.ChildIssueID,
+		&i.ChildCompletionRevision,
 	)
 	return i, err
 }

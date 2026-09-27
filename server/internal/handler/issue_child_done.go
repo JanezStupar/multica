@@ -106,6 +106,11 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 			"parent_id", uuidToString(issue.ParentIssueID))
 		return
 	}
+	// Selected workflow parents receive durable child facts through native
+	// wakeup receipts, including completions written outside HTTP handlers.
+	if (&service.IssueWakeupService{Tasks: h.TaskService}).UsesChildContinuation(parent.WorkflowPolicy) {
+		return
+	}
 	// Custom terminal statuses close this out. Only the fixed backlog key parks it,
 	// exactly like Done/Cancelled and Backlog do. (MUL-6243)
 	parentStatus, err := effective(parent)
@@ -218,6 +223,9 @@ func (h *Handler) notifyParentsOfBatchChildDone(ctx context.Context, completed [
 		if err != nil {
 			slog.Warn("batch child done: failed to load parent",
 				"error", err, "parent_id", uuidToString(g.parentID))
+			continue
+		}
+		if (&service.IssueWakeupService{Tasks: h.TaskService}).UsesChildContinuation(parent.WorkflowPolicy) {
 			continue
 		}
 		// Same parent guards as the single path (see notifyParentOfChildDone).

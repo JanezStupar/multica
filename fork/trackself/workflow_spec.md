@@ -74,6 +74,11 @@ commit. PR reviews hold technical feedback, findings, fixes, validation and the
 independent verdict. Tickets coordinate owner, status, scope, blockers and
 acceptance, linking to those PR reviews instead of duplicating their reports.
 
+PR discussion feedback and intervening commits reach the retained owning work
+context without requiring the user to copy them into a ticket. Provider inputs
+are recorded and deduplicated; automatic agent output must not create a feedback
+loop. A changed head is a new fact to reconcile, not an inherited review verdict.
+
 One ticket may coordinate several PRs, including PRs in different repositories.
 Its candidate identifies each relevant PR and commit. Human acceptance covers the approved outcome, scope and conditions. Delivery
 authority identifies exact commits; changed commits require evaluation of the
@@ -118,11 +123,20 @@ Work without code or a PR need not manufacture one to complete its objective.
    deliverable under the configured delegation policy without requesting human
    product acceptance for every internal step. That completion grants no
    additional authority to merge the parent feature.
+   The platform delivers terminal child results to the retained parent owner
+   even when completion comes through acceptance or another non-HTTP writer.
+   No manually registered wakeup is required for this continuation.
 5. Task descriptions contain the outcome, relevant boundaries and references
    needed to execute. They do not reproduce generic workflow instructions as
    a prerequisite for every handoff.
 
 ### Implementation continuity
+
+An authorized current assignment can hand work onward despite an older handoff
+record. Explicit human direction supersedes stale transfer bookkeeping; retire
+obsolete unstarted transfers without erasing their evidence. Recognized provider
+feedback and child-result continuations can likewise progress within their
+existing authority instead of requiring a coordinator relay.
 
 1. Normally one implementation context owns a coherent feature through its
    implementation, validation and any subsequent implementation work across

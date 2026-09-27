@@ -37,6 +37,8 @@ func (p forgejoProvider) EventKind(h http.Header) EventKind {
 	switch event {
 	case "pull_request":
 		return EventPullRequest
+	case "issue_comment", "pull_request_comment", "pull_request_review", "pull_request_review_comment", "pull_request_approved", "pull_request_rejected":
+		return EventPullRequestFeedback
 	case "status":
 		return EventCIStatus
 	default:

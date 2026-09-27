@@ -594,7 +594,7 @@ SELECT
     p.trigger_evidence_kind, p.trigger_evidence_ref_id, p.id,
     p.chat_input_task_id, sqlc.narg(fire_at),
     p.channel_context_revision,
-    CASE WHEN p.context->>'wakeup_id' IS NOT NULL THEN p.handoff_note END,
+    CASE WHEN p.context->>'wakeup_id' IS NOT NULL OR p.trigger_evidence_kind='vcs_pr_feedback' THEN p.handoff_note END,
     -- Named new_task_id, not id: $1 above is the PARENT task's id.
     COALESCE(sqlc.narg('new_task_id')::uuid, gen_random_uuid())
 FROM agent_task_queue p

@@ -49,6 +49,7 @@ const (
 	EventOther EventKind = iota
 	EventPullRequest
 	EventCIStatus
+	EventPullRequestFeedback
 )
 
 // PullRequestEvent is the provider-agnostic shape of a pull/merge request
@@ -105,6 +106,19 @@ type CIStatusEvent struct {
 	// can't regress a status; empty means "unknown", and the handler falls back
 	// to ingestion time.
 	UpdatedAt string
+}
+
+// PullRequestFeedbackEvent describes discussion input, not approval authority.
+type PullRequestFeedbackEvent struct {
+	RepoOwner, RepoName                                                    string
+	Number                                                                 int32
+	Kind, ObjectID, Action, Body, HTMLURL, UpdatedAt, HeadSHA, AuthorLogin string
+}
+
+// FeedbackProvider is optional: providers without discussion adapters retain
+// their existing PR/status behavior.
+type FeedbackProvider interface {
+	ParsePullRequestFeedback([]byte) (PullRequestFeedbackEvent, error)
 }
 
 // Account is the minimal identity returned by ValidateToken.

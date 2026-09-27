@@ -984,36 +984,38 @@ type IssueViewPreference struct {
 }
 
 type IssueWakeup struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	IssueID            pgtype.UUID        `json:"issue_id"`
-	AgentID            pgtype.UUID        `json:"agent_id"`
-	CreatedBy          pgtype.UUID        `json:"created_by"`
-	SourceTaskID       pgtype.UUID        `json:"source_task_id"`
-	ParentCommentID    pgtype.UUID        `json:"parent_comment_id"`
-	Instruction        string             `json:"instruction"`
-	Kind               string             `json:"kind"`
-	Mode               string             `json:"mode"`
-	EventTypes         []string           `json:"event_types"`
-	FilterAgentID      pgtype.UUID        `json:"filter_agent_id"`
-	FilterTaskID       pgtype.UUID        `json:"filter_task_id"`
-	IntervalSeconds    pgtype.Int8        `json:"interval_seconds"`
-	CronExpression     pgtype.Text        `json:"cron_expression"`
-	Timezone           string             `json:"timezone"`
-	NextFireAt         pgtype.Timestamptz `json:"next_fire_at"`
-	Enabled            bool               `json:"enabled"`
-	DisabledAt         pgtype.Timestamptz `json:"disabled_at"`
-	Revision           int64              `json:"revision"`
-	LastTaskID         pgtype.UUID        `json:"last_task_id"`
-	LastError          pgtype.Text        `json:"last_error"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	FilterActorType    pgtype.Text        `json:"filter_actor_type"`
-	FilterActorID      pgtype.UUID        `json:"filter_actor_id"`
-	ForceFreshSession  bool               `json:"force_fresh_session"`
-	Handoff            []byte             `json:"handoff"`
-	RequestKey         pgtype.UUID        `json:"request_key"`
-	HandoffCompletedAt pgtype.Timestamptz `json:"handoff_completed_at"`
+	ID                      pgtype.UUID        `json:"id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	IssueID                 pgtype.UUID        `json:"issue_id"`
+	AgentID                 pgtype.UUID        `json:"agent_id"`
+	CreatedBy               pgtype.UUID        `json:"created_by"`
+	SourceTaskID            pgtype.UUID        `json:"source_task_id"`
+	ParentCommentID         pgtype.UUID        `json:"parent_comment_id"`
+	Instruction             string             `json:"instruction"`
+	Kind                    string             `json:"kind"`
+	Mode                    string             `json:"mode"`
+	EventTypes              []string           `json:"event_types"`
+	FilterAgentID           pgtype.UUID        `json:"filter_agent_id"`
+	FilterTaskID            pgtype.UUID        `json:"filter_task_id"`
+	IntervalSeconds         pgtype.Int8        `json:"interval_seconds"`
+	CronExpression          pgtype.Text        `json:"cron_expression"`
+	Timezone                string             `json:"timezone"`
+	NextFireAt              pgtype.Timestamptz `json:"next_fire_at"`
+	Enabled                 bool               `json:"enabled"`
+	DisabledAt              pgtype.Timestamptz `json:"disabled_at"`
+	Revision                int64              `json:"revision"`
+	LastTaskID              pgtype.UUID        `json:"last_task_id"`
+	LastError               pgtype.Text        `json:"last_error"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	FilterActorType         pgtype.Text        `json:"filter_actor_type"`
+	FilterActorID           pgtype.UUID        `json:"filter_actor_id"`
+	ForceFreshSession       bool               `json:"force_fresh_session"`
+	Handoff                 []byte             `json:"handoff"`
+	RequestKey              pgtype.UUID        `json:"request_key"`
+	HandoffCompletedAt      pgtype.Timestamptz `json:"handoff_completed_at"`
+	ChildIssueID            pgtype.UUID        `json:"child_issue_id"`
+	ChildCompletionRevision int64              `json:"child_completion_revision"`
 }
 
 type IssueWakeupReceipt struct {
@@ -1754,6 +1756,25 @@ type VcsPullRequest struct {
 	ChangedFiles    int32              `json:"changed_files"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type VcsWorkflowInput struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	ConnectionID  pgtype.UUID        `json:"connection_id"`
+	PullRequestID pgtype.UUID        `json:"pull_request_id"`
+	EventKey      string             `json:"event_key"`
+	Kind          string             `json:"kind"`
+	Content       string             `json:"content"`
+	HtmlUrl       string             `json:"html_url"`
+	HeadSha       string             `json:"head_sha"`
+	SourceTaskID  pgtype.UUID        `json:"source_task_id"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	NextAttemptAt pgtype.Timestamptz `json:"next_attempt_at"`
+	LastError     string             `json:"last_error"`
+	ProcessedAt   pgtype.Timestamptz `json:"processed_at"`
 }
 
 type VerificationCode struct {

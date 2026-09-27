@@ -1,6 +1,6 @@
-This policy requires format-2 completion, external-merge reconciliation and
-exact-comment feedback continuation from backend and agent CLI
-`v0.5.1-janez.5`; do not activate this revision on earlier deployments.
+This policy requires format-2 completion, parent-result continuation and
+provider-feedback continuation from backend `v0.5.1-janez.7`, with compatible
+agent CLI `v0.5.1-janez.5` or later; do not activate it on earlier backends.
 Use the workflow commands below for acceptance, persistent holds and completion.
 Existing tickets follow their pinned version until explicitly migrated at the
 authorized workspace boundary.
@@ -26,6 +26,20 @@ For a human recipient, use `assignee_type: "member"` and `assignee_id`, with
 `status: "in_review"` and `context_mode: "fresh"`; that handoff records the
 human review and does not create an agent task. Agent recipients may use the
 legacy `agent_id` field.
+
+An explicit human assignment can continue the current work and hand it to the
+next agent; an older handoff record does not require another coordinator turn.
+When a delegated child finishes, reconcile its result in the retained parent
+context. Completion is an input to that reconciliation, not permission for new
+privileged operations or evidence that remaining work passed.
+
+PR feedback and intervening commits are work inputs too. Inspect the current
+provider head and requested corrections before continuing. Keep review and
+acceptance bound to the code actually evaluated. To distinguish automatic output
+from human feedback when accounts are shared, append the invisible marker
+`<!-- multica-agent-output -->` to agent-authored PR comments and review bodies.
+Do not mark user feedback as agent output. Classify feedback against the owning
+scope without demanding that the user repeat it inside Multica.
 
 Treat a member's comment as workflow evidence and classify it before changing
 the ticket's phase. An ordinary question or clarification does not revoke

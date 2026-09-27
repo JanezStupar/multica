@@ -424,6 +424,9 @@ cleared_wakeups AS (
 cleared_vcs_pr_links AS (
     DELETE FROM issue_vcs_pull_request WHERE issue_id IN (SELECT target.id FROM target)
 ),
+cleared_provider_inputs AS (
+ DELETE FROM vcs_workflow_input WHERE workspace_id=$2 AND issue_id IN (SELECT target.id FROM target)
+),
 cleared_workflow_profiles AS (
     DELETE FROM issue_workflow_profile WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
 ),

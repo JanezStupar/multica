@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -141,7 +142,20 @@ func (h *Handler) HandleVCSWebhook(w http.ResponseWriter, r *http.Request) {
 		if pr, err := provider.ParsePullRequest(body); err != nil {
 			slog.Warn("vcs: bad pull_request payload", "provider", conn.Provider, "err", err)
 		} else {
-			h.mirrorVCSPullRequest(r.Context(), conn, pr)
+			if err := h.mirrorVCSPullRequest(r.Context(), conn, pr); err != nil {
+				writeError(w, http.StatusInternalServerError, "PR recording failed")
+				return
+			}
+		}
+	case vcs.EventPullRequestFeedback:
+		if feedbackProvider, ok := provider.(vcs.FeedbackProvider); ok {
+			if feedback, err := feedbackProvider.ParsePullRequestFeedback(body); err != nil {
+				slog.Warn("vcs: bad PR feedback payload", "provider", conn.Provider, "err", err)
+			} else if err := h.recordVCSDiscussion(r.Context(), conn, feedback); err != nil {
+				slog.Warn("vcs: record PR feedback failed", "err", err)
+				writeError(w, http.StatusInternalServerError, "feedback recording failed")
+				return
+			}
 		}
 	case vcs.EventCIStatus:
 		if st, err := provider.ParseCIStatus(body); err != nil {
@@ -155,12 +169,17 @@ func (h *Handler) HandleVCSWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnection, ev vcs.PullRequestEvent) {
+func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnection, ev vcs.PullRequestEvent) error {
 	if ev.RepoOwner == "" || ev.RepoName == "" || ev.Number == 0 {
 		slog.Warn("vcs: pull_request missing repo identity", "provider", conn.Provider)
-		return
+		return nil
 	}
 
+	var previousHead string
+	previousErr := h.DB.QueryRow(ctx, `SELECT head_sha FROM vcs_pull_request WHERE connection_id=$1 AND workspace_id=$2 AND repo_owner=$3 AND repo_name=$4 AND pr_number=$5`, conn.ID, conn.WorkspaceID, ev.RepoOwner, ev.RepoName, ev.Number).Scan(&previousHead)
+	if previousErr != nil && !errors.Is(previousErr, pgx.ErrNoRows) {
+		return previousErr
+	}
 	pr, err := h.Queries.UpsertVCSPullRequest(ctx, db.UpsertVCSPullRequestParams{
 		WorkspaceID:     conn.WorkspaceID,
 		ConnectionID:    conn.ID,
@@ -185,7 +204,7 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 	})
 	if err != nil {
 		slog.Warn("vcs: upsert pr failed", "err", err)
-		return
+		return err
 	}
 
 	// Out-of-order guard for the link write. UpsertVCSPullRequest keeps the
@@ -201,7 +220,7 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 	// never strictly after the stored value, so it proceeds.)
 	evUpdatedAt := parseGHTimeRequired(ev.UpdatedAt)
 	if pr.PrUpdatedAt.Valid && evUpdatedAt.Valid && pr.PrUpdatedAt.Time.After(evUpdatedAt.Time) {
-		return
+		return nil
 	}
 
 	workspaceID := uuidToString(conn.WorkspaceID)
@@ -291,10 +310,18 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 		}
 	}
 
+	if previousHead != "" && ev.HeadSHA != "" && (ev.State == "open" || ev.State == "draft") {
+		if err := h.recordVCSInput(ctx, conn, pr.ID, "head", providerInputKey("head", uuidToString(pr.ID), ev.HeadSHA+"@"+ev.UpdatedAt, ""),
+			fmt.Sprintf("PR head changed to %s: %s", ev.HeadSHA, ev.HTMLURL), ev.HTMLURL, ev.HeadSHA); err != nil {
+			slog.Warn("vcs: record PR head continuation failed", "err", err)
+			return err
+		}
+	}
 	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
 		"pull_request":     resp,
 		"linked_issue_ids": linkedIssueIDs,
 	})
+	return nil
 }
 
 func (h *Handler) mirrorVCSCIStatus(ctx context.Context, conn db.VcsConnection, ev vcs.CIStatusEvent) {

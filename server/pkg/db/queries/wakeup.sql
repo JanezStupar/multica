@@ -48,7 +48,7 @@ LEFT JOIN member actor_member ON w.filter_actor_type='member' AND actor_member.u
 LEFT JOIN "user" actor_user ON actor_user.id=actor_member.user_id
 LEFT JOIN agent source ON source.id=w.filter_agent_id AND source.workspace_id=w.workspace_id AND source.id=ANY(@agent_ids::uuid[])
 LEFT JOIN agent_task_queue t ON t.id=w.last_task_id AND t.issue_id=w.issue_id AND t.agent_id=w.agent_id
-WHERE w.workspace_id= @workspace_id AND w.issue_id= @issue_id ORDER BY w.created_at,w.id;
+WHERE w.workspace_id= @workspace_id AND w.issue_id= @issue_id AND w.child_issue_id IS NULL ORDER BY w.created_at,w.id;
 
 -- name: ListWorkspaceWakeupSummaryRows :many
 -- No prompts/history; at most three previews per issue plus exact counts.
@@ -69,7 +69,7 @@ WITH ranked AS (
 LEFT JOIN member actor_member ON w.filter_actor_type='member' AND actor_member.user_id=w.filter_actor_id AND actor_member.workspace_id=w.workspace_id
 LEFT JOIN "user" actor_user ON actor_user.id=actor_member.user_id
 LEFT JOIN agent source ON source.id=w.filter_agent_id AND source.workspace_id=w.workspace_id AND source.id=ANY(@agent_ids::uuid[])
- WHERE w.workspace_id= @workspace_id AND w.enabled
+ WHERE w.workspace_id= @workspace_id AND w.enabled AND w.child_issue_id IS NULL
   AND i.status NOT IN ('done','cancelled')
   AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category IN ('done','closed'))
 )

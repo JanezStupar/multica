@@ -15,6 +15,9 @@ const deleteVCSConnection = `-- name: DeleteVCSConnection :exec
 WITH target AS (
     SELECT vcs_connection.id FROM vcs_connection WHERE vcs_connection.id = $1 AND vcs_connection.workspace_id = $2
 ),
+cleared_workflow_inputs AS (
+ DELETE FROM vcs_workflow_input WHERE connection_id IN (SELECT target.id FROM target)
+),
 cleared_links AS (
     DELETE FROM issue_vcs_pull_request
     WHERE pull_request_id IN (

@@ -60,6 +60,12 @@ func (w *WorkflowDeliveryWorker) Run(ctx context.Context) {
 	ticker := time.NewTicker(workflowDeliveryPollInterval)
 	defer ticker.Stop()
 	for {
+		providerCtx, providerCancel := context.WithTimeout(ctx, workflowDeliveryActionTimeout)
+		_, providerErr := w.RecoverNextVCSWorkflowInput(providerCtx)
+		providerCancel()
+		if providerErr != nil && !errors.Is(providerErr, context.Canceled) {
+			slog.Warn("workflow PR feedback: recover continuation", "error", providerErr)
+		}
 		commentCtx, commentCancel := context.WithTimeout(ctx, workflowDeliveryActionTimeout)
 		commentRecovered, commentErr := w.RecoverNextRecordedWorkflowComment(commentCtx)
 		commentCancel()

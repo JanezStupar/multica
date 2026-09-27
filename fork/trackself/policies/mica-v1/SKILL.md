@@ -9,7 +9,7 @@ allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 This policy requires the format-2 completion implementation: accepted work
 remains `PR Ready` until required bound PRs merge; no extra outcome acknowledgment is required.
 It also requires external-merge reconciliation and exact-comment feedback
-continuation support from backend `v0.5.1-janez.6` and compatible agent CLI `v0.5.1-janez.5` or later. Activate only
+continuation support from backend `v0.5.1-janez.7` and compatible agent CLI `v0.5.1-janez.5` or later. Activate only
 after that compatible deployment; earlier revisions cannot run this bundle.
 Existing tickets keep their pinned policy until explicitly migrated.
 

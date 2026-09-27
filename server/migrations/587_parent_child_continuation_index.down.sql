@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY issue_wakeup_child_issue_idx;

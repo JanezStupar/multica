@@ -3064,6 +3064,19 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				"The handoff's context selection is invalid.", taskfailure.ReasonInvalidTaskIdentity,
 				"handoff_context_invalid", http.StatusConflict, "invalid handoff context")
 		}
+		if task.RetryOfTaskID.Valid && task.TriggerEvidenceKind.String == "vcs_pr_feedback" {
+			// Retry the actual failed feedback turn, not the original writer
+			// or an arbitrary latest session. The inbox supplies server proof.
+			var providerContinuation bool
+			if err := h.DB.QueryRow(r.Context(), `SELECT workflow_provider_feedback_task_current($1,$2)`, task.ID, task.IssueID).Scan(&providerContinuation); err != nil {
+				return resp, nil, nil, 0, 0, h.failClaimedTaskBeforeLaunch(r.Context(), task,
+					"The provider feedback continuation could not be verified.", taskfailure.ReasonInvalidTaskIdentity,
+					"provider_feedback_unavailable", http.StatusConflict, "provider feedback continuation is unavailable")
+			}
+			if providerContinuation {
+				resumeSourceID = task.RetryOfTaskID
+			}
+		}
 		var recoveryEnvelope struct {
 			Recovery json.RawMessage `json:"workflow_recovery"`
 		}

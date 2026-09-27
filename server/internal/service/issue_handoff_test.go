@@ -194,6 +194,163 @@ func recordRetainedCommentTask(t *testing.T, f principalFixture, source db.Agent
 	return task
 }
 
+func TestIssueHandoffDirectHumanAssignmentCanTransfer(t *testing.T) {
+	for _, reassign := range []bool{false, true} {
+		t.Run(map[bool]string{false: "same agent new run", true: "explicit new agent"}[reassign], func(t *testing.T) {
+			f, s, w, recipient, nextAgent := retainedCommentHandoffFixture(t)
+			ctx := context.Background()
+			assignedAgent := recipient.AgentID
+			reviewAgent := parseTestUUID(t, nextAgent)
+			if reassign {
+				assignedAgent = parseTestUUID(t, nextAgent)
+				reviewAgent = recipient.AgentID
+				f.Exec(t, "UPDATE issue SET assignee_id=$2 WHERE id=$1", w.IssueID, assignedAgent)
+			}
+			issue, err := f.q.GetIssue(ctx, w.IssueID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Use the real assignment enqueue path: no invented recipient ancestry.
+			task, err := s.Tasks.EnqueueTaskForIssueByActor(ctx, issue, parseTestUUID(t, f.UserID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.Exec(t, "UPDATE agent_task_queue SET status='running',started_at=now() WHERE id=$1", task.ID)
+			if _, err := s.CreateHandoff(ctx, issue.ID, parseTestUUID(t, f.UserID), task.ID, handoffInput(task.ID, reviewAgent)); err != nil {
+				t.Fatalf("direct human assignment could not hand off: %v", err)
+			}
+		})
+	}
+	t.Run("current assignment with creator attribution", func(t *testing.T) {
+		f, s, w, _, nextAgent := retainedCommentHandoffFixture(t)
+		ctx := context.Background()
+		issue, err := f.q.GetIssue(ctx, w.IssueID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		task, err := s.Tasks.EnqueueTaskForIssue(ctx, issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Exec(t, "UPDATE agent_task_queue SET status='running',started_at=now() WHERE id=$1", task.ID)
+		if _, err := s.CreateHandoff(ctx, issue.ID, parseTestUUID(t, f.UserID), task.ID, handoffInput(task.ID, parseTestUUID(t, nextAgent))); err != nil {
+			t.Fatalf("authorized current assignment cannot hand off without another human action: %v", err)
+		}
+	})
+}
+
+func TestIssueHandoffDirectHumanAssignmentSupersedesAwaitingRecipient(t *testing.T) {
+	f, s, issueID, sourceAgent, targetAgent := handoffFixture(t)
+	ctx := context.Background()
+	source := handoffSourceTask(t, f, issueID, sourceAgent)
+	previous, err := s.CreateHandoff(ctx, issueID, parseTestUUID(t, f.UserID), source, handoffInput(source, parseTestUUID(t, targetAgent)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Exec(t, "UPDATE agent_task_queue SET status='completed',completed_at=now() WHERE id=$1", source)
+	// Once-only wakeups can stop accepting events while their recorded
+	// completion receipt is still waiting for dispatch.
+	f.Exec(t, "UPDATE issue_wakeup SET enabled=false WHERE id=$1", previous.ID)
+	f.Exec(t, "UPDATE issue SET assignee_type='agent',assignee_id=$2 WHERE id=$1", issueID, parseTestUUID(t, sourceAgent))
+	issue, err := f.q.GetIssue(ctx, issueID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.Tasks.EnqueueTaskForIssueByActor(ctx, issue, parseTestUUID(t, f.UserID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Exec(t, "UPDATE agent_task_queue SET status='running',started_at=now() WHERE id=$1", task.ID)
+	replacement, err := s.CreateHandoff(ctx, issueID, parseTestUUID(t, f.UserID), task.ID, handoffInput(task.ID, parseTestUUID(t, targetAgent)))
+	if err != nil {
+		t.Fatalf("superseded pending recipient blocked direct assignment: %v", err)
+	}
+	previous, err = f.q.GetIssueWakeup(ctx, db.GetIssueWakeupParams{ID: previous.ID, WorkspaceID: previous.WorkspaceID})
+	if err != nil || previous.Enabled || !previous.DisabledAt.Valid {
+		t.Fatalf("obsolete handoff still dispatchable: enabled=%v disabled=%v err=%v", previous.Enabled, previous.DisabledAt.Valid, err)
+	}
+	if got := f.Count(t, "SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id=$1 AND processed_at IS NULL", previous.ID); got != 0 {
+		t.Fatalf("obsolete handoff retains %d pending receipts", got)
+	}
+	f.Exec(t, "UPDATE agent_task_queue SET status='completed',completed_at=now() WHERE id=$1", task.ID)
+	wakeDispatch(t, s, previous)
+	wakeDispatch(t, s, replacement)
+	if got := f.Count(t, "SELECT count(*) FROM agent_task_queue WHERE context->>'wakeup_id'=$1", util.UUIDToString(previous.ID)); got != 0 {
+		t.Fatalf("obsolete handoff dispatched %d recipients", got)
+	}
+	if got := f.Count(t, "SELECT count(*) FROM agent_task_queue WHERE context->>'wakeup_id'=$1", util.UUIDToString(replacement.ID)); got != 1 {
+		t.Fatalf("replacement dispatched %d recipients", got)
+	}
+}
+
+func TestIssueHandoffDirectHumanAssignmentRejectsUnrelatedAuthority(t *testing.T) {
+	for _, reason := range []string{"other agent", "owner fallback", "wrong issue evidence", "missing member", "old assignment", "wrong runtime"} {
+		t.Run(reason, func(t *testing.T) {
+			f, s, w, recipient, nextAgent := retainedCommentHandoffFixture(t)
+			ctx := context.Background()
+			issue, err := f.q.GetIssue(ctx, w.IssueID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			task, err := s.Tasks.EnqueueTaskForIssueByActor(ctx, issue, parseTestUUID(t, f.UserID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.Exec(t, "UPDATE agent_task_queue SET status='running',started_at=now() WHERE id=$1", task.ID)
+			switch reason {
+			case "other agent":
+				f.Exec(t, "UPDATE issue SET assignee_id=$2 WHERE id=$1", issue.ID, parseTestUUID(t, nextAgent))
+			case "owner fallback":
+				f.Exec(t, "UPDATE agent_task_queue SET originator_source='owner_fallback' WHERE id=$1", task.ID)
+			case "wrong issue evidence":
+				f.Exec(t, "UPDATE agent_task_queue SET trigger_evidence_ref_id=$2 WHERE id=$1", task.ID, dbid.NewV7())
+			case "missing member":
+				f.Exec(t, "UPDATE agent_task_queue SET originator_user_id=$2,accountable_user_id=$2 WHERE id=$1", task.ID, dbid.NewV7())
+			case "old assignment":
+				f.Exec(t, "UPDATE agent_task_queue SET created_at=$2 WHERE id=$1", task.ID, w.CreatedAt.Time.Add(-time.Second))
+			case "wrong runtime":
+				f.Exec(t, "UPDATE agent SET runtime_id=(SELECT runtime_id FROM agent WHERE id=$2) WHERE id=$1", recipient.AgentID, parseTestUUID(t, nextAgent))
+			}
+			_, err = s.CreateHandoff(ctx, issue.ID, parseTestUUID(t, f.UserID), task.ID, handoffInput(task.ID, recipient.AgentID))
+			if !errors.Is(err, ErrWakeupConflict) && !errors.Is(err, ErrWakeupForbidden) {
+				t.Fatalf("unrelated assignment authority was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestIssueHandoffDirectHumanAssignmentRetiresQueuedRecipient(t *testing.T) {
+	f, s, previous, recipient, nextAgent := retainedCommentHandoffFixture(t)
+	ctx := context.Background()
+	f.Exec(t, "UPDATE agent_task_queue SET status='queued',started_at=NULL,completed_at=NULL WHERE id=$1", recipient.ID)
+	f.Exec(t, "UPDATE issue SET assignee_id=$2 WHERE id=$1", previous.IssueID, parseTestUUID(t, nextAgent))
+	issue, err := f.q.GetIssue(ctx, previous.IssueID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.Tasks.EnqueueTaskForIssueByActor(ctx, issue, parseTestUUID(t, f.UserID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Exec(t, "UPDATE agent_task_queue SET status='running',started_at=now() WHERE id=$1", task.ID)
+	replacement, err := s.CreateHandoff(ctx, issue.ID, parseTestUUID(t, f.UserID), task.ID, handoffInput(task.ID, recipient.AgentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldTask, err := f.q.GetAgentTask(ctx, recipient.ID)
+	if err != nil || oldTask.Status != "cancelled" {
+		t.Fatalf("obsolete queued recipient remains: status=%s err=%v", oldTask.Status, err)
+	}
+	f.Exec(t, "UPDATE agent_task_queue SET status='completed',completed_at=now() WHERE id=$1", task.ID)
+	wakeDispatch(t, s, replacement)
+	if got := f.Count(t, "SELECT count(*) FROM agent_task_queue WHERE context->>'wakeup_id'=$1", util.UUIDToString(replacement.ID)); got != 1 {
+		t.Fatalf("replacement reviewer was not queued: %d", got)
+	}
+	if err := s.CheckClaim(ctx, oldTask); !errors.Is(err, ErrWakeupForbidden) {
+		t.Fatalf("obsolete recipient regained authority after reassignment: %v", err)
+	}
+}
+
 func TestIssueHandoffRetainedCommentContinuationCanTransfer(t *testing.T) {
 	for _, status := range []string{"running", "waiting_local_directory", "completed"} {
 		t.Run(status, func(t *testing.T) {
