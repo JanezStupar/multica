@@ -1,6 +1,21 @@
 # Mica release and deployment
 
-## Prepared backend patch: v0.5.1-janez.6
+## Current backend: v0.5.1-janez.6
+
+Deployed on 2026-09-27 from commit
+`4f251cbf9e9e58e2d5b243fbde9dbcf034d002bf`. Backend image digest:
+
+`sha256:833b810db41d1f8216e7764bee78b4c3bfec8a909f3f8bed3ced46debe08fe42`
+
+The registry contains the exact source archive and verified release metadata.
+Production readiness passed, migration 585 applied, and the frontend service
+specification remained unchanged on `.5`. The protected database/configuration
+backup is `/opt/multica/config-backups/before-v0.5.1-janez.6` on utility-server;
+`.5` remains available for backend rollback without reversing the migration.
+TRA-622 reconciled automatically to Done from its existing acceptance and PR28
+merge. Focused service/handler regressions, policy-builder checks and independent
+code/script review passed. The disposable database, profile and worktree were
+removed; the trial PostgreSQL container was removed with its volume preserved.
 
 The 2026-09-27 patch removes process gates that obstructed recorded user
 decisions. Required bound PR merges close accepted tickets without an outcome
