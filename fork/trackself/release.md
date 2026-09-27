@@ -1,6 +1,6 @@
 # Mica release and deployment
 
-## Prepared backend patch: v0.5.1-janez.7
+## Current backend: v0.5.1-janez.7
 
 The 2026-09-27 continuation correction addresses the observed TRA-625, TRA-623
 and TRA-634 failures below. Selected format-2 tickets receive durable terminal
@@ -19,7 +19,37 @@ The user enabled PR comment and PR review events on the existing organization
 webhook, preserving its URL and secret. Focused regressions and independent
 review precede rollout; broad product/native QA remains deferred.
 
-## Current backend: v0.5.1-janez.6
+Deployed on 2026-09-27 from exact source commit
+`3fc27ac8baa86b9856506a89fc44fef537d20c8c`. Backend image digest:
+
+`sha256:a6299b23cc0d321b11cee3bb9a2694fc4049f1422bd2bc1db1f93f61c3b8df1e`
+
+Exact source and build metadata were published and read back from the registry.
+Backend readiness passed; migrations 586–591 applied. The frontend remains on
+.5 with its service specification unchanged. The protected backup is
+`utility-server:/opt/multica/config-backups/before-v0.5.1-janez.7`; .6 is retained
+for rollback. Focused service, handler and provider-parser regressions passed,
+followed by independent code and rollout-script review. Broad QA is deferred.
+The disposable database was verified absent; its profile, worktree and temporary
+PostgreSQL container were removed, preserving the volume and product databases.
+
+Targeted recovery confirmed running tasks:
+
+- TRA-625: retained Maca parent `01a0e439-8c9d-7724-b9d7-c5fb78fb3e81`
+  received TRA-633's completed-child fact.
+- TRA-634: retained writer `01a0e439-4de5-7b0d-9f1a-acb63202a600`
+  received comments 435/436 and PR29 head
+  `2f45387d20ed45ac5c472ad93f63a300ca3d1d41` in one continuation.
+- TRA-623: fresh Senior review `01a0e43a-76e9-73bb-a437-c2b926585484`
+  dispatched from the completed human-assigned writer. Current PR6 head
+  `cb237de45617cbabcb5660e2d178d8e315556e94` is its review candidate.
+
+These are verified dispatches, not completed product review, human acceptance,
+merge, deployment or native qualification. Comment/review webhook events are
+enabled. PR synchronization remains disabled; the user was asked to enable it
+for future open-PR pushes. No hook secret or connection credentials changed.
+
+## Previous backend: v0.5.1-janez.6
 
 Deployed on 2026-09-27 from commit
 `4f251cbf9e9e58e2d5b243fbde9dbcf034d002bf`. Backend image digest:
@@ -56,94 +86,6 @@ explicit reconciliation. Existing ticket policy pins and agent identities are
 not migrated. Server-only publication and rollout leave `.5` clients unchanged.
 The user requested focused regressions and deployment, deferring broad QA until
 the workflow is usable. Closing a code ticket does not claim unperformed QA.
-
-## Outstanding continuation issue: TRA-625 after TRA-633
-
-Observed 2026-09-27 with production backend `v0.5.1-janez.6`, source
-`4f251cbf9e9e58e2d5b243fbde9dbcf034d002bf`. TRA-633 is Done (last updated
-2026-09-26T18:23:45Z), but parent TRA-625 remains In Progress. Its latest Maca
-run, `01a0d8d0-404d-758e-a17d-9ec21fd434fe`, completed on September 25 after
-creating the child; no subsequent parent run appears. Both supported parent
-handoff and wakeup listings are empty.
-
-The child instructions say its terminal transition is the parent wake, but that
-text did not establish an executable continuation. The confirmed failure is a
-missing parent continuation after delegated child completion; whether it arose
-from missing agent setup, a missing server facility, or both remains to be
-resolved. The `.6` completion correction does not fix this case.
-
-For the next fix round, inspect other delegated-task continuations before
-choosing a general repair. Preserve the parent's retained context and ensure
-completion can prompt reconciliation without duplicate dispatch. Resuming the
-parent to inspect results and prepare the next slice does not authorize live
-helper kills, host crashes, privileged installation or other separately scoped
-native operations. At the user's request, this diagnosis is recorded only:
-TRA-625 was not resumed or modified, and no repair or deployment was attempted.
-Remove or replace this diagnosis after the continuation is repaired and verified.
-
-## Outstanding handoff issue: TRA-623 human-directed continuation
-
-Observed 2026-09-27 on backend `.6`, source
-`4f251cbf9e9e58e2d5b243fbde9dbcf034d002bf`. The user explicitly authorized
-continuing the retained implementation through commit, publication and review.
-Implementor run `01a0e214-8c38-70e6-beee-e495ab1c3264` published portal draft
-PR6 at `2938593344daa20fca404368db97b6c6dc01ea9b`, then reported rejection of
-the review handoff because its direct human assignment was not recognized as
-the previous handoff recipient, comment continuation or recovery.
-
-Read-back confirms the prior enabled handoff
-`01a0ddc8-3c17-7c8b-a3a2-32e07c35d709` still identifies the original implementor
-run `01a0ddc8-5ec8-7543-8583-1f5dde6a6243` as its recipient. The lineage guard
-in `server/internal/service/issue_handoff.go` rejects other source tasks unless
-they match its recognized continuation paths. TRA-623 remains In Progress with
-`review_missing`; no review handoff was saved. The failure is inability to
-continue authorized work into review, rather than the independent-review
-requirement itself. Routing through another coordinator is the agent's proposed
-workaround, not a verified necessary user action or a repair.
-
-Earlier interruptions on the same ticket included the now-corrected portal
-no-automatic-commit policy and an agent-reported comment-parent restriction that
-prevented posting implementation evidence through the normal comment action.
-The latter is a separate reported symptom requiring verification; a final run
-comment does exist. The earlier execution-lane mismatch was reported resolved.
-
-For the next fix round, audit direct human assignments and retained writer
-continuations against handoff lineage and comment guards. Preserve authentic
-task/agent access and independent review while recognizing explicit human
-direction without compulsory coordinator relays. Record only for now: no ticket
-mutation, dispatch, code repair or deployment. Remove or replace this diagnosis
-when the continuation and communication paths are repaired and verified.
-
-## Outstanding feedback integration issue: TRA-634 PR29
-
-Observed 2026-09-27 on backend `.6`, source
-`4f251cbf9e9e58e2d5b243fbde9dbcf034d002bf`. User feedback on desktopapp PR29
-includes comments 435 and 436, created September 27 at 12:01 and 12:13 +02:00.
-They request correcting the local-records CTA copy and restoring the intended
-purchase-license block. The user confirmed they were logged into Forgejo as
-`Multica` when posting them, explaining that account attribution. The live PR head is now
-`2f45387d20ed45ac5c472ad93f63a300ca3d1d41`; Multica's current candidate still
-records reviewed head `37e00033bd71cc011ca025c18c81916a6b2a89c1`. No TRA-634
-agent run appears after September 25; the issue remains assigned to the human
-in review. The workflow reports no acceptance blockers for its stored candidate,
-which does not establish evaluation of the new live head.
-
-The implemented VCS webhook accepts PR and CI-status events, but acknowledges
-unmodelled events without processing them. The Forgejo adapter does not model
-PR discussion comments; the PR mirror does not dispatch retained-context work
-for feedback or a changed head. Multica issue-comment recovery therefore cannot
-react to these provider comments. This is a missing communication/continuation
-path, not evidence that another user approval is needed. Whether these particular
-comment webhooks were delivered is not verified; delivery alone cannot fix the
-missing handler. The confirmed shared-account usage means account identity
-alone cannot distinguish human feedback from automatic agent output; feedback
-routing must account for that when preventing self-triggered loops.
-
-For the next fix round, cover PR discussions, reviews and user-pushed corrections
-as inputs to retained work; reconcile current provider code facts with candidate
-evaluation and prevent duplicate or self-triggered agent loops. This observation
-does not authorize changes, dispatch or PR mutation. Remove or replace the
-diagnosis when the feedback and changed-head continuation paths are verified.
 
 ## Previous backend: v0.5.1-janez.5
 
