@@ -70,6 +70,7 @@ export interface IssueWorkflowRetainedContextOption {
 
 export interface IssueWorkflowAvailableActions {
   accept_human: boolean;
+  accept_comment?: boolean;
   reject: boolean;
   request_trivial_acceptance: boolean;
   request_reviewed_acceptance?: boolean;

@@ -29,4 +29,11 @@ func TestIssueWorkflowAuthorityEndpointsFailClosedForMalformedAndUnenrolled(t *t
 	call(http.MethodPost, "/api/issues/"+issueID+"/workflow/acceptances",
 		map[string]any{"candidate_id": "00000000-0000-0000-0000-000000000001", "expected_revision": 1, "unexpected": true},
 		testHandler.AcceptIssueWorkflow).Want(http.StatusBadRequest)
+	call(http.MethodPost, "/api/issues/"+issueID+"/workflow/comment-acceptances",
+		map[string]any{"candidate_id": "00000000-0000-0000-0000-000000000001", "expected_revision": 1, "source": "multica", "source_id": "00000000-0000-0000-0000-000000000002", "reason": "approved", "member_id": "00000000-0000-0000-0000-000000000003"},
+		testHandler.AcceptIssueWorkflowComment).Want(http.StatusBadRequest)
+	call(http.MethodPost, "/api/issues/"+issueID+"/workflow/comment-acceptances",
+		map[string]any{"candidate_id": "00000000-0000-0000-0000-000000000001", "expected_revision": 1, "source": "multica", "source_id": "00000000-0000-0000-0000-000000000002", "reason": "approved"},
+		testHandler.AcceptIssueWorkflowComment).Want(http.StatusForbidden)
+
 }

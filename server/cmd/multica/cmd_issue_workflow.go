@@ -34,6 +34,18 @@ type issueWorkflowAcceptanceInput struct {
 	HoldDelivery         *bool    `json:"hold_delivery,omitempty"`
 }
 
+type issueWorkflowCommentAcceptanceInput struct {
+	CandidateID      string   `json:"candidate_id"`
+	ExpectedRevision int64    `json:"expected_revision"`
+	Source           string   `json:"source"`
+	SourceID         string   `json:"source_id"`
+	Action           string   `json:"action"`
+	WaiveReview      bool     `json:"waive_review,omitempty"`
+	ReleaseHold      bool     `json:"release_hold,omitempty"`
+	Reason           string   `json:"reason"`
+	MergeOrderPRURLs []string `json:"merge_order_pr_urls,omitempty"`
+}
+
 type issueWorkflowAcceptanceDispositionInput struct {
 	CandidateID      string `json:"candidate_id"`
 	ExpectedRevision int64  `json:"expected_revision"`
@@ -88,7 +100,7 @@ func newIssueWorkflowCommand() *cobra.Command {
 	}
 	workflow.AddCommand(get)
 	var exceptionCommand *cobra.Command
-	for _, action := range []string{"review", "accept", "reject", "feedback-continue", "exception", "delivery-retry", "hold", "release", "complete", "retry-outcome"} {
+	for _, action := range []string{"review", "accept", "comment-accept", "reject", "feedback-continue", "exception", "delivery-retry", "hold", "release", "complete", "retry-outcome"} {
 		action := action
 		use := action + " <issue-id>"
 		args := cobra.ExactArgs(1)
@@ -122,6 +134,11 @@ func newIssueWorkflowCommand() *cobra.Command {
 	{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"hold_delivery":true}
 
 	Add "merge_order_pr_urls":["https://git.example.com/team/app/pulls/7","https://git.example.com/team/app/pulls/8"] when the delivery preview requires an explicit PR order.`
+		}
+		if action == "comment-accept" {
+			command.Short = "Carry out an explicit acceptance instruction from a delivered human comment"
+			command.Long = "Interpret the exact human comment delivered to this task before calling. Use source multica with a comment UUID, or forgejo with the recorded provider-input UUID. Plain approval uses action ready: record acceptance and remove draft/WIP without merging. Use action merge only for an explicit merge instruction; waive_review only for an explicit review override. On an already accepted candidate, release_hold may accompany merge only when the human explicitly releases its existing hold. Questions and ambiguous feedback are not approval. The server verifies the stored source and its author; no member ID is accepted from the agent."
+			command.Example = `  {"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"source":"multica","source_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","action":"ready","reason":"The user approved this candidate in the delivered comment."}`
 		}
 		if action == "feedback-continue" {
 			command.Short = "Continue the retained workflow from a classified member comment"
@@ -214,6 +231,8 @@ func runIssueWorkflow(cmd *cobra.Command, args []string, action string) error {
 			path += "/reviews"
 		case "accept":
 			path += "/acceptances"
+		case "comment-accept":
+			path += "/comment-acceptances"
 		case "hold", "release", "complete", "retry-outcome":
 			acceptanceID, _ := cmd.Flags().GetString("acceptance-id")
 			path += "/acceptances/" + url.PathEscape(acceptanceID) + "/" + action
@@ -276,6 +295,8 @@ func decodeIssueWorkflowInput(data []byte, action string) (any, error) {
 		input = &issueWorkflowReviewInput{}
 	case "accept":
 		input = &issueWorkflowAcceptanceInput{}
+	case "comment-accept":
+		input = &issueWorkflowCommentAcceptanceInput{}
 	case "hold", "release", "complete", "retry-outcome":
 		input = &issueWorkflowAcceptanceDispositionInput{}
 	case "reject":
@@ -307,6 +328,8 @@ func decodeIssueWorkflowInput(data []byte, action string) (any, error) {
 		err = validateIssueWorkflowReview(typed)
 	case *issueWorkflowAcceptanceInput:
 		err = validateIssueWorkflowAcceptance(typed)
+	case *issueWorkflowCommentAcceptanceInput:
+		err = validateIssueWorkflowCommentAcceptance(typed)
 	case *issueWorkflowAcceptanceDispositionInput:
 		err = validateIssueWorkflowAcceptanceDisposition(typed)
 	case *issueWorkflowRejectionInput:
@@ -371,6 +394,35 @@ func validateIssueWorkflowAcceptance(input *issueWorkflowAcceptanceInput) error 
 	}
 	if len(input.MergeOrderPRURLs) > 20 {
 		return fmt.Errorf("merge_order_pr_urls must contain at most 20 PR URLs")
+	}
+	return nil
+}
+
+func validateIssueWorkflowCommentAcceptance(input *issueWorkflowCommentAcceptanceInput) error {
+	if err := validateIssueWorkflowIdentity(input.CandidateID, input.ExpectedRevision); err != nil {
+		return err
+	}
+	if input.Source != "multica" && input.Source != "forgejo" {
+		return fmt.Errorf("source must be multica or forgejo")
+	}
+	if _, err := util.ParseUUID(input.SourceID); err != nil {
+		return fmt.Errorf("source_id must be a UUID")
+	}
+	if input.Action == "" {
+		input.Action = "ready"
+	}
+	if input.Action != "ready" && input.Action != "merge" {
+		return fmt.Errorf("action must be ready or merge")
+	}
+	if input.ReleaseHold && input.Action != "merge" {
+		return fmt.Errorf("release_hold requires an explicit merge instruction")
+	}
+	input.Reason = strings.TrimSpace(input.Reason)
+	if input.Reason == "" || len(input.Reason) > 2000 {
+		return fmt.Errorf("reason must contain 1 to 2000 bytes")
+	}
+	if len(input.MergeOrderPRURLs) > 20 || input.Action == "ready" && len(input.MergeOrderPRURLs) != 0 {
+		return fmt.Errorf("merge_order_pr_urls is only valid for merge, with at most 20 entries")
 	}
 	return nil
 }

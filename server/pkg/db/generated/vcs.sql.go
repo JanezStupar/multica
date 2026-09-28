@@ -90,7 +90,7 @@ func (q *Queries) GetIssueCombinedPullRequestCloseAggregate(ctx context.Context,
 }
 
 const getVCSConnectionByID = `-- name: GetVCSConnectionByID :one
-SELECT id, workspace_id, provider, instance_url, account_login, access_token_encrypted, webhook_secret_encrypted, connected_by_id, created_at, updated_at FROM vcs_connection
+SELECT id, workspace_id, provider, instance_url, account_login, access_token_encrypted, webhook_secret_encrypted, connected_by_id, created_at, updated_at, workflow_approvers FROM vcs_connection
 WHERE id = $1
 `
 
@@ -108,6 +108,7 @@ func (q *Queries) GetVCSConnectionByID(ctx context.Context, id pgtype.UUID) (Vcs
 		&i.ConnectedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkflowApprovers,
 	)
 	return i, err
 }
@@ -188,7 +189,7 @@ func (q *Queries) ListIssueIDsForVCSPRHead(ctx context.Context, arg ListIssueIDs
 
 const listVCSConnectionsByWorkspace = `-- name: ListVCSConnectionsByWorkspace :many
 
-SELECT id, workspace_id, provider, instance_url, account_login, access_token_encrypted, webhook_secret_encrypted, connected_by_id, created_at, updated_at FROM vcs_connection
+SELECT id, workspace_id, provider, instance_url, account_login, access_token_encrypted, webhook_secret_encrypted, connected_by_id, created_at, updated_at, workflow_approvers FROM vcs_connection
 WHERE workspace_id = $1
 ORDER BY created_at ASC
 `
@@ -216,6 +217,7 @@ func (q *Queries) ListVCSConnectionsByWorkspace(ctx context.Context, workspaceID
 			&i.ConnectedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.WorkflowApprovers,
 		); err != nil {
 			return nil, err
 		}
@@ -345,7 +347,7 @@ UPDATE vcs_connection
 SET webhook_secret_encrypted = $3,
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, provider, instance_url, account_login, access_token_encrypted, webhook_secret_encrypted, connected_by_id, created_at, updated_at
+RETURNING id, workspace_id, provider, instance_url, account_login, access_token_encrypted, webhook_secret_encrypted, connected_by_id, created_at, updated_at, workflow_approvers
 `
 
 type RotateVCSConnectionWebhookSecretParams struct {
@@ -368,6 +370,7 @@ func (q *Queries) RotateVCSConnectionWebhookSecret(ctx context.Context, arg Rota
 		&i.ConnectedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkflowApprovers,
 	)
 	return i, err
 }
@@ -453,7 +456,7 @@ ON CONFLICT (workspace_id, instance_url) DO UPDATE SET
     webhook_secret_encrypted = EXCLUDED.webhook_secret_encrypted,
     connected_by_id          = EXCLUDED.connected_by_id,
     updated_at               = now()
-RETURNING id, workspace_id, provider, instance_url, account_login, access_token_encrypted, webhook_secret_encrypted, connected_by_id, created_at, updated_at
+RETURNING id, workspace_id, provider, instance_url, account_login, access_token_encrypted, webhook_secret_encrypted, connected_by_id, created_at, updated_at, workflow_approvers
 `
 
 type UpsertVCSConnectionParams struct {
@@ -490,6 +493,7 @@ func (q *Queries) UpsertVCSConnection(ctx context.Context, arg UpsertVCSConnecti
 		&i.ConnectedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkflowApprovers,
 	)
 	return i, err
 }

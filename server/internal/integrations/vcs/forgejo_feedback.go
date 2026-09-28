@@ -57,10 +57,14 @@ func (p forgejoProvider) ParsePullRequestFeedback(body []byte) (PullRequestFeedb
 	if number == 0 || owner == "" || d.Repository.Name == "" || object.ID == 0 {
 		return PullRequestFeedbackEvent{}, errors.New("feedback is not an identified pull request discussion")
 	}
+	authorID := ""
+	if object.User.ID > 0 {
+		authorID = strconv.FormatInt(object.User.ID, 10)
+	}
 	return PullRequestFeedbackEvent{RepoOwner: owner, RepoName: d.Repository.Name, Number: number, Kind: kind,
 		ObjectID: strconv.FormatInt(object.ID, 10), Action: d.Action, Body: object.Body, HTMLURL: object.HTMLURL,
 		UpdatedAt: coalesce(object.UpdatedAt, coalesce(object.SubmittedAt, object.CreatedAt)), HeadSHA: d.PullRequest.Head.SHA,
-		AuthorLogin: coalesce(object.User.Username, object.User.Login)}, nil
+		AuthorLogin: coalesce(object.User.Username, object.User.Login), AuthorID: authorID}, nil
 }
 
 type feedbackObject struct {
@@ -72,6 +76,7 @@ type feedbackObject struct {
 	CreatedAt   string `json:"created_at"`
 	SubmittedAt string `json:"submitted_at"`
 	User        struct {
+		ID       int64  `json:"id"`
 		Login    string `json:"login"`
 		Username string `json:"username"`
 	} `json:"user"`

@@ -189,9 +189,9 @@ func TestWorkflowAuthorityHumanAcceptanceRejectsClosedStatuses(t *testing.T) {
 
 func TestWorkflowAuthorityHumanAcceptanceFormat2ReplayFromAcceptedAndDone(t *testing.T) {
 	for _, complete := range []bool{false, true} {
-		name := "accepted"
+		name := "outcome_false"
 		if complete {
-			name = "done"
+			name = "outcome_true"
 		}
 		t.Run(name, func(t *testing.T) {
 			f, svc, issueID, _ := workflowReviewedHumanCandidate(t, true)
@@ -210,10 +210,9 @@ func TestWorkflowAuthorityHumanAcceptanceFormat2ReplayFromAcceptedAndDone(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantStatus := "pr_ready"
-			if complete {
-				wantStatus = "done"
-			}
+			// This fixture has no PRs, so format-2 acceptance completes
+			// immediately even when the caller omits an outcome-complete claim.
+			wantStatus := "done"
 			if beforeReplay.Status != wantStatus {
 				t.Fatalf("accepted status %q, want %q", beforeReplay.Status, wantStatus)
 			}

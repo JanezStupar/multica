@@ -256,3 +256,16 @@ it("defaults a missing delivery retry affordance to unavailable", async () => {
   const state = await new ApiClient("https://api.example.test").getIssueWorkflow(issueID);
   expect(state.delivery[0]?.retryable).toBe(false);
 });
+
+
+it("accepts comment approval discovery from new backends and tolerates missing or malformed flags", async () => {
+  const mocked = vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ...issueWorkflow, available_actions: { ...issueWorkflow.available_actions, accept_comment: true } })))
+    .mockResolvedValueOnce(new Response(JSON.stringify(issueWorkflow)))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ...issueWorkflow, available_actions: { ...issueWorkflow.available_actions, accept_comment: "unknown" } })));
+  vi.stubGlobal("fetch", mocked);
+  const client = new ApiClient("https://api.example.test");
+  expect((await client.getIssueWorkflow(issueID)).available_actions.accept_comment).toBe(true);
+  expect((await client.getIssueWorkflow(issueID)).available_actions.accept_comment).toBeUndefined();
+  expect((await client.getIssueWorkflow(issueID)).available_actions.accept_comment).toBeUndefined();
+});

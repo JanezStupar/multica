@@ -3753,6 +3753,7 @@ const IssueWorkflowRetainedContextOptionSchema = z.object({
 }).loose();
 const IssueWorkflowAvailableActionsSchema = z.object({
   accept_human: z.boolean().catch(false).default(false),
+  accept_comment: z.boolean().optional().catch(undefined),
   reject: z.boolean().catch(false).default(false),
   request_trivial_acceptance: z.boolean().catch(false).default(false),
   request_reviewed_acceptance: z.boolean().optional().catch(undefined),

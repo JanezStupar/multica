@@ -497,6 +497,11 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 				correctionStatus && (ownsHumanAssignment || role == "owner" || role == "admin")
 		}
 	} else if actor.Type == "agent" && state.Candidate != nil {
+		commentAllowed, commentErr := workflowCommentAcceptanceAvailable(ctx, tx, issue, actor, authority, policy.Version)
+		if commentErr != nil {
+			return state, commentErr
+		}
+		state.AvailableActions.AcceptComment = commentAllowed && currentCandidateValid && !issue.WorkflowFrozen && !active && nonterminalStatus
 		_, acceptanceGrant, grantErr := workflowExceptionGrant(ctx, tx, issue, issue.WorkflowCandidateID, policy.Version, "acceptance")
 		if grantErr != nil {
 			return state, grantErr

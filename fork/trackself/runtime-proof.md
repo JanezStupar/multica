@@ -403,7 +403,10 @@ handoff as proof of the whole workflow:
 | --- | --- |
 | Clarification and decomposition | A recoverable missing detail is resolved by Mica; a consequential unresolved decision is surfaced to the right human without stopping independent work. One issue can complete without mandatory children, while a genuinely useful delegated child is reconciled into its parent. |
 | Capability choice and policy override | A simple and a demanding test issue use their configured model/effort profiles. An explicit, authorized profile reselection changes later runs while existing history keeps its identity. A scoped policy override or supervisor exception changes only its recorded candidate/scope and does not rewrite another issue or the default. |
-| Classification and revision changes | A ticket that no longer meets the trivial criterion uses reviewed-agent acceptance after independent review if it stays within the approved outcome; a consequential product or scope decision goes to a human. A new commit after review or acceptance creates/identifies a changed candidate and blocks stale review or delivery authority. |
+| Human comment acceptance | An authorized “Approved,” “looks good,” or “make ready” comment on the issue or bound PR is bound to the exact candidate and revision, recorded with its source and author, and makes the PR ready without merging. The user does not need the TUI or ticket status/assignee/pin changes. A question or ambiguous comment creates no acceptance. |
+| Explicit merge instruction | “Approved, merge it” records an authorized merge action for the exact candidate. A normal approval comment leaves the PR open and ready. An existing hold remains until a clear user instruction releases or supersedes it. |
+| Review override | A clear user “skip review” comment records `waive_review` for that candidate only with its comment source and reason; no second approval is requested, and a later candidate does not inherit the waiver. |
+| Classification and revision changes | Work that no longer meets the trivial criterion uses reviewed-agent acceptance only if the ticket has an explicit scoped policy for it; otherwise a human comment supplies acceptance. A new commit after review or acceptance creates/identifies a changed candidate and blocks stale review or delivery authority. |
 | Policy continuity and durable context | Pinned issues and retries keep their recorded version when the source skill or agent replacement changes. A new-ticket default and legacy migration are checked only in a separately authorized rehearsal after provider proof. Repository-owned outcome, decisions and limitations remain available when a provider conversation is lost. |
 
 For the capability-change case, wait until that issue/agent's outstanding
@@ -464,20 +467,58 @@ multica --profile mica-proof issue workflow get '<test-issue-uuid>'
 multica issue workflow review '<test-issue-uuid>' --file ./review.json
 ```
 
-For a consequential product or scope decision, or an explicit human checkpoint,
-read `candidate.id` and `issue_revision` again immediately before human
-acceptance. Use a human member profile with authority for that issue. The
-requested delivery action comes from the pinned test policy; the human must
-see the exact candidate and action preview before this command.
+Exercise default human acceptance with an authorized comment on the Multica
+issue or a bound Forgejo PR. Read `candidate.id` and `issue_revision` again
+before applying it, then have the agent interpret the comment and submit its
+stored evidence with `comment-accept`. The human does not need to use the TUI,
+change the issue status or assignee, or set a policy pin. “Approved,” “looks
+good,” and “make ready” use `action: "ready"`; this accepts the exact candidate,
+removes a `WIP:` prefix and marks a draft ready where supported. It does not
+merge. Questions and ambiguous comments must not be accepted.
 
 ```json
-{"candidate_id":"<current-candidate-uuid>","expected_revision":<current-issue-revision>,"merge_order_pr_urls":["<repo-a-pr-url>","<repo-b-pr-url>"]}
+{"candidate_id":"<current-candidate-uuid>","expected_revision":<current-issue-revision>,"source":"forgejo","source_id":"<stored-vcs-workflow-input-uuid>","action":"ready","reason":"Authorized human approved the current candidate for review readiness"}
 ```
 
 ```sh
-multica --profile mica-proof issue workflow accept '<test-issue-uuid>' --file ./accept.json
+multica issue workflow comment-accept '<test-issue-uuid>' --file ./comment-accept.json
 multica --profile mica-proof issue workflow get '<test-issue-uuid>'
 ```
+
+Run the write from the active coordinator task with its injected task token;
+never submit it from the human proof profile. The human profile may read back
+the resulting workflow state.
+
+Verify acceptance provenance identifies the human comment, source and exact
+candidate/revision, and that the server derives the member from stored comment
+evidence. A later candidate must not inherit a review waiver automatically. An
+explicit “skip review” comment permits `"waive_review": true` for that
+candidate only; verify its source and reason are recorded without a second
+approval request. The waiver alone does not accept or authorize merge; pair it
+with a clear acceptance instruction or verify an existing acceptance for the
+same candidate. Unless review is explicitly waived, a passing independent
+review remains required.
+
+Use `action: "merge"` only for an explicit instruction such as “approved,
+merge it,” with an explicit multi-PR order where needed. An `"Approved"` or
+`"make ready"` comment must leave the PR open and ready for review. Preserve an
+existing hold or no-merge condition until the human clearly releases or
+supersedes it; acceptance alone never clears it. If the same comment explicitly
+releases or supersedes a current hold, include `"release_hold": true` with
+`action: "merge"`; omission or false preserves the hold. Verify an ordinary
+“approved, merge it” comment does not clear a hold unless it also explicitly
+releases it.
+
+For the explicitly authorized merge case, verify the stored comment itself is
+clear and tied to the same candidate before using:
+
+```json
+{"candidate_id":"<current-candidate-uuid>","expected_revision":<current-issue-revision>,"source":"forgejo","source_id":"<stored-vcs-workflow-input-uuid>","action":"merge","reason":"Authorized human explicitly instructed merge","merge_order_pr_urls":["<repo-a-pr-url>","<repo-b-pr-url>"]}
+```
+
+Verify the provider reports each ordered PR merged at the exact authorized
+head. A merge instruction for one candidate must not authorize a later head or
+unrelated PR.
 
 For an in-scope rejection, use the same current candidate/revision and a
 `resume_task_id` drawn from `retained_context_options` returned by `get`.
@@ -494,8 +535,9 @@ distinguishable from a defect. Example request:
 multica --profile mica-proof issue workflow reject '<test-issue-uuid>' --file ./reject.json
 ```
 
-For autonomous trivial acceptance, use a **separate** small disposable issue
-pinned to the explicitly configured test policy. A human operator does not
+For optional autonomous trivial acceptance, use a **separate** small disposable
+issue pinned to a test-only policy that explicitly enables the scoped route.
+This case proves an available override, not the default. A human operator does not
 submit the agent request: the authorized acceptor does so from its running,
 profile-bound task after the required independent provider review. Record a
 concrete classification reason. Its request remains `requested` until that
@@ -512,11 +554,12 @@ The authorized acceptor runs `multica issue workflow accept
 '<trivial-issue-uuid>' --file ./trivial-accept.json` with its task token while
 that task is running; the human proof profile must not submit this request.
 
-For reviewed-agent acceptance, use a separate nontrivial technical issue with
-an approved outcome and an independent passing provider review of the exact
-candidate. The authorized acceptor reads `reviewed_delivery_preview` and
-submits from its running task, without claiming triviality or requesting
-another human product decision:
+For optional reviewed-agent acceptance, use a separate nontrivial technical
+issue pinned to a test-only policy that explicitly enables the scoped route,
+with an approved outcome and an independent passing provider review of the exact
+candidate. A passing review alone is not acceptance. The authorized acceptor
+reads `reviewed_delivery_preview` and submits from its running task, without
+claiming triviality or requesting another human product decision:
 
 ```json
 {"candidate_id":"<reviewed-candidate-uuid>","expected_revision":<current-issue-revision>,"acceptance_mode":"reviewed","classification_reason":"Approved technical outcome; independent review passed at the exact candidate","merge_order_pr_urls":["<first-disposable-pr-url>","<second-disposable-pr-url>"]}

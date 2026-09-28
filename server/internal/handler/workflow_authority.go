@@ -102,6 +102,29 @@ func (h *Handler) AcceptIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, code, state)
 }
 
+func (h *Handler) AcceptIssueWorkflowComment(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	var in service.WorkflowCommentAcceptanceInput
+	if !decodeWorkflowBody(w, r, &in) {
+		return
+	}
+	actor := h.workflowActorForIssue(r, uuidToString(issue.WorkspaceID))
+	svc := h.workflowAuthorityService()
+	if _, err := svc.AcceptWorkflowComment(r.Context(), issue.WorkspaceID, issue.ID, actor, in); err != nil {
+		workflowAuthorityError(w, err)
+		return
+	}
+	state, err := svc.ReadState(r.Context(), issue.WorkspaceID, issue.ID, actor)
+	if err != nil {
+		workflowAuthorityError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
 func (h *Handler) RejectIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
 	if !ok {

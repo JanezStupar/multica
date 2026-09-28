@@ -14,7 +14,8 @@ where necessary to support the selected workflow. Agent behavior must be
 configurable and overridable rather than inseparable from compiled prompts.
 
 This spec records the workflow agreed on 2026-09-24, with production policy
-settings and completion semantics refined on 2026-09-25. Its format-2 mechanics
+settings and completion semantics refined on 2026-09-25 and human-comment
+acceptance/readiness refined on 2026-09-28. Its format-2 mechanics
 are implemented in `v0.5.1-janez.2`, with external-merge reconciliation in
 `v0.5.1-janez.3`; Linux provider, cross-repository and
 completion trials have distinct recorded source/evidence boundaries. Trackself's
@@ -171,7 +172,7 @@ the delegated deliverable boundary above.
 | `in_progress`, Mica or implementation agent | Clarification, coordination or implementation is executable within the assignment. |
 | `in_review`, review/fix agent | The agent has executable review work, including routine in-scope corrections. |
 | `in_review`, independent final reviewer | A fresh context evaluates the current resulting surface. |
-| `in_review`, human | A material product decision or an explicit user review checkpoint remains after engineering review. |
+| `in_review`, human | A human decision is due. The human may express acceptance or feedback in a clear comment on the issue or bound PR; assignment routes attention but is not required evidence. |
 | `PR Ready`, accepted work awaiting delivery | Required review and acceptance passed; delivery may be pending, held or failed. |
 | `done`, completed work | All required bound PRs have merged, or work needing no PR has been explicitly accepted. Closing does not claim unperformed deployment or validation. |
 
@@ -190,12 +191,13 @@ Ordinary unfinished work is not a human blocker merely because a run ended.
 Routine progression must not depend on the user relaying comments or changing
 statuses between agents.
 
-A policy-authorized human may explicitly accept an otherwise eligible current
-candidate on any nonterminal ticket, regardless of status spelling or agent
-assignment. Human assignment is a communication convention, not an acceptance
-prerequisite. Preserve membership, policy authority, exact candidate and revision,
-independent review, provider checks, active-work exclusion and delivery holds.
-Terminal work is not reopened or retroactively accepted by this shortcut.
+An authorized human may accept an otherwise eligible current candidate through
+a clear comment on the issue or bound PR, regardless of status spelling or
+assignee. The human need not use the TUI or change ticket status, assignee or
+policy pin to express that decision. Preserve membership, policy authority,
+comment provenance, exact candidate and revision, independent review, provider
+checks, active-work exclusion and delivery holds. Terminal work is not reopened
+or retroactively accepted by this shortcut.
 
 ### Review, fixes and independent final judgment
 
@@ -226,11 +228,11 @@ An independent reviewer must examine the actual full requested surface rather
 than merely endorse the preceding report. Fresh contexts and actual provider
 session identities must be distinguishable from new run IDs.
 
-Implementation normally receives independent review, including trivial work
-eligible for autonomous acceptance. Review depth, capability and applicability
-are configurable policy, subject to the same user override and delegated
-supervisor exception authority defined below. Triviality alone is not a review
-waiver. Any exception identifies the affected review requirement and its scope.
+Implementation normally receives independent review, including trivial work.
+Review depth, capability and applicability are configurable policy, subject to
+an explicit candidate-scoped user override and delegated supervisor exception
+authority defined below. Triviality alone is not a review waiver. Any exception
+identifies the affected review requirement and its scope.
 The system must support this cycle without requiring a new ticket per pass or
 hardcoding a fixed set of agent identities.
 
@@ -251,21 +253,45 @@ hardcoding a fixed set of agent identities.
 
 ### Acceptance, triviality and PR delivery
 
-Independent review is normally sufficient for an agent to accept and deliver
-work within the user's approved outcome and delegated execution scope. This
-includes nontrivial technical components of a larger feature. A human receives
-an acceptance handoff only for an unresolved product decision, an explicit user
-review checkpoint, or a material change outside the approved outcome or scope.
-Before asking, reconcile existing direction with the current outcome, scope and
-conditions. Absence of a user-facing UI in an internal component is not itself
-a reason to require human acceptance; defer product QA to the first integrated
-result the user can actually evaluate.
-The user's assignment or commissioned ticket establishes the approved outcome;
-do not require a second approval record to restate it. Apply concrete user
-feedback and current repository/provider facts ahead of stale process labels.
-Acceptance records the actor, authority and exact delivery candidate. With required PRs still unmerged, it moves the ticket to
-`PR Ready` and initiates the authorized delivery policy. A card movement alone
-does not manufacture acceptance or authority for unseen commits.
+Independent engineering review establishes technical confidence. By default,
+it does not itself accept the work or authorize delivery. An authorized human's
+clear comment on the Multica issue or a bound Forgejo PR, such as “Approved,”
+“looks good,” or “make ready,” is an instruction to accept the exact current
+candidate and make its PR ready: remove a `WIP:` prefix and, where supported,
+mark a draft PR ready. That instruction does not authorize merging. A clear
+“approved, merge it” instruction separately authorizes merge of that candidate,
+subject to current provider, branch-protection and exact-head checks. Questions
+and ambiguous feedback are not acceptance.
+
+The agent interprets the comment in context and checks that its author has
+authority over the work. It records the comment and its source, author, time,
+candidate and revision as acceptance provenance; the server verifies the stored
+comment evidence before recording the action. The human need not use the TUI,
+change ticket status or assignee, or add a policy pin just to express approval.
+Those conveniences do not replace candidate, revision, identity or access
+checks. Do not infer acceptance from status, assignment, a passing review or
+ordinary comments.
+
+The active policy's independent review remains required unless the human
+explicitly says to skip review for this candidate. That instruction is a
+candidate-scoped review override: record its source and reason without asking
+for another approval. It overrides review only; by itself it does not accept the
+work or authorize merge. Pair it with a clear acceptance or merge instruction,
+or apply it to an already accepted candidate without asking the user to repeat
+that acceptance. It does not transfer automatically to a later candidate.
+When review is required, a human approval comment does not waive it; complete
+the required review before finalizing acceptance and readiness. A human comment
+that explicitly releases or supersedes an existing hold may do so for its
+stated candidate. Approval alone preserves existing delivery holds and
+no-merge conditions.
+
+The user's assignment or commissioned ticket establishes the approved outcome
+and delegated work scope; do not require a second approval record merely to
+restate them. Reconcile concrete user feedback and current repository/provider
+facts ahead of stale process labels. Acceptance records its actor, authority,
+source comment and exact delivery candidate. With required PRs still unmerged,
+acceptance moves the ticket to `PR Ready`. A card movement alone does not
+manufacture acceptance or authority for unseen commits.
 
 Human rejection returns work to the appropriate retained implementation or
 review/fix context. Preserve the rejection, existing evidence and useful
@@ -286,26 +312,27 @@ still require any applicable exact-commit review and acceptance. Agent access
 limits, platform guards and unrelated repository ownership remain enforced.
 
 Mica may classify a ticket as trivial under a configurable policy and record a
-brief reason. Trivial tickets are eligible for autonomous acceptance and merge.
-Reviewed nontrivial work within the delegated scope also has a distinct
-autonomous acceptance route; it must not be recorded as trivial. An authorized
-agent can accept and complete either category after the policy's required
-validation and review succeed.
+brief reason. A separately configured, explicitly scoped autonomous policy may
+allow an authorized agent to accept and deliver trivial work or reviewed
+nontrivial work within its delegated scope. That option remains available but
+is not the default. Independent review alone does not activate it. Never label
+nontrivial work as trivial to make it advance, and do not infer autonomous
+acceptance or merge authority from a classification, subtask completion or
+installed bundle.
 
 If scope or risk expands beyond delegated authority, the agent returns the
 material decision to the user. The user can override classification or the
 applicable policy. Acceptance of a subtask does not authorize acceptance or
 merging of unrelated work or its parent.
 
-Acceptance initiates deterministic delivery bookkeeping:
+Acceptance initiates deterministic readiness bookkeeping:
 
 - Remove the PR's `WIP:` title prefix and, where supported and applicable,
   transition a draft PR to ready for review.
-- For autonomously accepted work, merge under the configured policy
-  after required provider checks and branch protections permit it.
-- For human-accepted work, merge when the selected project/ticket policy calls
-  for it; otherwise leave the PR ready. No repeat approval is needed for a
-  delivery action already authorized by that policy and acceptance.
+- Do not merge solely because a candidate was accepted or made ready. Merge
+  only when an authorized human explicitly instructs it, or an explicitly
+  enabled and scoped autonomous policy grants that delivery authority, after
+  provider checks and branch protections permit it.
 
 Human approval is not revoked merely because a commit, branch, repository URL
 spelling or candidate identifier changes. Mica carries it forward when the
@@ -329,11 +356,11 @@ new feature changes or material conflict resolutions proportionately. A stale
 SHA may pause an agent's merge operation without undoing the user's approval.
 
 An actual user-directed merge of a bound PR, including one performed through
-Primary or the service account at the user's direction, is acceptance and
-delivery evidence. Observe the provider's completed merge before applying
-changed-head rules. It does not require another acceptance action and an agent
-no-merge hold does not invalidate a merge already performed by the user. Close
-when all required bound PRs are merged. Preserve unperformed deployment or QA
+Primary or the service account at the user's direction, is delivery evidence
+and may also express acceptance of the merged candidate. Observe the provider's
+completed merge before applying changed-head rules. It does not require another
+acceptance action and an agent no-merge hold does not invalidate a merge already
+performed by the user. Close when all required bound PRs are merged. Preserve unperformed deployment or QA
 as evidence and separately owned follow-up work; do not invent a second completion acknowledgment. The retained `delivery.external_merged_head` and candidate `external_merge`
 fields remain readable for compatibility, but do not suppress completed provider
 facts. Automated outbound merge authority remains separately guarded.
@@ -343,9 +370,11 @@ merge never grants an agent permission to perform a different merge.
 
 Delivery remains bound to the exact evaluated commits for agent-initiated merges. A changed commit pauses
 stale delivery authority until evaluation and an explicit current-candidate
-acceptance record reconcile it. The authorized coordinator may record that
-acceptance under carried-forward human approval; it is not a new human verdict.
-Preserve delivery holds and no-merge instructions independently of acceptance.
+acceptance record reconcile it. A prior human comment remains in the record as
+provenance; do not retarget it blindly to unseen commits. Carry approval forward
+only under the existing nonmaterial-delta rule, with the original source, old
+and current heads, delta and evaluation recorded. Preserve delivery holds and
+no-merge instructions independently of acceptance.
 
 Delivery failure does not erase acceptance. While required merges remain, the
 ticket stays `PR Ready` and shows acceptance, pending/failed delivery, reason
@@ -355,8 +384,8 @@ not merge a different revision or duplicate completed actions.
 
 Accept-but-hold means accepted work stays `PR Ready` with an explicit delivery
 hold. Preserve the hold across retries and restarts until an authorized release;
-acceptance or a retry alone must not clear it. Ordinary automatic delivery goes
-through `PR Ready` to `done` after all required bound PRs merge. Explicit
+acceptance or a retry alone must not clear it. An explicitly authorized merge
+goes through `PR Ready` to `done` after all required bound PRs merge. Explicit
 acceptance of work with no PR may finish directly; do not manufacture a PR
 or require an internal outcome flag. Separately requested deployment or runtime
 validation remains visible as follow-up work, with its own actual evidence.
@@ -368,42 +397,43 @@ merges under the external-merge rule without reopening review.
 
 ### Agreed production policy
 
-These defaults reflect the user's 2026-09-28 direction to let approved work
-run unless a material decision or explicit hold calls for intervention. They
-take effect only with the supporting backend and versioned policy deployment;
-existing ticket pins change through explicit migration or scoped override.
+These defaults reflect the user's 2026-09-28 direction. They take effect only
+with the supporting backend and versioned policy deployment; existing ticket
+pins change through explicit migration or scoped override.
 
-- Work within an approved outcome and delegated execution scope proceeds through
-  independent engineering review to agent acceptance and configured delivery.
-  Nontrivial technical subtasks do not acquire a separate product-approval gate
-  merely because they have their own tickets or PRs. Record a short acceptance
-  rationale and the exact reviewed candidate.
-- Bring the user in for unresolved product intent, material scope or risk changes,
-  or a review checkpoint the user actually requested. Evaluate an integrated UI
-  when it is available instead of requiring the user to approve invisible
-  implementation layers. A user-requested hold remains in effect until released;
-  do not manufacture a hold from an agent's preference for caution.
-- Trivial classification remains available for bounded mechanical changes, but
-  nontrivial work uses the distinct reviewed-agent route. Neither route waives
-  provider checks, branch protections or an independently required review.
+- Independent engineering review is not product acceptance or merge
+  authorization. For the default path, a clear comment from an authorized human
+  on the issue or bound PR accepts the exact current candidate and authorizes
+  readiness. Record the source comment, author, candidate and revision. The
+  human need not use the TUI or change ticket status, assignee or pin to express
+  that decision.
+- A comment such as “Approved,” “looks good,” or “make ready” authorizes
+  acceptance/readiness only. A clear instruction such as “approved, merge it”
+  separately authorizes merge, subject to current provider and exact-head
+  checks. Preserve an explicit hold or no-merge instruction until the user
+  clearly releases or supersedes it.
+- Questions and ambiguous feedback are not acceptance. An explicit “skip
+  review” instruction overrides review only for the identified candidate;
+  record its source and reason without asking the user to repeat the approval.
+  All other configured review, validation, identity and access guards remain.
+- A separately enabled, scoped autonomous policy remains available for work it
+  expressly covers. It is optional, not the default. An independent review or
+  trivial classification alone does not enable autonomous acceptance or merge.
+- Bring the user in for unresolved product intent, material scope or risk
+  changes, or a review checkpoint the user actually requested. Evaluate an
+  integrated UI when it is available instead of requiring approval of invisible
+  implementation layers. A user-requested hold remains until explicitly
+  released or superseded; do not manufacture a hold from an agent's preference
+  for caution.
 - Mica may resolve an overcautious procedural block within existing authority:
   repeated requests for already-granted permission, optional checks treated as
   mandatory, or routine execution choices escalated unnecessarily. Record the
   reason, scope and consequences briefly on the existing work record. This is
-  not authority to invent approval for the explicit user-approval categories above.
-  Mica may record candidate-scoped acceptance under documented prior human
-  approval after the carry-forward evaluation; no new human decision is needed
-  solely because the candidate identity changed.
-  The user may grant a scoped exception to any user-owned project policy;
-  platform-enforced limits remain in force.
-- After human acceptance, merge automatically unless the actor explicitly holds
-  delivery. A hold persists until an authorized release; it is not cleared by
-  retries or restarts.
-- Use squash and merge by default, with a meaningful commit title/message and
-  ticket and PR references. This keeps routine development history readable.
-  A separate merge commit is a justified explicit exception for an integration
-  or release branch whose history is meaningful; do not routinely squash and
-  then create a second merge commit.
+  not authority to invent acceptance, skip-review or merge permission.
+- When a merge is explicitly authorized, use squash and merge by default, with
+  a meaningful commit title/message and ticket and PR references. A separate
+  merge commit is a justified explicit exception for an integration or release
+  branch whose history is meaningful.
 
 This list can evolve through explicit policy revision. Keep existing ticket
 pins and scoped exceptions intact. These decisions do not authorize live
@@ -492,17 +522,21 @@ The [README](README.md) describes the released handoff, context, policy and
 completion mechanisms. The [release record](release.md) identifies the active
 Linux deployment and links the owning configuration evidence;
 [runtime-proof.md](runtime-proof.md) records bounded provider trials and limits.
-The [agreed production policy](#agreed-production-policy) settles classification,
-ordinary review, supervisor authority and squash merging. Human acceptance
-merges automatically unless explicitly held; format 2 keeps accepted work in
-PR Ready until the required bound PRs merge.
+The [agreed production policy](#agreed-production-policy) settles comment-based
+human acceptance, readiness, review overrides, optional scoped autonomy and
+merge authority. Human acceptance leaves the PR ready; it merges only after an
+explicit human merge instruction or under an explicitly enabled scoped
+autonomous policy. Format 2 keeps accepted work in PR Ready until required bound
+PRs merge.
 
-The selected [runtime policy](policies/mica-v1/runtime/policy.json) binds the
-three Linux Mica identities as autonomous acceptors and review/acceptance/delivery
-supervisors and owner/admin human acceptance. The retained outcome-agent
-identity does not require or automatically dispatch a postmerge run. Supervisor acceptance scope is limited by this policy to carrying
-forward documented human approval after the required delta evaluation. It does
-not delegate approval of new or materially changed substantive work. Workspace-control
+The selected [runtime policy](policies/mica-v1/runtime/policy.json) records
+available Linux Mica identities and review/acceptance/delivery scopes. Any
+autonomous acceptance or delivery it enables is an optional scoped policy
+override, not the default behavior for enrolled work. The retained outcome-agent
+identity does not require or automatically dispatch a postmerge run. Supervisor
+acceptance scope is limited by this policy to candidate-scoped carry-forward
+with documented approval provenance and required delta evaluation; it does not
+delegate approval of new or materially changed substantive work. Workspace-control
 owns actual agent/runtime identities, model/effort selection and review routes
 in `config/mica-agent-desired-state.json`; its source manifest and imported
 skill identity must match. Native macOS/Windows agent rollout and targeted host
@@ -532,20 +566,21 @@ and ownership. No blanket migration accompanies activation.
 | Handoff recovery | Duplicate events, an ambiguous response or interruption does not produce duplicate recipient execution or review of a still-changing outgoing surface. |
 | Code handoff | A handoff identifies the draft PR, repository, branch and exact commit; technical review evidence stays in PR reviews, linked from the coordinating ticket. |
 | Cross-repository work | One ticket coordinates several PRs and identifies their candidate commits; acceptance and subsequent delivery cannot silently cover changed commits. |
-| Human acceptance | A material product decision, explicit user review checkpoint or scope change reaches the human in `in_review`; routine reviewed work within delegated scope proceeds without a separate human gate. Acceptance records actor, authority and exact candidate, then enters `PR Ready` while required PRs remain unmerged. |
+| Human acceptance | After required engineering review, an authorized human's clear issue or bound-PR comment accepts the exact current candidate and moves its PR to ready; no TUI, status, assignee or pin ceremony is required. “Approved” or “make ready” does not authorize merge; an explicit merge instruction does. Questions and ambiguous feedback are not acceptance. |
 | Accept but hold | Acceptance with an explicit hold leaves the ticket `PR Ready`; retries and restarts preserve it until authorized release. |
 | Outcome completion | Merged bound PRs close the ticket without another acknowledgment; no-PR acceptance finishes directly. Partial delivery stays open, and unperformed deployment/QA remains recorded. |
 | Human rejection | An in-scope defect resumes the appropriate retained context, preserves evidence and invalidates affected acceptance; a new request is explicitly distinguished. |
-| Autonomous trivial work | A policy-qualified trivial ticket completes required checks/review, is accepted by an agent and merges without a human acceptance step. |
-| Autonomous reviewed work | Nontrivial work within an approved outcome passes independent review, is accepted by a designated agent with an explicit rationale, and follows the selected delivery policy without being recorded as trivial. |
-| Classification change | Work that ceases to qualify as trivial uses reviewed-agent acceptance when it remains within delegated scope; only a material unresolved decision or explicit user checkpoint goes to the human. |
+| Optional autonomous trivial work | A separately scoped policy may let an authorized agent accept and deliver a policy-qualified trivial candidate; this path is disabled as a general default and never follows from review alone. |
+| Optional autonomous reviewed work | A separately scoped policy may let an authorized agent accept and deliver reviewed nontrivial work within its explicit scope, with an exact-candidate rationale. |
+| Review override | An authorized human's explicit skip-review comment overrides review for that candidate only; its source and reason are recorded and it does not transfer to a later candidate. |
+| Classification change | Work that ceases to qualify as trivial can use reviewed-agent acceptance only when an explicit scoped policy grants it; otherwise follow the human-comment path. |
 | Revision change | Changed commits require affected evaluation and exact-head delivery authority; documented human approval carries forward for a verified nonmaterial delta without repeat approval or GUI QA. |
 | Delivery recovery | A provider failure remains visible alongside acceptance and retries the same authorized action safely. Already completed delivery is not repeated. |
 | Machines and workspace | Scheduled representative jobs execute on the declared Linux, native Mac and native Windows environments, including scoped cross-repository work; their traces and machine identity are inspectable. |
 | Policy override | An authorized configuration override changes behavior without rebuilding Multica, and generated instructions do not contradict it. |
 | Scoped exception | A delegated supervisor records a justified exception's scope, reason and consequences; general defaults and unrelated tickets remain unchanged. |
 | Policy continuity | Changing defaults leaves an existing ticket and its retries on the identified version; new tickets receive the new default and migration or override is explicit. |
-| Review default | Trivial autonomous work normally receives independent review; skipping a required review needs an exception under the same authority rules. |
+| Review default | Independent engineering review is required by the active policy but does not itself accept or authorize merge. An explicit human skip-review instruction may override it for the current candidate with recorded provenance. |
 | Durable context | Owning repositories retain important decisions, limitations and resumption context; useful diagnoses are dated and revision-bound and resolved diagnoses leave current guidance without a manufactured archive. |
 | Cutover | New tickets use the proven workflow; old unfinished tickets do not resume automatically; explicit migration preserves their work and restores deliberate continuation. |
 
@@ -570,10 +605,13 @@ even when policy would forbid an agent from initiating that merge. This never
 grants permission for an outbound merge of different code.
 
 Ticket status and editorial text are presentation and context, not acceptance
-credentials. Record scope snapshots, including acceptance criteria; reconcile
-substantive changes through agent judgment and affected evaluation. Do not revoke
-approval merely because the title or description changed. A new candidate can
-retain prior approval as evidence while requiring current engineering evaluation
-and an authorized carry-forward decision. Scoped exceptions do not require a
-fictional rejection of accepted work. Authenticated access, concurrency checks,
-independent review defaults and exact-head checks before automated merges remain.
+credentials. A clear, authorized human comment is acceptance evidence when the
+agent records its source and the server verifies the stored comment against the
+exact candidate and revision. Record scope snapshots, including acceptance
+criteria; reconcile substantive changes through agent judgment and affected
+evaluation. Do not revoke approval merely because the title or description
+changed. A new candidate can retain prior approval as evidence only through
+recorded provenance and an authorized carry-forward decision; candidate-scoped
+review waivers do not transfer. Scoped exceptions do not require a fictional
+rejection of accepted work. Authentication, concurrency checks, current review
+policy and exact-head checks before any authorized merge remain.

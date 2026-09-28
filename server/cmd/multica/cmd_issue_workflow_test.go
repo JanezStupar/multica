@@ -204,6 +204,12 @@ func TestIssueWorkflowCLIActions(t *testing.T) {
 		{name: "accept", path: "/api/issues/" + issueID + "/workflow/acceptances", wantMethod: http.MethodPost,
 			input:    `{"candidate_id":"` + candidateID + `","expected_revision":4}`,
 			wantBody: map[string]any{"candidate_id": candidateID, "expected_revision": float64(4)}},
+		{name: "comment approval ready", action: "comment-accept", path: "/api/issues/" + issueID + "/workflow/comment-acceptances", wantMethod: http.MethodPost,
+			input:    `{"candidate_id":"` + candidateID + `","expected_revision":4,"source":"multica","source_id":"` + commentID + `","reason":" User approved "}`,
+			wantBody: map[string]any{"candidate_id": candidateID, "expected_revision": float64(4), "source": "multica", "source_id": commentID, "action": "ready", "reason": "User approved"}},
+		{name: "comment explicit merge and waiver", action: "comment-accept", path: "/api/issues/" + issueID + "/workflow/comment-acceptances", wantMethod: http.MethodPost,
+			input:    `{"candidate_id":"` + candidateID + `","expected_revision":4,"source":"forgejo","source_id":"` + commentID + `","action":"merge","waive_review":true,"reason":"User explicitly waived review and requested merge"}`,
+			wantBody: map[string]any{"candidate_id": candidateID, "expected_revision": float64(4), "source": "forgejo", "source_id": commentID, "action": "merge", "waive_review": true, "reason": "User explicitly waived review and requested merge"}},
 		{name: "accept format 2", action: "accept", path: "/api/issues/" + issueID + "/workflow/acceptances", wantMethod: http.MethodPost,
 			input:    `{"candidate_id":"` + candidateID + `","expected_revision":4,"outcome_complete":false,"hold_delivery":true}`,
 			wantBody: map[string]any{"candidate_id": candidateID, "expected_revision": float64(4), "outcome_complete": false, "hold_delivery": true}},
@@ -402,4 +408,26 @@ func equalWorkflowJSON(left, right any) bool {
 	leftBytes, _ := json.Marshal(left)
 	rightBytes, _ := json.Marshal(right)
 	return string(leftBytes) == string(rightBytes)
+}
+
+func TestIssueWorkflowCommentAcceptanceRejectsMalformedAuthority(t *testing.T) {
+	valid := map[string]any{"candidate_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "expected_revision": 4, "source": "multica", "source_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "reason": "User approved"}
+	for _, tc := range []struct {
+		field string
+		value any
+	}{
+		{"source", "email"}, {"source_id", "not-a-uuid"}, {"action", "approve"}, {"release_hold", true}, {"reason", " "}, {"member_id", "cccccccc-cccc-4ccc-8ccc-cccccccccccc"},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			input := make(map[string]any)
+			for key, value := range valid {
+				input[key] = value
+			}
+			input[tc.field] = tc.value
+			raw, _ := json.Marshal(input)
+			if _, err := decodeIssueWorkflowInput(raw, "comment-accept"); err == nil {
+				t.Fatalf("invalid %s accepted", tc.field)
+			}
+		})
+	}
 }

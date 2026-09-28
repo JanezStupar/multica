@@ -1399,7 +1399,7 @@ func (s *TaskService) EnqueueTaskForThreadParent(ctx context.Context, issue db.I
 // and issue ownership untouched; the agent decides whether feedback warrants
 // a separate continuation. An issue lock serializes this insert with handoffs,
 // rejection and competing comments on the same issue.
-const workflowHumanCommentHandoffNote = "Human commented on the current workflow candidate. Answer questions directly. If this is a clear correction, classify it and continue the retained writer through workflow feedback. Verify the candidate before acting."
+const workflowHumanCommentHandoffNote = "Human commented on the current workflow candidate. Interpret the delivered comment in context. Answer questions directly; ambiguous feedback is not approval. For clear approval, use multica issue workflow comment-accept with source multica and the delivered comment ID: action ready records the human decision and removes draft/WIP without merging; action merge requires an explicit merge instruction. An explicit review override permits waive_review; release_hold on accepted work requires an explicit instruction to lift the hold. Do not ask the human to use the TUI or change assignee to carry out their comment. If this is a clear correction, classify it and continue the retained writer through workflow feedback. Verify the current candidate before acting."
 
 func (s *TaskService) EnqueueWorkflowHumanComment(ctx context.Context, issue db.Issue, agentID, handoffID, coordinatorTaskID, candidateID, commentID pgtype.UUID) (db.AgentTaskQueue, bool, error) {
 	var empty db.AgentTaskQueue

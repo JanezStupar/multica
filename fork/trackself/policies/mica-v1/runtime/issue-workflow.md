@@ -1,7 +1,9 @@
 This policy requires format-2 completion, parent-result continuation,
-provider-feedback continuation and `autonomous_reviewed` acceptance in the
-deployed backend and agent CLI. Verify those capabilities before activation;
-backend `v0.5.1-janez.7` and CLI `v0.5.1-janez.5` are insufficient.
+provider-feedback continuation and comment acceptance in the deployed backend
+and agent CLI. Verify those capabilities before activation; backend
+`v0.5.1-janez.7` and CLI `v0.5.1-janez.5` are insufficient. The optional scoped
+autonomous-reviewed route additionally requires its acceptance support to be
+deployed and explicitly enabled; it is not the default.
 Use the workflow commands below for acceptance, persistent holds and completion.
 Existing tickets follow their pinned version until explicitly migrated at the
 authorized workspace boundary.
@@ -69,37 +71,73 @@ an already delivered PR; if the backend rejects continuation after delivery,
 preserve the delivered history and escalate or create a separately owned
 follow-up.
 
-Before a review verdict, acceptance, rejection or exception, inspect current
-authority, blockers, candidate and revision with `multica issue workflow get
-<issue-id>`. Submit a review against that candidate with `workflow review` and
-the PR review URLs. Accept or reject only that exact candidate and
-`expected_revision`; stale writes must be reread, not silently retried against
-new work. Autonomous acceptance also requires `classification_reason` and, for
-multiple PRs, `merge_order_pr_urls`; inspect `workflow accept --help` for the
-request shape and finish successfully after requesting acceptance. For an in-scope defect, select `resume_task_id` only from the
-returned retained context options. Put technical findings and verdict details
-in the PR review, then link it from the ticket.
+A clear acceptance comment from a human authorized over the work on the
+Multica issue or a bound Forgejo PR is a workflow instruction. “Approved,”
+“looks good,” or “make ready” accepts the exact current candidate and authorizes
+readiness: remove a `WIP:` prefix and mark a draft PR ready where supported.
+It does not authorize merge. A clear “approved, merge it” instruction separately
+authorizes merge of that candidate. Questions and ambiguous comments are not
+acceptance. The human does not need to use the TUI, change the issue's status or
+assignee, or add a policy pin to express approval.
 
-An authorized human can accept an otherwise eligible current candidate on a
-nonterminal ticket without changing its status or assignee first. Do not ask
-for another approval merely to repair human-recipient bookkeeping. All exact
-candidate, review, provider, active-work and authority guards remain effective.
+The agent interprets the comment in context and submits
+`multica issue workflow comment-accept <issue-id> --file <json>` from its
+active coordinator task with the injected task token, with the exact
+`candidate_id` and `expected_revision`, `source: "multica"` or `"forgejo"`,
+the stored comment UUID or VCS workflow-input UUID as `source_id`, and
+`action: "ready"` or `"merge"`. Use the default `ready` for ordinary approval;
+select `merge` only for explicit merge wording. A clear `skip review`
+instruction permits `waive_review: true` for that candidate only; record the
+comment and a short reason, and do not ask for another confirmation. The server
+derives the human member from the stored comment and verifies that evidence;
+never supply a member ID. Include `merge_order_pr_urls` only for an explicitly
+authorized merge of multiple PRs. Set `release_hold: true` only with
+`action: "merge"` and only when the same comment explicitly releases or
+supersedes the current hold; omission or false preserves the hold. Record the
+source, author, time, candidate, revision and
+reason on the existing workflow record. A review waiver does not transfer to a
+later candidate and does not itself accept the work or authorize merge. Pair it
+with a clear acceptance or merge instruction, or apply it to an already
+accepted candidate without asking the user to repeat approval. Without that
+explicit waiver, required independent review must pass before finalizing
+acceptance/readiness.
 
-After independent review, let a designated agent accept work within the
+Before a review verdict, comment acceptance, rejection or exception, inspect
+current authority, blockers, candidate and revision with
+`multica issue workflow get <issue-id>`. Submit a review against that candidate
+with `workflow review` and the PR review URLs. Apply a human comment only to
+that exact candidate and `expected_revision`; stale writes must be reread, not
+silently retried against new work. Autonomous acceptance also requires
+`classification_reason` and, for multiple PRs, `merge_order_pr_urls`; inspect
+`workflow accept --help` for its request shape and finish successfully after
+requesting acceptance. For an in-scope defect, select `resume_task_id` only from
+the returned retained context options. Put technical findings and verdict
+details in the PR review, then link it from the ticket.
+
+An authorized human can accept an otherwise eligible current candidate by
+commenting on the issue or bound PR, regardless of its status or assignee. Do
+not ask for another approval merely to repair human-recipient bookkeeping. The
+human does not need to invoke the workflow CLI. All exact candidate, review,
+provider, active-work and authority guards remain effective.
+
+After independent review, a designated agent may accept work within the
 approved outcome and delegated scope with `acceptance_mode: "reviewed"` and an
-accurate `classification_reason`. Reserve human acceptance for a material
-unresolved product decision or an explicit user checkpoint. An internal
-technical subtask does not require product QA before an evaluable UI exists.
+accurate `classification_reason` only when an explicitly enabled, scoped
+policy grants it. This route is optional, not the default. A passing review
+alone does not accept or authorize merge. The default acceptance comes from a
+clear human comment. An internal technical subtask does not require product QA
+before an evaluable UI exists.
 For prior human approval carried forward to a changed candidate, delegated
 supervisors use a candidate-scoped `acceptance` exception naming
 `agent_actor_id`, with approval provenance and delta evaluation in
 reason/consequences, then the ordinary guarded acceptance action. Describe
 delegated carry-forward, the exception ID, prior approval and evaluated delta
 in the reason. Inspect `reviewed_delivery_preview` against the approved
-delivery conditions and hold
-delivery if they differ. Do not waive engineering review or discard
-holds. An existing pin without delegated scope requires an authorized scoped
-exception or migration, not invented authority.
+delivery conditions. Default human acceptance authorizes readiness only;
+merge requires an explicit user instruction or separately enabled scoped
+policy. Do not waive engineering review or discard holds. An existing pin
+without delegated scope requires an authorized scoped exception or migration,
+not invented authority.
 
 Normal parent/base integration does not itself revoke human approval or require
 another review. A user-directed provider merge is acceptance and delivery; read
@@ -111,10 +149,10 @@ If the runtime cannot reconcile this, report a technical limitation to Primary
 instead of asking the user to approve again or claiming a fresh review is due.
 
 For format-2 acceptance, `outcome_complete` is a compatibility field, not a
-required second acknowledgment. Human acceptance permits automatic merge unless
-explicitly held. Preserve `hold_delivery` across retries until an authorized
-release; a completed user-directed provider merge is already a fact and overrides
-the agent's hold.
+required second acknowledgment. Human acceptance authorizes readiness, not
+automatic merge. Preserve `hold_delivery` across retries until an authorized
+release or clear user supersession; a completed user-directed provider merge is
+already a fact and overrides the agent's hold.
 
 Close the ticket when all required bound PRs merge. Explicit acceptance can finish
 work needing no PR directly. Do not automatically dispatch an outcome agent or
@@ -136,7 +174,8 @@ current repository state, intervening changes, decisions and scoped overrides.
 Reconcile conflicts first. Keep coherent implementation and review/fix work in
 their retained contexts where available, and report lost continuity honestly.
 
-Apply the ticket's review and acceptance policy. Keep the initial review and
+Apply the ticket's review and acceptance policy. Unless a candidate-scoped
+human comment explicitly waives review, keep the initial review and
 fix context separate from implementation. Then keep final review independent:
 its reviewer starts a fresh context with the objective, requirements, current
 change surface and relevant evidence, without the implementer's conversation

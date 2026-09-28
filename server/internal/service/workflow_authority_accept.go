@@ -17,13 +17,14 @@ import (
 )
 
 type workflowAcceptanceRequest struct {
-	CandidateID          string   `json:"candidate_id"`
-	ExpectedRevision     int64    `json:"expected_revision"`
-	AcceptanceMode       string   `json:"acceptance_mode,omitempty"`
-	ClassificationReason string   `json:"classification_reason,omitempty"`
-	MergeOrderPRURLs     []string `json:"merge_order_pr_urls"`
-	OutcomeComplete      *bool    `json:"outcome_complete,omitempty"`
-	HoldDelivery         bool     `json:"hold_delivery,omitempty"`
+	CandidateID          string                          `json:"candidate_id"`
+	ExpectedRevision     int64                           `json:"expected_revision"`
+	AcceptanceMode       string                          `json:"acceptance_mode,omitempty"`
+	ClassificationReason string                          `json:"classification_reason,omitempty"`
+	MergeOrderPRURLs     []string                        `json:"merge_order_pr_urls"`
+	OutcomeComplete      *bool                           `json:"outcome_complete,omitempty"`
+	HoldDelivery         bool                            `json:"hold_delivery,omitempty"`
+	CommentDecision      *WorkflowCommentAcceptanceInput `json:"comment_decision,omitempty"`
 }
 
 func normalizeWorkflowAcceptanceInput(in WorkflowAcceptanceInput) (workflowAcceptanceRequest, error) {
@@ -293,12 +294,17 @@ func mustAuthorityUUID(raw string) pgtype.UUID {
 // autonomous request that only a later successful source task may finalize.
 // The issue lock serializes it with handoff, rejection and delivery.
 func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceID, issueID pgtype.UUID, actor WorkflowActor, in WorkflowAcceptanceInput) (string, error) {
-	if s.Tasks == nil || s.Tasks.TxStarter == nil {
-		return "", ErrWorkflowAuthorityUnavailable
-	}
 	request, err := normalizeWorkflowAcceptanceInput(in)
 	if err != nil {
 		return "", err
+	}
+	return s.acceptWorkflow(ctx, workspaceID, issueID, actor, request, nil)
+}
+
+func (s WorkflowAuthorityService) acceptWorkflow(ctx context.Context, workspaceID, issueID pgtype.UUID,
+	actor WorkflowActor, request workflowAcceptanceRequest, commentDecision *WorkflowCommentAcceptanceInput) (string, error) {
+	if s.Tasks == nil || s.Tasks.TxStarter == nil {
+		return "", ErrWorkflowAuthorityUnavailable
 	}
 	candidateID, _ := workflowAuthorityUUID(request.CandidateID)
 	tx, err := s.Tasks.TxStarter.Begin(ctx)
@@ -312,7 +318,11 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 		return "", err
 	}
 	mode := "human"
-	if actor.Type == "agent" {
+	if commentDecision != nil {
+		if actor.Type != "agent" {
+			return "", ErrWorkflowAuthorityForbidden
+		}
+	} else if actor.Type == "agent" {
 		mode = request.AcceptanceMode
 		if mode == "" {
 			mode = "trivial"
@@ -326,12 +336,24 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 	var existingID pgtype.UUID
 	var existingActor, existingMode, existingState string
 	var existingSource pgtype.UUID
-	var existingRequest []byte
-	err = tx.QueryRow(ctx, `SELECT id,actor_id::text,mode,state,source_task_id,authority_snapshot->'request'
+	var existingRequest, existingMergeUpgrade, existingHoldRelease []byte
+	var existingAcceptedAt pgtype.Timestamptz
+	err = tx.QueryRow(ctx, `SELECT id,actor_id::text,mode,state,source_task_id,authority_snapshot->'request',
+		authority_snapshot->'merge_upgrade',authority_snapshot->'hold_release',accepted_at
 		FROM issue_workflow_acceptance WHERE issue_id=$1 AND candidate_id=$2 AND revoked_at IS NULL
 		AND state IN ('requested','accepted') ORDER BY requested_at DESC,id DESC LIMIT 1`, issue.ID, candidateID).Scan(
-		&existingID, &existingActor, &existingMode, &existingState, &existingSource, &existingRequest)
+		&existingID, &existingActor, &existingMode, &existingState, &existingSource,
+		&existingRequest, &existingMergeUpgrade, &existingHoldRelease, &existingAcceptedAt)
 	if err == nil {
+		if commentDecision != nil {
+			bound, boundErr := workflowCommentReplayTaskBound(ctx, tx, issue, actor)
+			if boundErr != nil {
+				return "", boundErr
+			}
+			if !bound {
+				return "", ErrWorkflowAuthorityForbidden
+			}
+		}
 		var prior workflowAcceptanceRequest
 		priorOK := json.Unmarshal(existingRequest, &prior) == nil
 		if priorOK {
@@ -341,15 +363,50 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 				prior.AcceptanceMode = "trivial"
 			}
 		}
-		if priorOK &&
-			existingActor == actor.ID && existingMode == mode && reflect.DeepEqual(prior, request) &&
-			(mode == "human" || existingSource == mustAuthorityUUID(actor.SourceTaskID)) {
+		var replaySource pgtype.UUID
+		if actor.Type == "agent" {
+			replaySource, _ = workflowAuthorityUUID(actor.SourceTaskID)
+		}
+		matchingSource := commentDecision != nil && replaySource.Valid && existingSource == replaySource ||
+			commentDecision == nil && (mode == "human" || replaySource.Valid && existingSource == replaySource)
+		matchingActor := commentDecision != nil || existingActor == actor.ID
+		if priorOK && matchingActor && existingMode == mode && reflect.DeepEqual(prior, request) && matchingSource {
 			return existingState, tx.Commit(ctx)
+		}
+		if commentDecision != nil && commentDecision.Action == "merge" && existingState == "accepted" &&
+			existingMode == "human" {
+			var upgrade workflowCommentMergeUpgrade
+			if len(existingMergeUpgrade) > 0 && json.Unmarshal(existingMergeUpgrade, &upgrade) == nil &&
+				reflect.DeepEqual(upgrade.Request, *commentDecision) &&
+				upgrade.ExecutorAgentID == actor.ID && upgrade.ExecutorTaskID == actor.SourceTaskID {
+				return existingState, tx.Commit(ctx)
+			}
+			var release workflowCommentMergeUpgrade
+			if len(existingHoldRelease) > 0 && json.Unmarshal(existingHoldRelease, &release) == nil &&
+				reflect.DeepEqual(release.Request, *commentDecision) &&
+				release.ExecutorAgentID == actor.ID && release.ExecutorTaskID == actor.SourceTaskID {
+				return existingState, tx.Commit(ctx)
+			}
+			if priorOK && prior.CandidateID == request.CandidateID {
+				decisionActor, upgradeErr := s.upgradeWorkflowCommentMerge(ctx, tx, issue, existingID,
+					existingAcceptedAt, actor, *commentDecision)
+				if upgradeErr != nil {
+					return "", upgradeErr
+				}
+				if err := tx.Commit(ctx); err != nil {
+					return "", err
+				}
+				s.PublishWorkflowIssueChange(ctx, issue, decisionActor)
+				return "accepted", nil
+			}
 		}
 		return "", fmt.Errorf("%w: candidate has a different acceptance request", ErrWorkflowAuthorityConflict)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return "", err
+	}
+	if commentDecision != nil && commentDecision.ReleaseHold {
+		return "", fmt.Errorf("%w: release_hold requires an existing held acceptance", ErrWorkflowAuthorityInput)
 	}
 	if issue.WorkflowFrozen || issue.WorkflowCandidateID != candidateID || issue.Revision != request.ExpectedRevision {
 		return "", ErrWorkflowAuthorityConflict
@@ -385,7 +442,9 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 	if err != nil {
 		return "", ErrWorkflowAuthorityForbidden
 	}
+	decisionActor := actor
 	var sourceTaskID pgtype.UUID
+	var commentProof *WorkflowCommentAuthority
 	var sourceTaskPolicy pgtype.Text
 	var sourceTaskProfile, selectedProfile pgtype.UUID
 	acceptanceExceptionID, acceptanceGrant, err := workflowExceptionGrant(ctx, tx, issue, candidate.ID, pinned.Version, "acceptance")
@@ -393,11 +452,24 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 		return "", err
 	}
 	if mode == "human" {
-		role, _, err := workflowMemberRole(ctx, tx, workspaceID, actor)
+		if commentDecision != nil {
+			proof, proofErr := workflowCommentAuthority(ctx, tx, issue, actor, *commentDecision)
+			if proofErr != nil {
+				return "", proofErr
+			}
+			commentProof = &proof
+			sourceTaskID = proof.SourceTaskID
+			decisionActor = WorkflowActor{Type: "member", ID: util.UUIDToString(proof.MemberID)}
+			actorID = proof.MemberID
+		}
+		role, _, err := workflowMemberRole(ctx, tx, workspaceID, decisionActor)
 		if err != nil {
 			return "", err
 		}
-		if !workflowHumanAcceptanceAllowed(authority, role, actor.ID, acceptanceGrant) || request.ClassificationReason != "" {
+		if !workflowHumanAcceptanceAllowed(authority, role, decisionActor.ID, acceptanceGrant) || request.ClassificationReason != "" {
+			return "", ErrWorkflowAuthorityForbidden
+		}
+		if commentDecision != nil && commentDecision.WaiveReview && role != "owner" && role != "admin" {
 			return "", ErrWorkflowAuthorityForbidden
 		}
 	} else {
@@ -442,14 +514,19 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 	if err != nil {
 		return "", err
 	}
-	reviewRequired := authority.ReviewRequired && reviewGrant["waive"] != true
+	reviewRequired := authority.ReviewRequired && reviewGrant["waive"] != true &&
+		(commentDecision == nil || !commentDecision.WaiveReview)
 	// The reviewed route is explicitly for nontrivial work that already has an
 	// independent final review. A review exception must not turn it into an
 	// unreviewed autonomous acceptance.
 	if mode == "reviewed" {
 		reviewRequired = true
 	}
-	reviewID, err := workflowReviewEvidence(ctx, s, tx, issue, candidate, bindings, reviewRequired, true, sourceTaskID)
+	reviewSourceTaskID := sourceTaskID
+	if mode == "human" {
+		reviewSourceTaskID = pgtype.UUID{}
+	}
+	reviewID, err := workflowReviewEvidence(ctx, s, tx, issue, candidate, bindings, reviewRequired, true, reviewSourceTaskID)
 	if err != nil {
 		return "", err
 	}
@@ -457,7 +534,23 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 	if err != nil {
 		return "", err
 	}
-	action, method, ordered, err := workflowDeliveryPlan(candidate.PRs, authority, mode, request.MergeOrderPRURLs, deliveryGrant)
+	deliveryAuthority := authority
+	planGrant := deliveryGrant
+	if commentDecision != nil {
+		deliveryAuthority.HumanDelivery = commentDecision.Action
+		if commentDecision.Action == "ready" {
+			// A general policy or earlier exception cannot turn an ordinary
+			// approval comment into merge authority.
+			planGrant = nil
+			deliveryExceptionID = pgtype.UUID{}
+		} else {
+			planGrant = map[string]any{"action": "merge"}
+			if override, ok := deliveryGrant["merge_method"].(string); ok {
+				planGrant["merge_method"] = override
+			}
+		}
+	}
+	action, method, ordered, err := workflowDeliveryPlan(candidate.PRs, deliveryAuthority, mode, request.MergeOrderPRURLs, planGrant)
 	if err != nil {
 		return "", err
 	}
@@ -466,6 +559,15 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 		"review_exception_id":     util.UUIDToString(reviewExceptionID), "delivery_action": action,
 		"delivery_exception_id": util.UUIDToString(deliveryExceptionID),
 		"merge_method":          method, "policy_version": pinned.Version, "scope_digest": candidate.ScopeDigest}
+	if commentProof != nil {
+		authoritySnapshot["comment_authority"] = commentProof.Snapshot
+		authoritySnapshot["comment_decision"] = map[string]any{
+			"source": commentDecision.Source, "source_id": commentDecision.SourceID,
+			"action": commentDecision.Action, "waive_review": commentDecision.WaiveReview,
+			"reason": commentDecision.Reason, "candidate_id": commentDecision.CandidateID,
+			"executor_agent_id": actor.ID, "executor_task_id": actor.SourceTaskID,
+		}
+	}
 	if mode == "trivial" || mode == "reviewed" {
 		authoritySnapshot["source_task_workflow_policy_version"] = sourceTaskPolicy.String
 		authoritySnapshot["source_task_workflow_profile_id"] = util.UUIDToString(sourceTaskProfile)
@@ -502,7 +604,7 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
 		CASE WHEN $9='accepted' THEN now() ELSE NULL END,$14,$15,$16,$17,
 		CASE WHEN $17 THEN now() ELSE NULL END,$18,CASE WHEN $9='accepted' AND $18 THEN now() ELSE NULL END)`, acceptanceID, workspaceID, issueID, candidateID,
-		mode, actor.Type, actorID, sourceTaskID, state, acceptedRevision, pinned.Version, authorityJSON,
+		mode, decisionActor.Type, actorID, sourceTaskID, state, acceptedRevision, pinned.Version, authorityJSON,
 		pgtype.Text{String: request.ClassificationReason, Valid: request.ClassificationReason != ""},
 		completionVersion, acceptedStatus, outcomeAgent, request.HoldDelivery, outcomeComplete)
 	if err != nil {
@@ -510,7 +612,7 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 	}
 	var outcomeTask *db.AgentTaskQueue
 	if mode == "human" {
-		outcomeTask, err = finalizeWorkflowAcceptance(ctx, tx, q, issue, acceptanceID, actor, ordered, bindings, action, method, authority, request)
+		outcomeTask, err = finalizeWorkflowAcceptance(ctx, tx, q, issue, acceptanceID, decisionActor, ordered, bindings, action, method, authority, request)
 		if err != nil {
 			return "", err
 		}
@@ -521,7 +623,7 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 	if outcomeTask != nil {
 		s.Tasks.NotifyWorkflowCompletionTask(ctx, issue.WorkspaceID, outcomeTask)
 	}
-	s.PublishWorkflowIssueChange(ctx, issue, actor)
+	s.PublishWorkflowIssueChange(ctx, issue, decisionActor)
 	return state, nil
 }
 

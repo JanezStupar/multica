@@ -1768,6 +1768,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// VCS connect / disconnect / webhook regeneration (admin-only).
 					r.Post("/vcs/connections", h.ConnectVCS)
 					r.Post("/vcs/connections/{connectionId}/rotate-webhook", h.RotateVCSConnectionWebhook)
+					r.Get("/vcs/connections/{connectionId}/workflow-approvers", h.ListVCSWorkflowApprovers)
+					r.Put("/vcs/connections/{connectionId}/workflow-approvers", h.ReplaceVCSWorkflowApprovers)
 					r.Delete("/vcs/connections/{connectionId}", h.DeleteVCSConnection)
 				})
 
@@ -1985,6 +1987,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/workflow", h.GetIssueWorkflow)
 					r.Post("/workflow/reviews", h.RegisterIssueWorkflowReview)
 					r.Post("/workflow/acceptances", h.AcceptIssueWorkflow)
+					r.Post("/workflow/comment-acceptances", h.AcceptIssueWorkflowComment)
 					r.With(handler.RequireHumanActor).Post("/workflow/acceptances/{acceptanceID}/hold", h.HoldIssueWorkflowDelivery)
 					r.With(handler.RequireHumanActor).Post("/workflow/acceptances/{acceptanceID}/release", h.ReleaseIssueWorkflowDelivery)
 					r.Post("/workflow/acceptances/{acceptanceID}/complete", h.CompleteIssueWorkflowOutcome)

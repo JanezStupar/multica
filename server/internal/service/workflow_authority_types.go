@@ -93,15 +93,16 @@ type WorkflowRetainedContextOption struct {
 }
 
 type WorkflowAvailableActions struct {
-	AcceptHuman              bool `json:"accept_human"`
-	Reject                   bool `json:"reject"`
-	RequestTrivialAcceptance bool `json:"request_trivial_acceptance"`
+	AcceptHuman               bool `json:"accept_human"`
+	AcceptComment             bool `json:"accept_comment"`
+	Reject                    bool `json:"reject"`
+	RequestTrivialAcceptance  bool `json:"request_trivial_acceptance"`
 	RequestReviewedAcceptance bool `json:"request_reviewed_acceptance"`
-	WaiveReview              bool `json:"waive_review"`
-	HoldDelivery             bool `json:"hold_delivery"`
-	ReleaseDelivery          bool `json:"release_delivery"`
-	CompleteOutcome          bool `json:"complete_outcome"`
-	RetryOutcome             bool `json:"retry_outcome"`
+	WaiveReview               bool `json:"waive_review"`
+	HoldDelivery              bool `json:"hold_delivery"`
+	ReleaseDelivery           bool `json:"release_delivery"`
+	CompleteOutcome           bool `json:"complete_outcome"`
+	RetryOutcome              bool `json:"retry_outcome"`
 }
 
 type WorkflowDeliveryPreview struct {
@@ -129,22 +130,22 @@ type WorkflowExceptionView struct {
 }
 
 type WorkflowState struct {
-	IssueID                string                          `json:"issue_id"`
-	IssueRevision          int64                           `json:"issue_revision"`
-	Frozen                 bool                            `json:"frozen"`
-	PolicyVersion          string                          `json:"policy_version"`
-	AcceptedStatusKey      string                          `json:"accepted_status_key,omitempty"`
-	Candidate              *WorkflowCandidateView          `json:"candidate"`
-	Reviews                []WorkflowReviewView            `json:"reviews"`
-	Acceptance             *WorkflowAcceptanceView         `json:"acceptance"`
-	Feedback               *WorkflowFeedbackView           `json:"feedback,omitempty"`
-	Delivery               []WorkflowDeliveryView          `json:"delivery"`
-	RetainedContextOptions []WorkflowRetainedContextOption `json:"retained_context_options"`
-	AcceptanceBlockers     []string                        `json:"acceptance_blockers"`
-	DeliveryPreview        *WorkflowDeliveryPreview        `json:"delivery_preview"`
-	ReviewedDeliveryPreview *WorkflowDeliveryPreview       `json:"reviewed_delivery_preview,omitempty"`
-	Exceptions             []WorkflowExceptionView         `json:"exceptions"`
-	AvailableActions       WorkflowAvailableActions        `json:"available_actions"`
+	IssueID                 string                          `json:"issue_id"`
+	IssueRevision           int64                           `json:"issue_revision"`
+	Frozen                  bool                            `json:"frozen"`
+	PolicyVersion           string                          `json:"policy_version"`
+	AcceptedStatusKey       string                          `json:"accepted_status_key,omitempty"`
+	Candidate               *WorkflowCandidateView          `json:"candidate"`
+	Reviews                 []WorkflowReviewView            `json:"reviews"`
+	Acceptance              *WorkflowAcceptanceView         `json:"acceptance"`
+	Feedback                *WorkflowFeedbackView           `json:"feedback,omitempty"`
+	Delivery                []WorkflowDeliveryView          `json:"delivery"`
+	RetainedContextOptions  []WorkflowRetainedContextOption `json:"retained_context_options"`
+	AcceptanceBlockers      []string                        `json:"acceptance_blockers"`
+	DeliveryPreview         *WorkflowDeliveryPreview        `json:"delivery_preview"`
+	ReviewedDeliveryPreview *WorkflowDeliveryPreview        `json:"reviewed_delivery_preview,omitempty"`
+	Exceptions              []WorkflowExceptionView         `json:"exceptions"`
+	AvailableActions        WorkflowAvailableActions        `json:"available_actions"`
 }
 
 type WorkflowReviewInput struct {
@@ -161,6 +162,21 @@ type WorkflowAcceptanceInput struct {
 	MergeOrderPRURLs     []string `json:"merge_order_pr_urls,omitempty"`
 	OutcomeComplete      *bool    `json:"outcome_complete,omitempty"`
 	HoldDelivery         bool     `json:"hold_delivery,omitempty"`
+}
+
+// WorkflowCommentAcceptanceInput records the agent's interpretation of one
+// delivered, authenticated human comment. The source resolver supplies the
+// human identity; callers cannot choose it.
+type WorkflowCommentAcceptanceInput struct {
+	CandidateID      string   `json:"candidate_id"`
+	ExpectedRevision int64    `json:"expected_revision"`
+	Source           string   `json:"source"`
+	SourceID         string   `json:"source_id"`
+	Action           string   `json:"action,omitempty"`
+	WaiveReview      bool     `json:"waive_review,omitempty"`
+	ReleaseHold      bool     `json:"release_hold,omitempty"`
+	Reason           string   `json:"reason"`
+	MergeOrderPRURLs []string `json:"merge_order_pr_urls,omitempty"`
 }
 
 type WorkflowRejectionInput struct {

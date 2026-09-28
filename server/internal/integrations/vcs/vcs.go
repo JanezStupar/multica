@@ -113,6 +113,7 @@ type PullRequestFeedbackEvent struct {
 	RepoOwner, RepoName                                                    string
 	Number                                                                 int32
 	Kind, ObjectID, Action, Body, HTMLURL, UpdatedAt, HeadSHA, AuthorLogin string
+	AuthorID                                                               string
 }
 
 // FeedbackProvider is optional: providers without discussion adapters retain

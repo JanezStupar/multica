@@ -1730,6 +1730,7 @@ type VcsConnection struct {
 	ConnectedByID          pgtype.UUID        `json:"connected_by_id"`
 	CreatedAt              pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt              pgtype.Timestamptz `json:"updated_at"`
+	WorkflowApprovers      []byte             `json:"workflow_approvers"`
 }
 
 type VcsPullRequest struct {
@@ -1759,22 +1760,30 @@ type VcsPullRequest struct {
 }
 
 type VcsWorkflowInput struct {
-	ID            pgtype.UUID        `json:"id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	ConnectionID  pgtype.UUID        `json:"connection_id"`
-	PullRequestID pgtype.UUID        `json:"pull_request_id"`
-	EventKey      string             `json:"event_key"`
-	Kind          string             `json:"kind"`
-	Content       string             `json:"content"`
-	HtmlUrl       string             `json:"html_url"`
-	HeadSha       string             `json:"head_sha"`
-	SourceTaskID  pgtype.UUID        `json:"source_task_id"`
-	TaskID        pgtype.UUID        `json:"task_id"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	NextAttemptAt pgtype.Timestamptz `json:"next_attempt_at"`
-	LastError     string             `json:"last_error"`
-	ProcessedAt   pgtype.Timestamptz `json:"processed_at"`
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	IssueID             pgtype.UUID        `json:"issue_id"`
+	ConnectionID        pgtype.UUID        `json:"connection_id"`
+	PullRequestID       pgtype.UUID        `json:"pull_request_id"`
+	EventKey            string             `json:"event_key"`
+	Kind                string             `json:"kind"`
+	Content             string             `json:"content"`
+	HtmlUrl             string             `json:"html_url"`
+	HeadSha             string             `json:"head_sha"`
+	SourceTaskID        pgtype.UUID        `json:"source_task_id"`
+	TaskID              pgtype.UUID        `json:"task_id"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	NextAttemptAt       pgtype.Timestamptz `json:"next_attempt_at"`
+	LastError           string             `json:"last_error"`
+	ProcessedAt         pgtype.Timestamptz `json:"processed_at"`
+	ObjectID            string             `json:"object_id"`
+	ObjectRevision      string             `json:"object_revision"`
+	ObjectRevisionAt    pgtype.Timestamptz `json:"object_revision_at"`
+	ObjectAction        string             `json:"object_action"`
+	ProviderAuthorID    string             `json:"provider_author_id"`
+	ProviderAuthorLogin string             `json:"provider_author_login"`
+	Body                string             `json:"body"`
+	CandidateID         pgtype.UUID        `json:"candidate_id"`
 }
 
 type VerificationCode struct {
