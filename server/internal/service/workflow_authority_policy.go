@@ -15,27 +15,35 @@ import (
 // review content, and capability selection. The whole file is included in the
 // issue's pinned platform bundle hash.
 type WorkflowAuthorityPolicy struct {
-	FormatVersion         int
-	AcceptedStatusKey     string // format 2: active started status for accepted, unfinished work
-	OutcomeAgentID        string // format 2: coordinator for post-delivery outcome work
-	HumanAcceptRoles      []string
-	ReviewRequired        bool
-	HumanDelivery         string // ready or merge
-	AutonomousEnabled     bool
-	AutonomousAgentIDs    []string
-	AutonomousDelivery    string // ready or merge
-	MergeMethod           string // merge, squash, rebase; required for merge
-	MultiPRMergeOrder     string // explicit; absent denies multi-PR merge
-	ExternalMergedHead    string // format 2: exact or accepted; never authorizes a merge POST
-	SupervisorAgentScopes map[string]map[string]bool
+	FormatVersion      int
+	AcceptedStatusKey  string // format 2: active started status for accepted, unfinished work
+	OutcomeAgentID     string // format 2: coordinator for post-delivery outcome work
+	HumanAcceptRoles   []string
+	ReviewRequired     bool
+	HumanDelivery      string // ready or merge
+	AutonomousEnabled  bool
+	AutonomousAgentIDs []string
+	AutonomousDelivery string // ready or merge
+	// AutonomousReviewed* is a separately configured route for work that is
+	// deliberately not classified as trivial. It still requires the exact
+	// candidate's independent passing review before acceptance can be
+	// finalized.
+	AutonomousReviewedEnabled  bool
+	AutonomousReviewedAgentIDs []string
+	AutonomousReviewedDelivery string // ready or merge
+	MergeMethod                string // merge, squash, rebase; required for merge
+	MultiPRMergeOrder          string // explicit; absent denies multi-PR merge
+	ExternalMergedHead         string // format 2: exact or accepted; never authorizes a merge POST
+	SupervisorAgentScopes      map[string]map[string]bool
 }
 
 func defaultWorkflowAuthorityPolicy() WorkflowAuthorityPolicy {
 	return WorkflowAuthorityPolicy{
 		FormatVersion: 1, HumanAcceptRoles: []string{"owner", "admin", "member"},
 		ReviewRequired: true, HumanDelivery: "ready", AutonomousDelivery: "ready",
-		ExternalMergedHead:    "exact",
-		SupervisorAgentScopes: map[string]map[string]bool{},
+		AutonomousReviewedDelivery: "ready",
+		ExternalMergedHead:         "exact",
+		SupervisorAgentScopes:      map[string]map[string]bool{},
 	}
 }
 
@@ -55,6 +63,11 @@ type workflowAuthorityFile struct {
 		AcceptorAgentIDs []string `json:"acceptor_agent_ids"`
 		Delivery         string   `json:"delivery"`
 	} `json:"autonomous_trivial"`
+	AutonomousReviewed *struct {
+		Enabled          bool     `json:"enabled"`
+		AcceptorAgentIDs []string `json:"acceptor_agent_ids"`
+		Delivery         string   `json:"delivery"`
+	} `json:"autonomous_reviewed"`
 	Delivery *struct {
 		MergeMethod        string `json:"merge_method"`
 		MultiPRMergeOrder  string `json:"multi_pr_merge_order"`
@@ -143,6 +156,13 @@ func ParseWorkflowAuthorityPolicy(bundle AgentSkillData) (WorkflowAuthorityPolic
 			policy.AutonomousDelivery = input.Autonomous.Delivery
 		}
 	}
+	if input.AutonomousReviewed != nil {
+		policy.AutonomousReviewedEnabled = input.AutonomousReviewed.Enabled
+		policy.AutonomousReviewedAgentIDs = input.AutonomousReviewed.AcceptorAgentIDs
+		if input.AutonomousReviewed.Delivery != "" {
+			policy.AutonomousReviewedDelivery = input.AutonomousReviewed.Delivery
+		}
+	}
 	if input.Delivery != nil {
 		policy.MergeMethod = input.Delivery.MergeMethod
 		policy.MultiPRMergeOrder = input.Delivery.MultiPRMergeOrder
@@ -157,11 +177,13 @@ func ParseWorkflowAuthorityPolicy(bundle AgentSkillData) (WorkflowAuthorityPolic
 		return WorkflowAuthorityPolicy{}, errors.New("runtime/policy.json external_merged_head must be exact or accepted")
 	}
 	if policy.HumanDelivery != "ready" && policy.HumanDelivery != "merge" ||
-		policy.AutonomousDelivery != "ready" && policy.AutonomousDelivery != "merge" {
+		policy.AutonomousDelivery != "ready" && policy.AutonomousDelivery != "merge" ||
+		policy.AutonomousReviewedDelivery != "ready" && policy.AutonomousReviewedDelivery != "merge" {
 		return WorkflowAuthorityPolicy{}, errors.New("runtime/policy.json delivery must be ready or merge")
 	}
 	if policy.MergeMethod != "" && policy.MergeMethod != "merge" && policy.MergeMethod != "squash" && policy.MergeMethod != "rebase" ||
-		(policy.HumanDelivery == "merge" || policy.AutonomousEnabled && policy.AutonomousDelivery == "merge") && policy.MergeMethod == "" {
+		(policy.HumanDelivery == "merge" || policy.AutonomousEnabled && policy.AutonomousDelivery == "merge" ||
+			policy.AutonomousReviewedEnabled && policy.AutonomousReviewedDelivery == "merge") && policy.MergeMethod == "" {
 		return WorkflowAuthorityPolicy{}, errors.New("runtime/policy.json merge requires a supported explicit method")
 	}
 	if policy.MultiPRMergeOrder != "" && policy.MultiPRMergeOrder != "explicit" {
@@ -170,6 +192,9 @@ func ParseWorkflowAuthorityPolicy(bundle AgentSkillData) (WorkflowAuthorityPolic
 	if !policy.AutonomousEnabled && len(policy.AutonomousAgentIDs) > 0 {
 		return WorkflowAuthorityPolicy{}, errors.New("disabled autonomous acceptance cannot list acceptors")
 	}
+	if !policy.AutonomousReviewedEnabled && len(policy.AutonomousReviewedAgentIDs) > 0 {
+		return WorkflowAuthorityPolicy{}, errors.New("disabled autonomous reviewed acceptance cannot list acceptors")
+	}
 	seenAgents := map[string]bool{}
 	for _, id := range policy.AutonomousAgentIDs {
 		if _, err := util.ParseUUID(id); err != nil || seenAgents[id] {
@@ -177,8 +202,18 @@ func ParseWorkflowAuthorityPolicy(bundle AgentSkillData) (WorkflowAuthorityPolic
 		}
 		seenAgents[id] = true
 	}
+	seenReviewedAgents := map[string]bool{}
+	for _, id := range policy.AutonomousReviewedAgentIDs {
+		if _, err := util.ParseUUID(id); err != nil || seenReviewedAgents[id] {
+			return WorkflowAuthorityPolicy{}, errors.New("invalid or duplicate autonomous reviewed acceptor agent ID")
+		}
+		seenReviewedAgents[id] = true
+	}
 	if policy.AutonomousEnabled && len(policy.AutonomousAgentIDs) == 0 {
 		return WorkflowAuthorityPolicy{}, errors.New("autonomous acceptance requires explicit agent IDs")
+	}
+	if policy.AutonomousReviewedEnabled && len(policy.AutonomousReviewedAgentIDs) == 0 {
+		return WorkflowAuthorityPolicy{}, errors.New("autonomous reviewed acceptance requires explicit agent IDs")
 	}
 	for _, supervisor := range input.Supervisors {
 		if _, err := util.ParseUUID(supervisor.AgentID); err != nil || policy.SupervisorAgentScopes[supervisor.AgentID] != nil {

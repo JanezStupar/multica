@@ -7,16 +7,19 @@ import (
 
 func TestWorkflowAuthorityPolicyDefaultsAndExplicitAuthority(t *testing.T) {
 	defaults, err := ParseWorkflowAuthorityPolicy(AgentSkillData{})
-	if err != nil || !defaults.ReviewRequired || defaults.AutonomousEnabled || defaults.HumanDelivery != "ready" || defaults.MergeMethod != "" {
+	if err != nil || !defaults.ReviewRequired || defaults.AutonomousEnabled || defaults.AutonomousReviewedEnabled ||
+		defaults.HumanDelivery != "ready" || defaults.AutonomousReviewedDelivery != "ready" || defaults.MergeMethod != "" {
 		t.Fatalf("safe absent-policy defaults: %+v, %v", defaults, err)
 	}
 	id := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	config := `{"format_version":1,"human":{"accept_roles":["owner","admin"],"delivery":"merge"},` +
 		`"review":{"required":true},"autonomous_trivial":{"enabled":true,"acceptor_agent_ids":["` + id + `"],"delivery":"merge"},` +
+		`"autonomous_reviewed":{"enabled":true,"acceptor_agent_ids":["` + id + `"],"delivery":"ready"},` +
 		`"delivery":{"merge_method":"squash","multi_pr_merge_order":"explicit"},` +
 		`"supervisors":[{"agent_id":"` + id + `","scopes":["review"]}]}`
 	policy, err := ParseWorkflowAuthorityPolicy(AgentSkillData{Files: []AgentSkillFileData{{Path: "runtime/policy.json", Content: config}}})
 	if err != nil || !policy.AutonomousEnabled || policy.MergeMethod != "squash" || policy.MultiPRMergeOrder != "explicit" ||
+		!policy.AutonomousReviewedEnabled || policy.AutonomousReviewedDelivery != "ready" ||
 		len(policy.HumanAcceptRoles) != 2 || !policy.SupervisorAgentScopes[id]["review"] {
 		t.Fatalf("explicit pinned authority: %+v, %v", policy, err)
 	}
@@ -27,6 +30,8 @@ func TestWorkflowAuthorityPolicyRejectsMalformedOrImplicitGrants(t *testing.T) {
 		" ", `{"format_version":2}`, `{"format_version":1,"mystery":true}`,
 		`{"format_version":1,"human":{"delivery":"merge"}}`,
 		`{"format_version":1,"autonomous_trivial":{"enabled":true}}`,
+		`{"format_version":1,"autonomous_reviewed":{"enabled":true}}`,
+		`{"format_version":1,"autonomous_reviewed":{"enabled":false,"acceptor_agent_ids":["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]}}`,
 		`{"format_version":1,"delivery":{"merge_method":"fast-forward"}}`,
 		`{"format_version":1,"delivery":{"external_merged_head":"accepted"}}`,
 		`{"format_version":1,"supervisors":[{"agent_id":"bad","scopes":["delivery"]}]}`,

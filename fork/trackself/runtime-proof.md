@@ -403,7 +403,7 @@ handoff as proof of the whole workflow:
 | --- | --- |
 | Clarification and decomposition | A recoverable missing detail is resolved by Mica; a consequential unresolved decision is surfaced to the right human without stopping independent work. One issue can complete without mandatory children, while a genuinely useful delegated child is reconciled into its parent. |
 | Capability choice and policy override | A simple and a demanding test issue use their configured model/effort profiles. An explicit, authorized profile reselection changes later runs while existing history keeps its identity. A scoped policy override or supervisor exception changes only its recorded candidate/scope and does not rewrite another issue or the default. |
-| Classification and revision changes | A ticket that no longer meets the chosen trivial criterion returns to human acceptance. A new commit after review or acceptance creates/identifies a changed candidate and blocks stale review or delivery authority. |
+| Classification and revision changes | A ticket that no longer meets the trivial criterion uses reviewed-agent acceptance after independent review if it stays within the approved outcome; a consequential product or scope decision goes to a human. A new commit after review or acceptance creates/identifies a changed candidate and blocks stale review or delivery authority. |
 | Policy continuity and durable context | Pinned issues and retries keep their recorded version when the source skill or agent replacement changes. A new-ticket default and legacy migration are checked only in a separately authorized rehearsal after provider proof. Repository-owned outcome, decisions and limitations remain available when a provider conversation is lost. |
 
 For the capability-change case, wait until that issue/agent's outstanding
@@ -464,10 +464,11 @@ multica --profile mica-proof issue workflow get '<test-issue-uuid>'
 multica issue workflow review '<test-issue-uuid>' --file ./review.json
 ```
 
-For the nontrivial human path, read `candidate.id` and `issue_revision` again
-immediately before accepting. Use a human member profile with authority for
-that issue. The requested delivery action comes from the pinned test policy;
-the human must see the exact candidate and action preview before this command.
+For a consequential product or scope decision, or an explicit human checkpoint,
+read `candidate.id` and `issue_revision` again immediately before human
+acceptance. Use a human member profile with authority for that issue. The
+requested delivery action comes from the pinned test policy; the human must
+see the exact candidate and action preview before this command.
 
 ```json
 {"candidate_id":"<current-candidate-uuid>","expected_revision":<current-issue-revision>,"merge_order_pr_urls":["<repo-a-pr-url>","<repo-b-pr-url>"]}
@@ -510,6 +511,22 @@ policy that does not require multi-PR ordering.
 The authorized acceptor runs `multica issue workflow accept
 '<trivial-issue-uuid>' --file ./trivial-accept.json` with its task token while
 that task is running; the human proof profile must not submit this request.
+
+For reviewed-agent acceptance, use a separate nontrivial technical issue with
+an approved outcome and an independent passing provider review of the exact
+candidate. The authorized acceptor reads `reviewed_delivery_preview` and
+submits from its running task, without claiming triviality or requesting
+another human product decision:
+
+```json
+{"candidate_id":"<reviewed-candidate-uuid>","expected_revision":<current-issue-revision>,"acceptance_mode":"reviewed","classification_reason":"Approved technical outcome; independent review passed at the exact candidate","merge_order_pr_urls":["<first-disposable-pr-url>","<second-disposable-pr-url>"]}
+```
+
+Verify the request stays pending until that task succeeds, then observe
+provider readiness and exact-head delivery. Repeat with review waived or
+`review.required=false`: the reviewed action must remain unavailable without
+an independent passing review. Exercise distinct trivial and reviewed delivery
+actions so each preview and resulting action matches the selected mode.
 
 Check `workflow get` and provider state before and after the finalizer. A
 temporary provider failure must keep acceptance visible, mark delivery

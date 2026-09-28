@@ -27,6 +27,7 @@ type issueWorkflowReviewInput struct {
 type issueWorkflowAcceptanceInput struct {
 	CandidateID          string   `json:"candidate_id"`
 	ExpectedRevision     int64    `json:"expected_revision"`
+	AcceptanceMode       string   `json:"acceptance_mode,omitempty"`
 	ClassificationReason string   `json:"classification_reason,omitempty"`
 	MergeOrderPRURLs     []string `json:"merge_order_pr_urls,omitempty"`
 	OutcomeComplete      *bool    `json:"outcome_complete,omitempty"`
@@ -104,18 +105,21 @@ func newIssueWorkflowCommand() *cobra.Command {
 		}
 		if action == "accept" {
 			command.Long = "Accept the current workflow candidate using a revision-bound JSON request from --file or stdin. " +
-				"Use candidate.id and issue_revision from `multica issue workflow get`. Format-2 policies require outcome_complete; omit it only for legacy format-1 policies. " +
-				"A human acceptor sends candidate_id and expected_revision. An authorized autonomous agent also supplies a non-empty classification_reason explaining why the change is trivial; its request is pending until the source task completes successfully. " +
+				"Use candidate.id and issue_revision from `multica issue workflow get`. " +
+				"A human acceptor sends candidate_id and expected_revision. An authorized autonomous agent also supplies a non-empty classification_reason; set acceptance_mode to reviewed for policy-authorized nontrivial work after independent review, or omit it for the legacy trivial route. Its request is pending until the source task completes successfully. " +
 				"Set outcome_complete only when the ticket's actual requirements are complete; required PR merges remain server-gated. Set hold_delivery to true to keep accepted work in PR Ready without merging; PR readiness checks may still proceed. " +
-				"Include merge_order_pr_urls only when delivery_preview.requires_order is true, listing every candidate PR URL in the intended order. Unknown fields and trailing JSON are rejected."
+				"For reviewed acceptance, inspect reviewed_delivery_preview. Include merge_order_pr_urls when the selected delivery preview requires an order, listing every candidate PR URL in the intended order. Unknown fields and trailing JSON are rejected."
 			command.Example = `  Human acceptance JSON:
-	{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"outcome_complete":false}
+	{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4}
 
 	Autonomous acceptance JSON:
-	{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"classification_reason":"Scoped trivial change with completed independent review","outcome_complete":false}
+	{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"classification_reason":"Scoped trivial change with completed independent review"}
+
+	Reviewed autonomous acceptance JSON:
+	{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"acceptance_mode":"reviewed","classification_reason":"Approved technical outcome with independent review"}
 
 	Accept and hold delivery:
-	{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"outcome_complete":false,"hold_delivery":true}
+	{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"hold_delivery":true}
 
 	Add "merge_order_pr_urls":["https://git.example.com/team/app/pulls/7","https://git.example.com/team/app/pulls/8"] when the delivery preview requires an explicit PR order.`
 		}
@@ -359,6 +363,9 @@ func validateIssueWorkflowAcceptance(input *issueWorkflowAcceptanceInput) error 
 		return err
 	}
 	input.ClassificationReason = strings.TrimSpace(input.ClassificationReason)
+	if input.AcceptanceMode != "" && input.AcceptanceMode != "reviewed" {
+		return fmt.Errorf("acceptance_mode must be reviewed when provided")
+	}
 	if len(input.ClassificationReason) > 2000 {
 		return fmt.Errorf("classification_reason must be at most 2000 bytes")
 	}

@@ -20,13 +20,13 @@ func TestIssueWorkflowAcceptHelpShowsBothRequestShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4,"outcome_complete":false}`,
-		`"classification_reason":"Scoped trivial change with completed independent review","outcome_complete":false`,
-		`"outcome_complete":false,"hold_delivery":true`,
+		`{"candidate_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expected_revision":4}`,
+		`"classification_reason":"Scoped trivial change with completed independent review"`,
+		`"acceptance_mode":"reviewed","classification_reason":"Approved technical outcome with independent review"`,
+		`"hold_delivery":true`,
 		`"merge_order_pr_urls"`,
-		"delivery_preview.requires_order",
+		"reviewed_delivery_preview",
 		"pending until the source task completes successfully",
-		"Format-2 policies require outcome_complete",
 		"required PR merges remain server-gated",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -95,6 +95,13 @@ func TestIssueWorkflowAcceptValidationKeepsHumanShapeAndRejectsOversizedReason(t
 	input, err := decodeIssueWorkflowInput([]byte(`{"candidate_id":"`+candidateID+`","expected_revision":4,"classification_reason":"  Narrow change  "}`), "accept")
 	if err != nil || input.(*issueWorkflowAcceptanceInput).ClassificationReason != "Narrow change" {
 		t.Fatalf("autonomous reason was not normalized: %#v, %v", input, err)
+	}
+	reviewed, err := decodeIssueWorkflowInput([]byte(`{"candidate_id":"`+candidateID+`","expected_revision":4,"acceptance_mode":"reviewed","classification_reason":"Reviewed technical child"}`), "accept")
+	if err != nil || reviewed.(*issueWorkflowAcceptanceInput).AcceptanceMode != "reviewed" {
+		t.Fatalf("reviewed autonomous mode was not preserved: %#v, %v", reviewed, err)
+	}
+	if _, err := decodeIssueWorkflowInput([]byte(`{"candidate_id":"`+candidateID+`","expected_revision":4,"acceptance_mode":"unreviewed"}`), "accept"); err == nil || !strings.Contains(err.Error(), "acceptance_mode") {
+		t.Fatalf("unknown acceptance mode should be rejected: %v", err)
 	}
 	format2, err := decodeIssueWorkflowInput([]byte(`{"candidate_id":"`+candidateID+`","expected_revision":4,"outcome_complete":false,"hold_delivery":true}`), "accept")
 	if err != nil {

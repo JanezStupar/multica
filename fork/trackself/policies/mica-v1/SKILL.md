@@ -8,9 +8,10 @@ allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 
 This policy requires the format-2 completion implementation: accepted work
 remains `PR Ready` until required bound PRs merge; no extra outcome acknowledgment is required.
-It also requires external-merge reconciliation and exact-comment feedback
-continuation support from backend `v0.5.1-janez.7` and compatible agent CLI `v0.5.1-janez.5` or later. Activate only
-after that compatible deployment; earlier revisions cannot run this bundle.
+It also requires external-merge reconciliation, exact-comment feedback
+continuation, and `autonomous_reviewed` acceptance support in the deployed
+backend and agent CLI. Verify those capabilities before activation; backend
+`v0.5.1-janez.7` and CLI `v0.5.1-janez.5` do not support this bundle.
 Existing tickets keep their pinned policy until explicitly migrated.
 
 This bundle defines the Trackself workflow for every role working on an

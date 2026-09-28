@@ -55,14 +55,14 @@ func (s WorkflowAuthorityService) FinalizeNextRequestedAcceptance(ctx context.Co
 	}
 	var candidateID, sourceTaskID, actorID pgtype.UUID
 	var snapshot []byte
-	var sourceStatus, acceptanceState, acceptedPolicyVersion string
+	var sourceStatus, acceptanceState, acceptedPolicyVersion, acceptanceMode string
 	var sourcePolicy pgtype.Text
 	var sourceProfile, sourceAgentID pgtype.UUID
 	err = tx.QueryRow(ctx, `SELECT a.candidate_id,a.source_task_id,a.actor_id,a.authority_snapshot,
-		a.state,a.policy_version,t.status,t.agent_id,t.workflow_policy_version,t.workflow_profile_id FROM issue_workflow_acceptance a
+		a.state,a.mode,a.policy_version,t.status,t.agent_id,t.workflow_policy_version,t.workflow_profile_id FROM issue_workflow_acceptance a
 		JOIN agent_task_queue t ON t.id=a.source_task_id AND t.issue_id=a.issue_id
 		WHERE a.id=$1 AND a.issue_id=$2 FOR UPDATE OF a`, acceptanceID, issue.ID).Scan(
-		&candidateID, &sourceTaskID, &actorID, &snapshot, &acceptanceState, &acceptedPolicyVersion, &sourceStatus,
+		&candidateID, &sourceTaskID, &actorID, &snapshot, &acceptanceState, &acceptanceMode, &acceptedPolicyVersion, &sourceStatus,
 		&sourceAgentID, &sourcePolicy, &sourceProfile)
 	if errors.Is(err, pgx.ErrNoRows) || acceptanceState != "requested" {
 		return false, nil
@@ -100,6 +100,17 @@ func (s WorkflowAuthorityService) FinalizeNextRequestedAcceptance(ctx context.Co
 		SelectedProfileID     json.RawMessage           `json:"selected_workflow_profile_id"`
 	}
 	if json.Unmarshal(snapshot, &stored) != nil {
+		return block("acceptance_snapshot_invalid")
+	}
+	if acceptanceMode != "trivial" && acceptanceMode != "reviewed" {
+		return block("acceptance_snapshot_invalid")
+	}
+	if stored.Request.AcceptanceMode == "" {
+		// Rows written before acceptance_mode was introduced are the legacy
+		// autonomous-trivial route.
+		stored.Request.AcceptanceMode = "trivial"
+	}
+	if stored.Request.AcceptanceMode != acceptanceMode {
 		return block("acceptance_snapshot_invalid")
 	}
 	if stored.SourcePolicyVersion == "" || stored.SourceProfileID == "" || len(stored.SelectedProfileID) == 0 {
@@ -146,10 +157,6 @@ func (s WorkflowAuthorityService) FinalizeNextRequestedAcceptance(ctx context.Co
 	if err := ValidateWorkflowCompletionConfig(ctx, tx, issue, authority); err != nil {
 		return block("completion_config_changed")
 	}
-	allowed := false
-	for _, id := range authority.AutonomousAgentIDs {
-		allowed = allowed || id == util.UUIDToString(actorID)
-	}
 	acceptanceExceptionID, acceptanceGrant, err := workflowExceptionGrant(ctx, tx, issue, candidateID, pinned.Version, "acceptance")
 	if err != nil {
 		return true, err
@@ -157,7 +164,7 @@ func (s WorkflowAuthorityService) FinalizeNextRequestedAcceptance(ctx context.Co
 	if stored.AcceptanceExceptionID != util.UUIDToString(acceptanceExceptionID) {
 		return block("acceptance_authority_changed")
 	}
-	allowed = authority.AutonomousEnabled && allowed || acceptanceGrant["agent_actor_id"] == util.UUIDToString(actorID)
+	allowed := workflowAutonomousAcceptanceAllowed(authority, acceptanceMode, util.UUIDToString(actorID), acceptanceGrant)
 	if !allowed || stored.Request.ClassificationReason == "" {
 		return block("autonomous_authority_missing")
 	}
@@ -218,8 +225,12 @@ func (s WorkflowAuthorityService) FinalizeNextRequestedAcceptance(ctx context.Co
 	if stored.ReviewExceptionID != util.UUIDToString(reviewExceptionID) {
 		return block("review_authority_changed")
 	}
+	reviewRequired := authority.ReviewRequired && reviewGrant["waive"] != true
+	if acceptanceMode == "reviewed" {
+		reviewRequired = true
+	}
 	_, err = workflowReviewEvidence(ctx, s, tx, issue, candidate, bindings,
-		authority.ReviewRequired && reviewGrant["waive"] != true, true, pgtype.UUID{})
+		reviewRequired, true, pgtype.UUID{})
 	if errors.Is(err, ErrWorkflowAuthorityUnavailable) {
 		if _, updateErr := tx.Exec(ctx, `UPDATE issue_workflow_acceptance
 			SET next_attempt_at=now()+interval '5 seconds',last_error_class='provider_unavailable'
@@ -242,7 +253,7 @@ func (s WorkflowAuthorityService) FinalizeNextRequestedAcceptance(ctx context.Co
 	if stored.DeliveryExceptionID != util.UUIDToString(deliveryExceptionID) {
 		return block("delivery_authority_changed")
 	}
-	action, method, ordered, err := workflowDeliveryPlan(candidate.PRs, authority, "trivial", stored.Request.MergeOrderPRURLs, deliveryGrant)
+	action, method, ordered, err := workflowDeliveryPlan(candidate.PRs, authority, acceptanceMode, stored.Request.MergeOrderPRURLs, deliveryGrant)
 	if err != nil {
 		return block("delivery_authority_changed")
 	}

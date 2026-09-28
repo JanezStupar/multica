@@ -16,6 +16,15 @@
     ],
     "delivery": "merge"
   },
+  "autonomous_reviewed": {
+    "enabled": true,
+    "acceptor_agent_ids": [
+      "4fb41861-65ad-415c-98bd-b2b51eab68fb",
+      "bf691398-8cd1-4181-94f2-217315c8b66a",
+      "533882c9-5cdc-48cc-98f8-9effe6002f81"
+    ],
+    "delivery": "merge"
+  },
   "delivery": {
     "merge_method": "squash",
     "multi_pr_merge_order": "explicit",

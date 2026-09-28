@@ -30,3 +30,37 @@ func TestAutonomousAcceptanceMissingReasonIsInputErrorOnlyAfterAuthorization(t *
 		})
 	}
 }
+
+func TestAutonomousAcceptanceModesUseSeparatePolicyAuthority(t *testing.T) {
+	actor := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	authority := WorkflowAuthorityPolicy{
+		AutonomousEnabled:          true,
+		AutonomousAgentIDs:         []string{actor},
+		AutonomousReviewedEnabled:  true,
+		AutonomousReviewedAgentIDs: []string{"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"},
+	}
+	if !workflowAutonomousAcceptanceAllowed(authority, "trivial", actor, nil) {
+		t.Fatal("trivial acceptor was denied")
+	}
+	if workflowAutonomousAcceptanceAllowed(authority, "reviewed", actor, nil) {
+		t.Fatal("trivial acceptor unexpectedly gained reviewed authority")
+	}
+	if workflowAutonomousAcceptanceAllowed(authority, "unknown", actor, nil) {
+		t.Fatal("unknown acceptance mode was authorized")
+	}
+	if !workflowAutonomousAcceptanceAllowed(authority, "reviewed", actor, map[string]any{"agent_actor_id": actor}) {
+		t.Fatal("candidate-scoped reviewed exception was denied")
+	}
+}
+
+func TestWorkflowDeliveryPlanUsesReviewedDeliveryPolicy(t *testing.T) {
+	authority := WorkflowAuthorityPolicy{HumanDelivery: "ready", AutonomousDelivery: "merge", AutonomousReviewedDelivery: "ready", MergeMethod: "squash"}
+	action, method, _, err := workflowDeliveryPlan(nil, authority, "reviewed", nil, nil)
+	if err != nil || action != "ready" || method != "" {
+		t.Fatalf("reviewed delivery policy = %q/%q, err=%v", action, method, err)
+	}
+	action, method, _, err = workflowDeliveryPlan(nil, authority, "trivial", nil, nil)
+	if err != nil || action != "merge" || method != "squash" {
+		t.Fatalf("trivial delivery policy = %q/%q, err=%v", action, method, err)
+	}
+}

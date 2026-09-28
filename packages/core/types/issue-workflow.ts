@@ -72,6 +72,7 @@ export interface IssueWorkflowAvailableActions {
   accept_human: boolean;
   reject: boolean;
   request_trivial_acceptance: boolean;
+  request_reviewed_acceptance?: boolean;
   waive_review: boolean;
   hold_delivery?: boolean;
   release_delivery?: boolean;
@@ -126,6 +127,7 @@ export interface IssueWorkflow {
   feedback?: IssueWorkflowFeedback;
   acceptance_blockers: string[];
   delivery_preview: IssueWorkflowDeliveryPreview | null;
+  reviewed_delivery_preview?: IssueWorkflowDeliveryPreview | null;
   delivery: IssueWorkflowDelivery[];
   exceptions: IssueWorkflowException[];
   retained_context_options: IssueWorkflowRetainedContextOption[];
@@ -135,6 +137,7 @@ export interface IssueWorkflow {
 export interface AcceptIssueWorkflowRequest {
   candidate_id: string;
   expected_revision: number;
+  acceptance_mode?: "reviewed";
   classification_reason?: string;
   merge_order_pr_urls?: string[];
   outcome_complete?: boolean;

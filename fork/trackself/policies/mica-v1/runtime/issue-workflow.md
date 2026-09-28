@@ -1,6 +1,7 @@
-This policy requires format-2 completion, parent-result continuation and
-provider-feedback continuation from backend `v0.5.1-janez.7`, with compatible
-agent CLI `v0.5.1-janez.5` or later; do not activate it on earlier backends.
+This policy requires format-2 completion, parent-result continuation,
+provider-feedback continuation and `autonomous_reviewed` acceptance in the
+deployed backend and agent CLI. Verify those capabilities before activation;
+backend `v0.5.1-janez.7` and CLI `v0.5.1-janez.5` are insufficient.
 Use the workflow commands below for acceptance, persistent holds and completion.
 Existing tickets follow their pinned version until explicitly migrated at the
 authorized workspace boundary.
@@ -84,16 +85,18 @@ nonterminal ticket without changing its status or assignee first. Do not ask
 for another approval merely to repair human-recipient bookkeeping. All exact
 candidate, review, provider, active-work and authority guards remain effective.
 
-Before returning work for human acceptance, reconcile prior approval using the
-carry-forward rule in `references/workflow.md`. A different SHA or corrected
-candidate metadata alone is not a new human decision. Delegated supervisors
-use a candidate-scoped `acceptance` exception naming `agent_actor_id`, with
-approval provenance and delta evaluation in reason/consequences, then the
-ordinary guarded acceptance action. The current agent route uses the legacy
-`trivial` mode and mandatory `classification_reason` field: explicitly describe
+After independent review, let a designated agent accept work within the
+approved outcome and delegated scope with `acceptance_mode: "reviewed"` and an
+accurate `classification_reason`. Reserve human acceptance for a material
+unresolved product decision or an explicit user checkpoint. An internal
+technical subtask does not require product QA before an evaluable UI exists.
+For prior human approval carried forward to a changed candidate, delegated
+supervisors use a candidate-scoped `acceptance` exception naming
+`agent_actor_id`, with approval provenance and delta evaluation in
+reason/consequences, then the ordinary guarded acceptance action. Describe
 delegated carry-forward, the exception ID, prior approval and evaluated delta
-there; do not falsely classify substantive work as trivial. Inspect its
-autonomous delivery plan against the approved delivery conditions and hold
+in the reason. Inspect `reviewed_delivery_preview` against the approved
+delivery conditions and hold
 delivery if they differ. Do not waive engineering review or discard
 holds. An existing pin without delegated scope requires an authorized scoped
 exception or migration, not invented authority.

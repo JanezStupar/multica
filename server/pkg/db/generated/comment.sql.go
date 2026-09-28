@@ -243,7 +243,7 @@ WITH touched_issue AS (
                   AND a.candidate_id = issue.workflow_candidate_id
                   AND a.source_task_id = $1::uuid
                   AND a.actor_type = 'agent' AND a.actor_id = $4::uuid
-                  AND a.mode = 'trivial' AND a.state = 'requested' AND a.revoked_at IS NULL
+                  AND a.mode IN ('trivial', 'reviewed') AND a.state = 'requested' AND a.revoked_at IS NULL
                   AND a.authority_snapshot->'request'->>'expected_revision' = issue.revision::text
                   AND t.status = 'completed'
             ) THEN 0 ELSE 1 END,

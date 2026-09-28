@@ -96,6 +96,7 @@ type WorkflowAvailableActions struct {
 	AcceptHuman              bool `json:"accept_human"`
 	Reject                   bool `json:"reject"`
 	RequestTrivialAcceptance bool `json:"request_trivial_acceptance"`
+	RequestReviewedAcceptance bool `json:"request_reviewed_acceptance"`
 	WaiveReview              bool `json:"waive_review"`
 	HoldDelivery             bool `json:"hold_delivery"`
 	ReleaseDelivery          bool `json:"release_delivery"`
@@ -141,6 +142,7 @@ type WorkflowState struct {
 	RetainedContextOptions []WorkflowRetainedContextOption `json:"retained_context_options"`
 	AcceptanceBlockers     []string                        `json:"acceptance_blockers"`
 	DeliveryPreview        *WorkflowDeliveryPreview        `json:"delivery_preview"`
+	ReviewedDeliveryPreview *WorkflowDeliveryPreview       `json:"reviewed_delivery_preview,omitempty"`
 	Exceptions             []WorkflowExceptionView         `json:"exceptions"`
 	AvailableActions       WorkflowAvailableActions        `json:"available_actions"`
 }
@@ -154,6 +156,7 @@ type WorkflowReviewInput struct {
 type WorkflowAcceptanceInput struct {
 	CandidateID          string   `json:"candidate_id"`
 	ExpectedRevision     int64    `json:"expected_revision"`
+	AcceptanceMode       string   `json:"acceptance_mode,omitempty"`
 	ClassificationReason string   `json:"classification_reason,omitempty"`
 	MergeOrderPRURLs     []string `json:"merge_order_pr_urls,omitempty"`
 	OutcomeComplete      *bool    `json:"outcome_complete,omitempty"`

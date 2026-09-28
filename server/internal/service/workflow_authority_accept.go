@@ -19,6 +19,7 @@ import (
 type workflowAcceptanceRequest struct {
 	CandidateID          string   `json:"candidate_id"`
 	ExpectedRevision     int64    `json:"expected_revision"`
+	AcceptanceMode       string   `json:"acceptance_mode,omitempty"`
 	ClassificationReason string   `json:"classification_reason,omitempty"`
 	MergeOrderPRURLs     []string `json:"merge_order_pr_urls"`
 	OutcomeComplete      *bool    `json:"outcome_complete,omitempty"`
@@ -39,7 +40,19 @@ func normalizeWorkflowAcceptanceInput(in WorkflowAcceptanceInput) (workflowAccep
 	if in.MergeOrderPRURLs == nil {
 		in.MergeOrderPRURLs = []string{}
 	}
-	return workflowAcceptanceRequest(in), nil
+	request := workflowAcceptanceRequest{
+		CandidateID:          in.CandidateID,
+		ExpectedRevision:     in.ExpectedRevision,
+		ClassificationReason: in.ClassificationReason,
+		MergeOrderPRURLs:     in.MergeOrderPRURLs,
+		OutcomeComplete:      in.OutcomeComplete,
+		HoldDelivery:         in.HoldDelivery,
+	}
+	request.AcceptanceMode = strings.TrimSpace(in.AcceptanceMode)
+	if request.AcceptanceMode != "" && request.AcceptanceMode != "trivial" && request.AcceptanceMode != "reviewed" {
+		return workflowAcceptanceRequest{}, fmt.Errorf("%w: acceptance_mode must be trivial or reviewed", ErrWorkflowAuthorityInput)
+	}
+	return request, nil
 }
 
 func validateAutonomousAcceptanceAuthority(allowed, assigned bool, classificationReason string) error {
@@ -50,6 +63,31 @@ func validateAutonomousAcceptanceAuthority(allowed, assigned bool, classificatio
 		return fmt.Errorf("%w: classification_reason is required for autonomous acceptance", ErrWorkflowAuthorityInput)
 	}
 	return nil
+}
+
+func workflowAutonomousAcceptanceAllowed(authority WorkflowAuthorityPolicy, mode, actorID string, grant map[string]any) bool {
+	if grant != nil && grant["agent_actor_id"] == actorID {
+		return true
+	}
+	var enabled bool
+	var acceptors []string
+	switch mode {
+	case "trivial":
+		enabled, acceptors = authority.AutonomousEnabled, authority.AutonomousAgentIDs
+	case "reviewed":
+		enabled, acceptors = authority.AutonomousReviewedEnabled, authority.AutonomousReviewedAgentIDs
+	default:
+		return false
+	}
+	if !enabled {
+		return false
+	}
+	for _, id := range acceptors {
+		if id == actorID {
+			return true
+		}
+	}
+	return false
 }
 
 func workflowHumanAcceptanceAllowed(authority WorkflowAuthorityPolicy, role, actorID string, grant map[string]any) bool {
@@ -152,6 +190,10 @@ func workflowDeliveryPlan(prs []HandoffCandidate, policy WorkflowAuthorityPolicy
 	action := policy.HumanDelivery
 	if mode == "trivial" {
 		action = policy.AutonomousDelivery
+	} else if mode == "reviewed" {
+		action = policy.AutonomousReviewedDelivery
+	} else if mode != "human" {
+		return "", "", nil, ErrWorkflowAuthorityConflict
 	}
 	method := policy.MergeMethod
 	if grant != nil {
@@ -271,7 +313,13 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 	}
 	mode := "human"
 	if actor.Type == "agent" {
-		mode = "trivial"
+		mode = request.AcceptanceMode
+		if mode == "" {
+			mode = "trivial"
+		}
+		request.AcceptanceMode = mode
+	} else if request.AcceptanceMode != "" {
+		return "", fmt.Errorf("%w: acceptance_mode is only valid for agent acceptance", ErrWorkflowAuthorityInput)
 	}
 	// A repeated response after an ambiguous network failure returns the exact
 	// existing request, including when the issue revision already advanced.
@@ -285,9 +333,17 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 		&existingID, &existingActor, &existingMode, &existingState, &existingSource, &existingRequest)
 	if err == nil {
 		var prior workflowAcceptanceRequest
-		if json.Unmarshal(existingRequest, &prior) == nil &&
+		priorOK := json.Unmarshal(existingRequest, &prior) == nil
+		if priorOK {
+			if prior.AcceptanceMode == "" && existingMode == "trivial" {
+				// Requests written before the distinct reviewed route used an
+				// omitted mode for autonomous trivial acceptance.
+				prior.AcceptanceMode = "trivial"
+			}
+		}
+		if priorOK &&
 			existingActor == actor.ID && existingMode == mode && reflect.DeepEqual(prior, request) &&
-			(mode != "trivial" || existingSource == mustAuthorityUUID(actor.SourceTaskID)) {
+			(mode == "human" || existingSource == mustAuthorityUUID(actor.SourceTaskID)) {
 			return existingState, tx.Commit(ctx)
 		}
 		return "", fmt.Errorf("%w: candidate has a different acceptance request", ErrWorkflowAuthorityConflict)
@@ -359,11 +415,7 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 		if err != nil {
 			return "", err
 		}
-		allowed := false
-		for _, id := range authority.AutonomousAgentIDs {
-			allowed = allowed || id == actor.ID
-		}
-		allowed = authority.AutonomousEnabled && allowed || acceptanceGrant["agent_actor_id"] == actor.ID
+		allowed := workflowAutonomousAcceptanceAllowed(authority, mode, actor.ID, acceptanceGrant)
 		if err := validateAutonomousAcceptanceAuthority(allowed,
 			issue.AssigneeType.String == "agent" && issue.AssigneeID == agentID,
 			request.ClassificationReason); err != nil {
@@ -391,6 +443,12 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 		return "", err
 	}
 	reviewRequired := authority.ReviewRequired && reviewGrant["waive"] != true
+	// The reviewed route is explicitly for nontrivial work that already has an
+	// independent final review. A review exception must not turn it into an
+	// unreviewed autonomous acceptance.
+	if mode == "reviewed" {
+		reviewRequired = true
+	}
 	reviewID, err := workflowReviewEvidence(ctx, s, tx, issue, candidate, bindings, reviewRequired, true, sourceTaskID)
 	if err != nil {
 		return "", err
@@ -408,7 +466,7 @@ func (s WorkflowAuthorityService) AcceptWorkflow(ctx context.Context, workspaceI
 		"review_exception_id":     util.UUIDToString(reviewExceptionID), "delivery_action": action,
 		"delivery_exception_id": util.UUIDToString(deliveryExceptionID),
 		"merge_method":          method, "policy_version": pinned.Version, "scope_digest": candidate.ScopeDigest}
-	if mode == "trivial" {
+	if mode == "trivial" || mode == "reviewed" {
 		authoritySnapshot["source_task_workflow_policy_version"] = sourceTaskPolicy.String
 		authoritySnapshot["source_task_workflow_profile_id"] = util.UUIDToString(sourceTaskProfile)
 		// Retained tasks can use an older immutable profile. Capture the

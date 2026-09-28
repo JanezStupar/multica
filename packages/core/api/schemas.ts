@@ -3755,6 +3755,7 @@ const IssueWorkflowAvailableActionsSchema = z.object({
   accept_human: z.boolean().catch(false).default(false),
   reject: z.boolean().catch(false).default(false),
   request_trivial_acceptance: z.boolean().catch(false).default(false),
+  request_reviewed_acceptance: z.boolean().optional().catch(undefined),
   waive_review: z.boolean().catch(false).default(false),
   hold_delivery: z.boolean().optional().catch(undefined),
   release_delivery: z.boolean().optional().catch(undefined),
@@ -3796,6 +3797,7 @@ export const IssueWorkflowSchema: z.ZodType<IssueWorkflow> = z.object({
   feedback: IssueWorkflowFeedbackSchema.optional().catch(undefined),
   acceptance_blockers: z.array(z.string()).default([]),
   delivery_preview: IssueWorkflowDeliveryPreviewSchema.nullable().optional().default(null),
+  reviewed_delivery_preview: IssueWorkflowDeliveryPreviewSchema.nullable().optional(),
   delivery: z.array(IssueWorkflowDeliverySchema),
   exceptions: z.array(IssueWorkflowExceptionSchema).default([]),
   retained_context_options: z.array(IssueWorkflowRetainedContextOptionSchema).default([]),
@@ -3805,6 +3807,7 @@ export const IssueWorkflowSchema: z.ZodType<IssueWorkflow> = z.object({
 export const AcceptIssueWorkflowRequestSchema: z.ZodType<AcceptIssueWorkflowRequest> = z.object({
   candidate_id: z.uuid(),
   expected_revision: z.number().int().positive(),
+  acceptance_mode: z.literal("reviewed").optional(),
   classification_reason: z.string().trim().min(1).optional(),
   merge_order_pr_urls: z.array(z.string().url()).optional(),
   outcome_complete: z.boolean().optional(),

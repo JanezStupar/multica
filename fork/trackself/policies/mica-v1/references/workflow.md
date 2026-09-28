@@ -46,16 +46,19 @@ action:
   the fixes are made.
 - `in_review` assigned to the independent final reviewer means a fresh,
   read-only evaluation is due.
-- After required agent review, `in_review` assigned to a human means human
-  acceptance is due for nontrivial work not covered by valid prior approval.
+- After required agent review, `in_review` assigned to a human means a
+  material product decision or explicitly requested user review is due.
+  Internal technical work within the approved outcome continues through
+  reviewed-agent acceptance without a separate product gate.
 - `PR Ready` means required review and acceptance passed for the exact candidate
   but required PR delivery remains pending, held or failed.
 - `done` follows all required bound PR merges, or explicit no-PR acceptance.
   Preserve unperformed deployment or validation as separately owned follow-up work.
 
-These semantics require format-2 completion, external-merge reconciliation
-and exact-comment feedback continuation from backend and agent CLI
-`v0.5.1-janez.5`. Earlier deployments cannot run this policy revision. Resolve the workspace
+These semantics require format-2 completion, external-merge reconciliation,
+exact-comment feedback continuation, and the distinct reviewed-agent
+acceptance route in both backend and agent CLI. Deployments lacking any of
+these capabilities cannot run this policy revision. Resolve the workspace
 status identifier from its configuration, not by guessing from the `PR Ready`
 display name. The configured status must have the `started` category.
 
@@ -84,11 +87,14 @@ These request files are strict JSON, support `--file -` for stdin and are
 limited to 64 KiB. The API rejects stale candidate/revision pairs rather than
 retargeting the action.
 
-An authorized agent requests autonomous trivial acceptance with the same
-`workflow accept` command while its task is running. Include
-`classification_reason` describing how this candidate meets the triviality criteria,
+An authorized agent requests autonomous acceptance with the same
+`workflow accept` command while its task is running. For reviewed nontrivial
+work set `acceptance_mode: "reviewed"`; omit it only for genuinely trivial work.
+Include `classification_reason` describing the approved scope, independent
+review and reason the agent can accept this candidate,
 in addition to `candidate_id` and `expected_revision`. For multiple PRs, include
-`merge_order_pr_urls` in the explicit delivery order. Use `workflow accept
+`merge_order_pr_urls` in the explicit delivery order shown by the selected
+preview (`reviewed_delivery_preview` for reviewed mode). Use `workflow accept
 --help` for the human and autonomous JSON shapes. A successful request is pending
 until that exact task completes successfully; then the finalizer rechecks
 review, candidate and authority before accepting and delivering. Do not perform
@@ -96,13 +102,18 @@ manual ticket mutations after requesting acceptance.
 
 ## Review and exceptions
 
-Autonomous acceptance/merge is eligible for bounded non-feature work without
-intended flow/UX changes: mechanical refactors, targeted fixes and mechanical
-edits. New features, substantive UI/flow/UX changes, migrations and core-feature
-changes involving sync/security require user approval. Judge affected behavior,
-not labels: a targeted sync fix still requires approval. Mechanical label/typo
-edits or already-agreed labels are eligible; altered meaning/interaction is a
-UX change. Record a short classification reason, without numeric size thresholds.
+Autonomous acceptance and configured delivery are the default for work within
+an approved outcome and delegated execution scope after independent review.
+This includes nontrivial technical components of a larger feature. Record the
+exact candidate, review and a short acceptance rationale. Trivial work may use
+its existing classification route; never label nontrivial work trivial to make
+it advance. Bring a material unresolved product decision or scope change to
+the user, and honor explicit user review checkpoints and delivery holds. Do not
+turn the absence of a user-facing UI in a component into a request for product
+QA; ask for that judgment when the integrated experience can be evaluated.
+The user's assignment or commissioned ticket establishes the approved outcome;
+do not invent a second approval requirement. User feedback and current
+repository/provider facts outrank stale workflow labels.
 Honor existing scoped approval without asking for it again.
 A policy-authorized human may explicitly accept an eligible current candidate
 on any nonterminal ticket; changing its status or assignee first is unnecessary.
@@ -144,9 +155,8 @@ supervisor with delegated acceptance scope records a candidate-scoped acceptance
 exception naming the accepting agent, with the prior approval and evaluated
 delta as its reason and consequences. The agent then records acceptance for
 the current candidate through the normal guarded API. This records delegated
-carry-forward, not a fresh human verdict. The current agent API calls this
-route `trivial` and requires `classification_reason`; those legacy names do not
-classify the work as trivial. State delegated carry-forward, the exception ID,
+carry-forward, not a fresh human verdict. Use the reviewed-agent route for
+nontrivial work. State delegated carry-forward, the exception ID,
 prior approval and nonmaterial delta in that field. This route uses the
 autonomous delivery plan: compare it with the approved delivery conditions
 before requesting acceptance and set a hold if they differ. Existing tickets without that scope
@@ -250,25 +260,28 @@ remaining scope, evidence, context and ownership, then records the new policy
 version before deliberate continuation. Preparing or importing this bundle
 does not begin cutover or freeze currently active tickets.
 
-Nontrivial work requires human approval after required agent review, unless
-recorded approval already covers it under the carry-forward rule above. A human rejection of a defect within agreed scope
+Reviewed nontrivial work within the approved outcome is eligible for
+policy-configured reviewed-agent acceptance. A human decision is required for
+an explicit review checkpoint or material unresolved product judgment, not for
+every technical slice. A human rejection of a defect within agreed scope
 continues the existing objective in the appropriate retained context and
 preserves useful evidence. Invalidate the affected acceptance and pending
 delivery authority. A changed request is an explicit scope change or
 separately owned work; rejection does not authorize silent expansion.
 
 Mica may classify work as trivial only under the active configurable policy.
-Autonomous acceptance and merge require that policy to grant the authority and
-that its required validation, review, provider checks and branch protections
-are satisfied. A trivial classification, subtask completion or installed
-bundle grants no authority by itself. If scope or risk no longer fits the
-classification, return to the policy's ordinary acceptance path.
+Reviewed nontrivial work uses the distinct reviewed-agent route and must not
+be recorded as trivial. Autonomous acceptance and delivery require the policy
+to grant authority and its validation, review, provider checks and branch
+protections to pass. A classification, subtask completion or installed bundle
+grants no authority by itself. If scope or risk expands beyond delegated
+authority, return the material decision to the user.
 
 Acceptance records its actor, authority and exact reviewed commit or commits.
 Card movement alone does not create acceptance. Remove a `WIP:`
 PR title prefix and, where supported, mark a draft PR ready for review. After
 human acceptance under this policy, merge automatically unless explicitly held.
-For policy-authorized trivial work, merge after required
+For policy-authorized autonomous work, merge after required
 checks and branch protections permit it. A changed head pauses an agent-initiated
 merge until its delivery authority is reconciled. Parent integration alone does
 not require repeated review or acceptance; substantive feature changes require

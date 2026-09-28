@@ -305,6 +305,8 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 	currentCandidateValid := false
 	writerComplete := false
 	writerContinuationAllowed := false
+	trivialDeliveryBlocker := ""
+	reviewedDeliveryBlocker := ""
 	if state.Candidate == nil {
 		block("candidate_missing")
 	} else {
@@ -342,6 +344,7 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 					return state, err
 				}
 				var pendingReviewerTaskID pgtype.UUID
+				var agentTrivialAllowed, agentReviewedAllowed bool
 				if actor.Type == "agent" && nonterminalStatus && issue.AssigneeType.String == "agent" {
 					agentID, taskID, taskErr := workflowAgentTask(ctx, tx, issue, actor)
 					if taskErr == nil && agentID == issue.AssigneeID {
@@ -349,13 +352,9 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 						if grantErr != nil {
 							return state, grantErr
 						}
-						allowed := acceptanceGrant["agent_actor_id"] == actor.ID
-						if authority.AutonomousEnabled {
-							for _, id := range authority.AutonomousAgentIDs {
-								allowed = allowed || id == actor.ID
-							}
-						}
-						if allowed {
+						agentTrivialAllowed = workflowAutonomousAcceptanceAllowed(authority, "trivial", actor.ID, acceptanceGrant)
+						agentReviewedAllowed = workflowAutonomousAcceptanceAllowed(authority, "reviewed", actor.ID, acceptanceGrant)
+						if agentTrivialAllowed || agentReviewedAllowed {
 							pendingReviewerTaskID = taskID
 						}
 					}
@@ -367,6 +366,16 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 						block("review_not_independent")
 					}
 				}
+				// A reviewed autonomous request always requires an independent
+				// passing review. A review waiver can still make the separate
+				// trivial route available, so expose the reviewed blocker only
+				// when that is the route the agent would need to use.
+				if agentReviewedAllowed && !agentTrivialAllowed &&
+					(reviewGrant["waive"] == true || !authority.ReviewRequired) {
+					if _, err := workflowReviewSatisfiedForRequest(ctx, tx, issue, candidate, true, pendingReviewerTaskID); err != nil {
+						block("review_not_independent")
+					}
+				}
 				if _, err := workflowDeliveryBindings(ctx, tx, issue, candidate.PRs); err != nil {
 					block("provider_binding_missing")
 				}
@@ -374,9 +383,18 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 				if err != nil {
 					return state, err
 				}
+				primaryMode := "human"
 				action := authority.HumanDelivery
 				if actor.Type == "agent" {
-					action = authority.AutonomousDelivery
+					primaryMode = "trivial"
+					if agentReviewedAllowed && !agentTrivialAllowed {
+						primaryMode = "reviewed"
+					}
+					if primaryMode == "reviewed" {
+						action = authority.AutonomousReviewedDelivery
+					} else {
+						action = authority.AutonomousDelivery
+					}
 				}
 				method := authority.MergeMethod
 				if override, ok := deliveryGrant["action"].(string); ok {
@@ -385,16 +403,41 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 				if override, ok := deliveryGrant["merge_method"].(string); ok {
 					method = override
 				}
+				trivialAction := authority.AutonomousDelivery
+				reviewedAction := authority.AutonomousReviewedDelivery
+				if override, ok := deliveryGrant["action"].(string); ok {
+					trivialAction = override
+					reviewedAction = override
+				}
+				if actor.Type == "agent" {
+					trivialDeliveryBlocker = workflowStateDeliveryBlocker(authority, trivialAction, len(candidate.PRs), deliveryGrant)
+					reviewedDeliveryBlocker = workflowStateDeliveryBlocker(authority, reviewedAction, len(candidate.PRs), deliveryGrant)
+					if agentReviewedAllowed {
+						state.ReviewedDeliveryPreview = &WorkflowDeliveryPreview{Action: reviewedAction,
+							RequiresOrder: reviewedAction == "merge" && len(candidate.PRs) > 1}
+						if reviewedAction == "merge" {
+							state.ReviewedDeliveryPreview.MergeMethod = method
+						}
+					}
+				}
 				state.DeliveryPreview = &WorkflowDeliveryPreview{Action: action,
 					RequiresOrder: action == "merge" && len(candidate.PRs) > 1}
 				if action == "merge" {
 					state.DeliveryPreview.MergeMethod = method
-					if len(candidate.PRs) > 1 {
-						if authority.MultiPRMergeOrder != "explicit" && deliveryGrant["action"] != "merge" {
-							block("merge_not_granted")
-						} else {
-							block("merge_order_required")
+				}
+				if actor.Type == "agent" {
+					if primaryMode == "reviewed" {
+						if reviewedDeliveryBlocker != "" {
+							block(reviewedDeliveryBlocker)
 						}
+					} else if trivialDeliveryBlocker != "" {
+						block(trivialDeliveryBlocker)
+					}
+				} else if action == "merge" && len(candidate.PRs) > 1 {
+					if authority.MultiPRMergeOrder != "explicit" && deliveryGrant["action"] != "merge" {
+						block("merge_not_granted")
+					} else {
+						block("merge_order_required")
 					}
 				}
 			}
@@ -431,7 +474,7 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 	}
 	canAttempt := true
 	for _, blocker := range state.AcceptanceBlockers {
-		if blocker != "merge_order_required" {
+		if blocker != "merge_order_required" && !(actor.Type == "agent" && blocker == "merge_not_granted") {
 			canAttempt = false
 		}
 	}
@@ -458,13 +501,20 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 		if grantErr != nil {
 			return state, grantErr
 		}
-		allowed := false
-		for _, id := range authority.AutonomousAgentIDs {
-			allowed = allowed || id == actor.ID
-		}
 		agentID, taskID, taskErr := workflowAgentTask(ctx, tx, issue, actor)
-		allowed = authority.AutonomousEnabled && allowed || acceptanceGrant["agent_actor_id"] == actor.ID
-		state.AvailableActions.RequestTrivialAcceptance = allowed && canAttempt &&
+		trivialAllowed := workflowAutonomousAcceptanceAllowed(authority, "trivial", actor.ID, acceptanceGrant)
+		reviewedAllowed := workflowAutonomousAcceptanceAllowed(authority, "reviewed", actor.ID, acceptanceGrant)
+		reviewedReady := false
+		if reviewedAllowed && canAttempt && taskErr == nil && currentCandidateValid {
+			candidate, candidateErr := loadCurrentWorkflowCandidate(ctx, tx, issue, policy.Version)
+			if candidateErr == nil {
+				_, reviewErr := workflowReviewSatisfiedForRequest(ctx, tx, issue, candidate, true, taskID)
+				reviewedReady = reviewErr == nil
+			}
+		}
+		state.AvailableActions.RequestTrivialAcceptance = trivialAllowed && canAttempt && trivialDeliveryBlocker != "merge_not_granted" &&
+			taskErr == nil && issue.AssigneeType.String == "agent" && agentID == issue.AssigneeID && taskID.Valid
+		state.AvailableActions.RequestReviewedAcceptance = reviewedReady && reviewedDeliveryBlocker != "merge_not_granted" &&
 			taskErr == nil && issue.AssigneeType.String == "agent" && agentID == issue.AssigneeID && taskID.Valid
 	}
 	// Waiving review changes candidate authority, rather than completing work.
@@ -532,4 +582,18 @@ func workflowCorrectionStatus(ctx context.Context, tx pgx.Tx, issue db.Issue) (b
 		WHERE workspace_id=$1 AND key=$2 AND archived_at IS NULL
 		AND category IN ('unstarted','started','done'))`, issue.WorkspaceID, issue.Status).Scan(&eligible)
 	return eligible, err
+}
+
+// workflowStateDeliveryBlocker mirrors the delivery-plan checks that can be
+// resolved by the acceptance request itself. A required explicit order is
+// surfaced by the preview and remains requestable; a policy that has not
+// granted multi-PR merge cannot produce a valid request for that route.
+func workflowStateDeliveryBlocker(authority WorkflowAuthorityPolicy, action string, prCount int, grant map[string]any) string {
+	if action != "merge" || prCount <= 1 {
+		return ""
+	}
+	if authority.MultiPRMergeOrder != "explicit" && grant["action"] != "merge" {
+		return "merge_not_granted"
+	}
+	return "merge_order_required"
 }

@@ -124,6 +124,10 @@ func workflowReviewedHumanCandidateForCandidates(t *testing.T, format2 bool, rol
 }
 
 func workflowAutonomousCandidate(t *testing.T) (principalFixture, WorkflowAuthorityService, pgtype.UUID, pgtype.UUID) {
+	return workflowAutonomousCandidateWithMode(t, "trivial")
+}
+
+func workflowAutonomousCandidateWithMode(t *testing.T, mode string) (principalFixture, WorkflowAuthorityService, pgtype.UUID, pgtype.UUID) {
 	t.Helper()
 	f, wakeups, issueID, writerAgent, reviewerAgent := handoffFixture(t)
 	acceptorAgent := f.privateAgentOwnedBy(t, f.UserID, "workflow-acceptor")
@@ -138,7 +142,13 @@ func workflowAutonomousCandidate(t *testing.T) (principalFixture, WorkflowAuthor
 	}
 	source := old.Bundle
 	source.ID = util.UUIDToString(dbid.NewV7())
-	source.Files = append(source.Files, AgentSkillFileData{Path: "runtime/policy.json", Content: `{"format_version":1,"autonomous_trivial":{"enabled":true,"acceptor_agent_ids":["` + acceptorAgent + `"]}}`})
+	policyJSON := `{"format_version":1,"autonomous_trivial":{"enabled":true,"acceptor_agent_ids":["` + acceptorAgent + `"]}}`
+	if mode == "reviewed" {
+		policyJSON = `{"format_version":1,"autonomous_reviewed":{"enabled":true,"acceptor_agent_ids":["` + acceptorAgent + `"],"delivery":"merge"},"delivery":{"merge_method":"squash"}}`
+	} else if mode == "both" {
+		policyJSON = `{"format_version":1,"autonomous_trivial":{"enabled":true,"acceptor_agent_ids":["` + acceptorAgent + `"],"delivery":"ready"},"autonomous_reviewed":{"enabled":true,"acceptor_agent_ids":["` + acceptorAgent + `"],"delivery":"merge"},"delivery":{"merge_method":"squash"}}`
+	}
+	source.Files = append(source.Files, AgentSkillFileData{Path: "runtime/policy.json", Content: policyJSON})
 	pinned, err := wakeups.Tasks.NewIssueWorkflowPolicy(source)
 	if err != nil {
 		t.Fatal(err)
@@ -188,6 +198,42 @@ func workflowAutonomousCandidate(t *testing.T) (principalFixture, WorkflowAuthor
 	f.Exec(t, `UPDATE agent_task_queue SET status='running',started_at=now(),session_id='acceptor-session' WHERE id=$1`, acceptorTask)
 	bindWorkflowTestTask(t, f, issueID, acceptorTask)
 	return f, svc, issueID, acceptorTask
+}
+
+func TestWorkflowAuthorityAutonomousReviewedRequestKeepsDistinctMode(t *testing.T) {
+	f, svc, issueID, acceptorTask := workflowAutonomousCandidateWithMode(t, "reviewed")
+	ctx := context.Background()
+	issue, err := f.q.GetIssue(ctx, issueID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := WorkflowActor{Type: "agent", ID: util.UUIDToString(issue.AssigneeID), SourceTaskID: util.UUIDToString(acceptorTask)}
+	request := WorkflowAcceptanceInput{CandidateID: util.UUIDToString(issue.WorkflowCandidateID),
+		ExpectedRevision: issue.Revision, AcceptanceMode: "reviewed",
+		ClassificationReason: "The exact candidate passed an independent final review; this is approved reviewed work."}
+	state, err := svc.AcceptWorkflow(ctx, issue.WorkspaceID, issueID, actor, request)
+	if err != nil || state != "requested" {
+		t.Fatalf("reviewed autonomous request: %q, %v", state, err)
+	}
+	var mode string
+	if err := f.Pool.QueryRow(ctx, `SELECT mode FROM issue_workflow_acceptance WHERE issue_id=$1`, issueID).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "reviewed" {
+		t.Fatalf("reviewed request stored as %q", mode)
+	}
+	f.Exec(t, `UPDATE agent_task_queue SET status='completed',completed_at=now() WHERE id=$1`, acceptorTask)
+	processed, err := svc.FinalizeNextRequestedAcceptance(ctx)
+	if err != nil || !processed {
+		t.Fatalf("reviewed request finalization: processed=%v err=%v", processed, err)
+	}
+	var finalMode, finalState, lastError string
+	if err := f.Pool.QueryRow(ctx, `SELECT mode,state,COALESCE(last_error_class,'') FROM issue_workflow_acceptance WHERE issue_id=$1`, issueID).Scan(&finalMode, &finalState, &lastError); err != nil {
+		t.Fatal(err)
+	}
+	if finalMode != "reviewed" || finalState != "accepted" {
+		t.Fatalf("reviewed acceptance final row: mode=%q state=%q blocker=%q", finalMode, finalState, lastError)
+	}
 }
 
 func TestWorkflowAuthorityAutonomousRequestFinalizesOnlyAfterRequesterSuccess(t *testing.T) {
