@@ -189,6 +189,12 @@ func TestWorkflowClaimDirectOwnerCommentAfterMemberHandoff(t *testing.T) {
 	f.Exec(t, `UPDATE issue_wakeup SET handoff=jsonb_build_object('assignee_type','member',
 		'assignee_id',$2::text,'outgoing_task_id',$3::text),
 		handoff_completed_at=now()-interval '1 minute',enabled=false WHERE id=$1`, handoff, owner, source)
+	// A later completed agent transfer must not hide the human handoff that
+	// gives the owner's new comment its continuation context.
+	laterTransfer := workflowClaimHandoff(t, f, issue, coordinator, assigned, source)
+	f.Exec(t, `UPDATE issue_wakeup SET handoff=jsonb_build_object('assignee_type','agent',
+		'assignee_id',$2::text,'outgoing_task_id',$3::text),
+		handoff_completed_at=now()-interval '30 seconds',enabled=false WHERE id=$1`, laterTransfer, assigned, source)
 	f.Exec(t, `UPDATE issue SET status='in_review',assignee_type='agent',assignee_id=$2 WHERE id=$1`, issue, assigned)
 	comment := f.Comment(t, issue, "The approved scope is complete; please resume the ticket.")
 	queued := workflowClaimTask(t, f, assigned, issue, testutil.Cols{
@@ -252,6 +258,21 @@ func TestWorkflowClaimDirectOwnerCommentAfterMemberHandoff(t *testing.T) {
 		if !claimable() {
 			t.Fatalf("%s: restored owner continuation stayed blocked", tc.name)
 		}
+	}
+	pendingMember := workflowClaimHandoff(t, f, issue, coordinator, coordinator, source)
+	// Match the completed row's timestamp and use a greater ID to prove the
+	// same tie-break order used by the completed-handoff selector.
+	f.Exec(t, `UPDATE issue_wakeup SET id='ffffffff-ffff-ffff-ffff-ffffffffffff',
+		created_at=(SELECT created_at FROM issue_wakeup WHERE id=$2),
+		handoff=jsonb_build_object('assignee_type','member',
+		'assignee_id',$3::text,'outgoing_task_id',$4::text) WHERE id=$1`, pendingMember, handoff, owner, source)
+	pendingMember = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+	if claimable() {
+		t.Fatal("owner continuation bypassed a newer pending human handoff")
+	}
+	f.Exec(t, `UPDATE issue_wakeup SET enabled=false WHERE id=$1`, pendingMember)
+	if !claimable() {
+		t.Fatal("disabled pending handoff still blocked owner continuation")
 	}
 	activePeer := workflowClaimTask(t, f, coordinator, issue, testutil.Cols{"status": "running"})
 	if claimable() {
