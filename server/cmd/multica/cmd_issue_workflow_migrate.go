@@ -15,8 +15,8 @@ import (
 func newIssueWorkflowMigrateCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "migrate <issue-id>",
-		Short: "Reconcile and migrate a frozen issue workflow",
-		Long:  "Explicitly migrate a frozen issue to a workspace workflow skill. Record why it is moving and how its remaining work/evidence was reconciled. Requires a human workspace owner or administrator.",
+		Short: "Reconcile and migrate an issue workflow",
+		Long:  "Explicitly migrate a frozen issue or an enrolled unfinished issue to a workspace workflow skill. Current PR candidates and live acceptance on active issues must be resolved first. Record why it is moving and how remaining work/evidence was reconciled. Requires a human workspace owner or administrator.",
 		Args:  cobra.ExactArgs(1),
 		RunE:  runIssueWorkflowMigrate,
 	}

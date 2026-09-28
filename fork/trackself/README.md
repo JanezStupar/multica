@@ -182,7 +182,9 @@ cutover time. The API routes are `GET /api/workspaces/{id}/workflow-default`,
 While an old issue is frozen, issue updates and comment creation, editing and
 deletion are blocked for human and agent actors. Reading its history and
 explicit issue deletion remain available. A human workspace owner or admin can
-migrate one issue after recording why and how current work was reconciled:
+migrate one frozen issue, or an enrolled unfinished issue without a current PR
+candidate or live acceptance, after recording why and how current work was
+reconciled:
 
 ```bash
 multica issue workflow-policy migrate <issue-id> \
@@ -192,7 +194,10 @@ multica issue workflow-policy migrate <issue-id> \
 ```
 
 Migration snapshots the selected complete workflow bundle on that issue and
-unfreezes it. For an issue currently in a terminal status (including done,
+unfreezes it. An enrolled unfinished ticket with a current candidate or live
+acceptance must complete or separately reconcile that exact-version evidence
+before migrating; the operation refuses to discard it. For a frozen issue
+currently in a terminal status (including done,
 cancelled or a custom done/closed status), add `--reopen-to <active-nonterminal-status>`
 to explicitly move its current status while preserving its terminal history.
 The target must be an active workspace status whose category is not done or

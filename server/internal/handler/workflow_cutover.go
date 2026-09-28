@@ -407,8 +407,11 @@ func (h *Handler) UpdateWorkspaceWorkflowDefault(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, policy)
 }
 
-// MigrateIssueWorkflow explicitly reconciles a frozen issue before allowing
-// future execution. Old tasks, sessions and profile rows remain inspectable.
+// MigrateIssueWorkflow explicitly reconciles a frozen issue or an enrolled,
+// unfinished issue before allowing future execution under a new policy. Old
+// tasks, sessions and evidence remain inspectable. A current candidate or live
+// acceptance on an unfrozen issue must be reconciled separately; changing the
+// policy version would invalidate their exact-version authority records.
 func (h *Handler) MigrateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	if isMachineCredentialActor(r) {
 		writeError(w, http.StatusForbidden, "this endpoint is only available to human actors")
@@ -469,7 +472,8 @@ func (h *Handler) MigrateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	var prior []byte
 	var frozen bool
 	var priorStatus string
-	err = tx.QueryRow(r.Context(), `SELECT workflow_policy, workflow_frozen, status FROM issue WHERE id=$1 AND workspace_id=$2 FOR UPDATE NOWAIT`, issue.ID, issue.WorkspaceID).Scan(&prior, &frozen, &priorStatus)
+	var candidateID pgtype.UUID
+	err = tx.QueryRow(r.Context(), `SELECT workflow_policy, workflow_frozen, status, workflow_candidate_id FROM issue WHERE id=$1 AND workspace_id=$2 FOR UPDATE NOWAIT`, issue.ID, issue.WorkspaceID).Scan(&prior, &frozen, &priorStatus, &candidateID)
 	if workflowLockConflict(err) {
 		writeError(w, http.StatusConflict, "issue activity is busy; retry migration")
 		return
@@ -478,8 +482,8 @@ func (h *Handler) MigrateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "issue not found")
 		return
 	}
-	if !frozen {
-		writeError(w, http.StatusConflict, "issue is not frozen")
+	if !frozen && len(prior) == 0 {
+		writeError(w, http.StatusConflict, "unfrozen issue is not enrolled in a workflow policy")
 		return
 	}
 	if err := validateSelectedCompletionPolicy(r.Context(), tx, issue.WorkspaceID, policy); err != nil {
@@ -493,6 +497,33 @@ func (h *Handler) MigrateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	priorCategory, _ := issuestatus.ParseCategory(priorEntry.Category)
 	terminal := priorCategory == issuestatus.CategoryDone || priorCategory == issuestatus.CategoryClosed
+	if !frozen && terminal {
+		writeError(w, http.StatusConflict, "completed enrolled issue cannot change workflow policy")
+		return
+	}
+	if !frozen {
+		previousPolicy, err := h.TaskService.DecodeIssueWorkflowPolicy(prior)
+		if err != nil || previousPolicy == nil {
+			writeError(w, http.StatusConflict, "current issue workflow policy is invalid")
+			return
+		}
+		if previousPolicy.Version == policy.Version {
+			writeError(w, http.StatusConflict, "issue already uses the selected workflow policy")
+			return
+		}
+		var liveAcceptance bool
+		err = tx.QueryRow(r.Context(), `SELECT EXISTS (SELECT 1 FROM issue_workflow_acceptance
+			WHERE issue_id=$1 AND workspace_id=$2 AND state IN ('requested','accepted') AND revoked_at IS NULL)`,
+			issue.ID, issue.WorkspaceID).Scan(&liveAcceptance)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to inspect workflow acceptance")
+			return
+		}
+		if candidateID.Valid || liveAcceptance {
+			writeError(w, http.StatusConflict, "current workflow candidate or acceptance requires explicit reconciliation before policy migration")
+			return
+		}
+	}
 	if terminal && input.ReopenTo == "" {
 		writeError(w, http.StatusBadRequest, "reopen_to is required for a completed or cancelled issue")
 		return

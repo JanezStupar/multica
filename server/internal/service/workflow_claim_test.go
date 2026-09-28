@@ -176,6 +176,99 @@ func workflowClaimHandoff(t *testing.T, f principalFixture, issue, outgoingAgent
 	})
 }
 
+// An owner may give the currently assigned agent fresh direction after a
+// completed member handoff. The completed handoff must still fence unrelated
+// queued work and agent-created comment chains.
+func TestWorkflowClaimDirectOwnerCommentAfterMemberHandoff(t *testing.T) {
+	f, owner := newPrincipalFixture(t)
+	coordinator := f.privateAgentOwnedBy(t, owner, "owner-comment-coordinator")
+	assigned := f.privateAgentOwnedBy(t, owner, "owner-comment-assigned")
+	issue := workflowClaimEnrolledIssue(t, f, "Owner resumes review")
+	source := workflowClaimTask(t, f, coordinator, issue, testutil.Cols{"status": "completed"})
+	handoff := workflowClaimHandoff(t, f, issue, coordinator, coordinator, source)
+	f.Exec(t, `UPDATE issue_wakeup SET handoff=jsonb_build_object('assignee_type','member',
+		'assignee_id',$2::text,'outgoing_task_id',$3::text),
+		handoff_completed_at=now()-interval '1 minute',enabled=false WHERE id=$1`, handoff, owner, source)
+	f.Exec(t, `UPDATE issue SET status='in_review',assignee_type='agent',assignee_id=$2 WHERE id=$1`, issue, assigned)
+	comment := f.Comment(t, issue, "The approved scope is complete; please resume the ticket.")
+	queued := workflowClaimTask(t, f, assigned, issue, testutil.Cols{
+		"trigger_comment_id": comment, "trigger_evidence_kind": "comment",
+		"trigger_evidence_ref_id": comment, "originator_source": "direct_human",
+		"originator_user_id": owner, "accountable_user_id": owner,
+	})
+	var assignedRuntime string
+	f.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id=$1`, assigned).Scan(&assignedRuntime)
+	otherRuntime := f.Runtime(t, "owner-comment-other-runtime")
+
+	claimable := func() bool {
+		t.Helper()
+		var got bool
+		f.QueryRow(t, `SELECT workflow_task_claimable($1::uuid,$2::uuid)`, queued, issue).Scan(&got)
+		return got
+	}
+	var regular, human bool
+	f.QueryRow(t, `SELECT workflow_regular_task_claimable($1::uuid,$2::uuid),
+		workflow_human_comment_task_claimable($1::uuid,$2::uuid)`, queued, issue).Scan(&regular, &human)
+	if regular || human || !claimable() {
+		t.Fatalf("owner comment claim paths: regular=%v human=%v full=%v", regular, human, claimable())
+	}
+
+	// Each failed proof is restored before checking the next; these updates
+	// leave the same exact queued task for a final real ClaimTask assertion.
+	for _, tc := range []struct {
+		name                string
+		breakProof, restore func()
+	}{
+		{"ordinary_member", func() {
+			f.Exec(t, `UPDATE member SET role='member' WHERE workspace_id=$1 AND user_id=$2`, f.WorkspaceID, owner)
+		},
+			func() {
+				f.Exec(t, `UPDATE member SET role='owner' WHERE workspace_id=$1 AND user_id=$2`, f.WorkspaceID, owner)
+			}},
+		{"agent_comment", func() { f.Exec(t, `UPDATE comment SET author_type='agent' WHERE id=$1`, comment) },
+			func() { f.Exec(t, `UPDATE comment SET author_type='member' WHERE id=$1`, comment) }},
+		{"comment_from_task", func() { f.Exec(t, `UPDATE comment SET source_task_id=$2 WHERE id=$1`, comment, source) },
+			func() { f.Exec(t, `UPDATE comment SET source_task_id=NULL WHERE id=$1`, comment) }},
+		{"wrong_provenance", func() {
+			f.Exec(t, `UPDATE agent_task_queue SET trigger_evidence_kind='issue_assignment' WHERE id=$1`, queued)
+		},
+			func() { f.Exec(t, `UPDATE agent_task_queue SET trigger_evidence_kind='comment' WHERE id=$1`, queued) }},
+		{"delegated_task", func() { f.Exec(t, `UPDATE agent_task_queue SET delegated_from_task_id=$2 WHERE id=$1`, queued, source) },
+			func() { f.Exec(t, `UPDATE agent_task_queue SET delegated_from_task_id=NULL WHERE id=$1`, queued) }},
+		{"runtime_changed", func() { f.Exec(t, `UPDATE agent_task_queue SET runtime_id=$2 WHERE id=$1`, queued, otherRuntime) },
+			func() { f.Exec(t, `UPDATE agent_task_queue SET runtime_id=$2 WHERE id=$1`, queued, assignedRuntime) }},
+		{"stale_comment", func() { f.Exec(t, `UPDATE comment SET created_at=now()-interval '2 minutes' WHERE id=$1`, comment) },
+			func() {
+				f.Exec(t, `UPDATE comment SET created_at=(SELECT created_at FROM agent_task_queue WHERE id=$2) WHERE id=$1`, comment, queued)
+			}},
+		{"assignee_changed", func() { f.Exec(t, `UPDATE issue SET assignee_id=$2 WHERE id=$1`, issue, coordinator) },
+			func() { f.Exec(t, `UPDATE issue SET assignee_id=$2 WHERE id=$1`, issue, assigned) }},
+	} {
+		tc.breakProof()
+		if claimable() {
+			t.Fatalf("%s: invalid owner continuation became claimable", tc.name)
+		}
+		tc.restore()
+		if !claimable() {
+			t.Fatalf("%s: restored owner continuation stayed blocked", tc.name)
+		}
+	}
+	activePeer := workflowClaimTask(t, f, coordinator, issue, testutil.Cols{"status": "running"})
+	if claimable() {
+		t.Fatal("owner continuation bypassed active issue work")
+	}
+	f.Exec(t, `UPDATE agent_task_queue SET status='completed',completed_at=now() WHERE id=$1`, activePeer)
+	if !claimable() {
+		t.Fatal("owner continuation stayed blocked after active issue work completed")
+	}
+
+	svc := NewTaskService(f.q, f.Pool, nil, events.New())
+	task, err := svc.ClaimTask(context.Background(), util.MustParseUUID(assigned))
+	if err != nil || task == nil || util.UUIDToString(task.ID) != queued {
+		t.Fatalf("owner comment claim = %+v, %v; want %s", task, err, queued)
+	}
+}
+
 func TestWorkflowClaimPendingHandoffDoesNotStarveOtherIssue(t *testing.T) {
 	f, owner := newPrincipalFixture(t)
 	outgoing := f.privateAgentOwnedBy(t, owner, "pending-outgoing")
