@@ -185,21 +185,66 @@ func TestCheckoutIdentityUserConfigAndCoauthor(t *testing.T) {
 	assertCommitIdentity(t, filepath.Join(f.workDir, repoNameFromURL(f.source)), "Environment", "env@example.com")
 }
 
-func TestCheckoutIdentityWithoutUserFailsClosed(t *testing.T) {
+func TestCheckoutIdentityWithoutUserUsesPrivateFallback(t *testing.T) {
 	global := identityTestEnvironment(t)
 	if err := os.WriteFile(global, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	f := newExistingCheckoutFixture(t, false)
-	polluteCacheIdentity(t, f.cache.Lookup("ws-1", f.source))
-	result := f.checkout(t, firstTaskID, false)
-	if out, err := runGitCombinedOutput("-C", result.Path, "commit", "--allow-empty", "-m", "must not use cache author"); err == nil {
-		t.Fatalf("commit succeeded without a configured identity: %s", out)
+	for _, mode := range checkoutModes {
+		t.Run(mode.name, func(t *testing.T) {
+			f := newExistingCheckoutFixture(t, mode.isolated)
+			polluteCacheIdentity(t, f.cache.Lookup("ws-1", f.source))
+			result := f.checkout(t, firstTaskID, false)
+			assertCommitIdentity(t, result.Path, fallbackGitName, fallbackGitEmail)
+			if got := gitIdentityCommand(t, "-C", f.cache.Lookup("ws-1", f.source), "config", "--local", "user.name"); got != "Old Agent" {
+				t.Fatalf("shared identity was changed: %q", got)
+			}
+		})
 	}
-	// Setting an explicit worktree identity restores ordinary commits.
-	gitIdentityCommand(t, "-C", result.Path, "config", "--worktree", "user.name", "Configured")
-	gitIdentityCommand(t, "-C", result.Path, "config", "--worktree", "user.email", "configured@example.com")
-	assertCommitIdentity(t, result.Path, "Configured", "configured@example.com")
+	if contents, err := os.ReadFile(global); err != nil || len(contents) != 0 {
+		t.Fatalf("global config changed: %q, %v", contents, err)
+	}
+}
+
+func TestCheckoutIdentityPartialUserUsesServicePair(t *testing.T) {
+	global := identityTestEnvironment(t)
+	if err := os.WriteFile(global, []byte("[user]\n\tname = Partial User\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range checkoutModes {
+		t.Run(mode.name, func(t *testing.T) {
+			f := newExistingCheckoutFixture(t, mode.isolated)
+			result := f.checkout(t, firstTaskID, false)
+			assertCommitIdentity(t, result.Path, fallbackGitName, fallbackGitEmail)
+		})
+	}
+}
+
+func TestCheckoutIdentityFallbackRefreshesWithoutOverwritingIntentionalLocalPair(t *testing.T) {
+	global := identityTestEnvironment(t)
+	for _, mode := range checkoutModes {
+		t.Run(mode.name, func(t *testing.T) {
+			if err := os.WriteFile(global, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			f := newExistingCheckoutFixture(t, mode.isolated)
+			result := f.checkout(t, firstTaskID, false)
+			assertCommitIdentity(t, result.Path, fallbackGitName, fallbackGitEmail)
+			gitIdentityCommand(t, "config", "--global", "user.name", "Later User")
+			gitIdentityCommand(t, "config", "--global", "user.email", "later@example.com")
+			f.checkout(t, firstTaskID, false)
+			assertCommitIdentity(t, result.Path, "Later User", "later@example.com")
+			configScope := "--local"
+			if !mode.isolated {
+				configScope = "--worktree"
+			}
+			gitIdentityCommand(t, "-C", result.Path, "config", configScope, "user.name", "Intentional")
+			gitIdentityCommand(t, "-C", result.Path, "config", configScope, "user.email", "intentional@example.com")
+			gitIdentityCommand(t, "config", "--global", "user.name", "Newest User")
+			f.checkout(t, firstTaskID, false)
+			assertCommitIdentity(t, result.Path, "Intentional", "intentional@example.com")
+		})
+	}
 }
 
 func TestIsolatedCheckoutPreservesIntentionalIdentity(t *testing.T) {
