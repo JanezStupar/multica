@@ -1,6 +1,51 @@
 # Mica release and deployment
 
-## Current backend: v0.5.1-janez.9
+## Current backend and agent CLIs: v0.5.1-janez.11
+
+Deployed on 2026-09-28 from reviewed source commit
+`ca1d21dba1415b6ff89257ea845f85586aac5e4a`. Backend digest:
+`sha256:0b417a792aefc28307760689e3559e2ca1d505b11614fb5287b1ec5f84879d88`.
+The six-platform CLI bundle is published at
+`git.thn.janezstupar.com/janez/multica-cli@sha256:413525037882bc3f3fc6727b877dba209dec75261aeae651ce8dc5df3e1d6326`.
+Exact source and build metadata are checksum-verified in the matching Forgejo
+generic package. The earlier local `.11` automatic-acceptance build was never
+published or deployed; these digests identify the corrected release.
+
+Clear human comments can authorize acceptance and PR readiness through the
+agent's `comment-accept` action. Plain approval removes draft/WIP without
+merging. Merge, review waiver and release of an existing hold require explicit
+instructions. Forgejo account `Janez` (provider ID `1`) is mapped to the existing
+human Multica identity on the Trackself connection. Shared agent-account
+comments remain feedback, not mapped human approval.
+
+The 24 Linux, Mac and Windows agent definitions and the new-ticket default use
+`trackself-platform-51a78aaf74391e93` (skill
+`9337e215-e140-4e35-b2a6-7d5f29a8b4df`), policy version
+`sha256:e87c363a0c8255067360a0554a31285b35e671a506efbcca2dc7f4590a8e716a`.
+Both autonomous acceptance defaults are disabled. Existing ticket pins and
+review candidates were retained. All three Linux containers and both named
+native daemons returned online on `.11`; the operator CLI also matches.
+Web and desktop applications remain unchanged.
+
+Focused service/database, provider, handler and CLI regressions passed, as did
+core API tests, frontend typecheck, policy-builder tests and independent review.
+Backend readiness, migration 595, exact binary identities, agent-definition
+readback and frontend/service preservation passed. Broad product QA and a real
+agent comment-interpretation canary were not run. The disposable database,
+cluster, log and socket were removed.
+
+TRA-636's existing human approval was reconciled by the operator through a
+candidate-scoped ready-only override and human acceptance; its old policy pin
+and passing review were preserved. PR #30 is open, ready and unmerged at
+`366a31b80223967337b7cfb6e76ac6ce28351d20`. This is live readiness-delivery proof,
+not a claim that an agent interpreted a new comment during the rollout.
+
+The protected server backup is
+`utility-server:/opt/multica/config-backups/before-v0.5.1-janez.11`.
+Owning host deployment and rollback details are in private-infra's
+`infra/automation-server/multica/upgrade-v0.5.1-janez.11.md`.
+
+## Previous backend: v0.5.1-janez.9
 
 Deployed on 2026-09-28 from source commit
 `7e7cccc2997334b78bb04e584e79425001898ec8` at immutable backend digest
