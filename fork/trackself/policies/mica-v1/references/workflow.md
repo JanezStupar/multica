@@ -215,6 +215,16 @@ an already delivered PR. If the backend rejects continuation after delivery,
 preserve the delivered history and escalate or create a separately owned
 follow-up.
 
+The human owner may directly change or commission work on a ticket's PR. If
+the resulting commit exceeds the ticket's earlier description, identify that
+scope difference and ask whether to update the ticket or separate the work.
+Do not call the owner's action unauthorized, or direct a writer to remove it
+solely because the agent assignment was narrower. Preserve the commit pending
+the owner's decision. An explicit decision to keep it on this ticket authorizes
+that scope; review the full current candidate without treating the decision as
+acceptance, merge or deployment authority. Agent access and platform guards
+remain in force.
+
 ## PRs, ticket records and delivery
 
 PRs carry code handoffs: the branch, exact commit and a draft PR. PR review

@@ -266,6 +266,16 @@ existing objective, while changed intent must be reconciled as an explicit
 scope change or separately owned work. A rejection is not permission to discard
 unrelated evidence or silently expand the objective.
 
+The human owner may change or commission work on a ticket's PR directly. A
+reviewer may identify that the resulting code exceeds the ticket's earlier
+description and ask whether to update that description or separate the work.
+It must not describe the owner's action as unauthorized or order its removal
+solely because agent delegation had a narrower scope. Preserve the commit and
+obtain the owner's decision before reverting or splitting it. The owner deciding
+to keep it expands that ticket's scope; review the full current candidate and
+still require any applicable exact-commit review and acceptance. Agent access
+limits, platform guards and unrelated repository ownership remain enforced.
+
 Mica may classify a ticket as trivial under a configurable policy and record a
 brief reason. Trivial tickets are eligible for autonomous acceptance and merge,
 without waiting for a human acceptance action. An authorized agent can accept and

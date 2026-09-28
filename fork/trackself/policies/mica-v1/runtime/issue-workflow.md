@@ -54,7 +54,12 @@ reconcile the changed scope with the user's stated authorization and the
 ticket's objective. Proceed within that authorization when no material detail
 or authority remains unresolved; ask only when one does. If the scope is
 ambiguous, escalate for clarification instead of silently expanding
-implementation. This is the current-agent comment continuation path. After a
+implementation. When the human owner directly changes or commissions PR work
+beyond the earlier ticket description, preserve it and ask whether to update
+scope or separate the work. Do not label the owner's action unauthorized or
+direct a revert solely from the earlier agent scope. An explicit keep-it
+decision settles that scope question but does not accept, merge or deploy the
+candidate. This is the current-agent comment continuation path. After a
 completed human handoff, a plain comment from the assigned human (or an
 authorized workspace owner/admin) automatically wakes the server-created
 coordinator feedback task while retaining the human assignee; only that exact
