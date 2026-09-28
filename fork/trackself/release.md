@@ -1,6 +1,41 @@
 # Mica release and deployment
 
-## Current backend: v0.5.1-janez.7
+## Current backend: v0.5.1-janez.9
+
+Deployed on 2026-09-28 from source commit
+`7e7cccc2997334b78bb04e584e79425001898ec8` at immutable backend digest
+`sha256:e0a4fdbb02f14bf36d8b3dbf7034d0feddb5b5b3bc64f1c41ec680dae48a44d4`.
+Migration 593 lets a direct owner comment reach the currently assigned agent
+after a completed human handoff even if a later agent transfer exists. A newer
+live pending handoff still blocks the claim. The focused database regression,
+including an equal-timestamp handoff tie, and independent code review passed.
+Backend readiness, migration presence, unchanged `.5` frontend, and service
+invariants were verified. Exact source and metadata were published and read
+back from the registry. The protected backup is
+`utility-server:/opt/multica/config-backups/before-v0.5.1-janez.9`.
+
+The 24 Linux, Mac and Windows agent definitions and the new-ticket default use
+`trackself-platform-4b1306da8314f04a`, version
+`sha256:487c761ae70d3c5c3073dc0ce9f0e9fc1d8849fc046a425ce2a3267f2ac8f500`.
+Thirty-one unfinished tickets without a current review candidate or live
+acceptance were explicitly migrated with their status and historical evidence
+retained. TRA-623 keeps its older pin while its current review candidate is
+live. TRA-634 resumed from the owner's comment, then reached Done after the
+owner's candidate-scoped review exception and exact-head human acceptance.
+Desktopapp PR #29 merged at head `9afd37119ea97487f3a02bc268f8d02453a5bc24`;
+desktopapp was not deployed. Broad native/product QA remains deferred.
+
+## Previous backend: v0.5.1-janez.8
+
+Deployed on 2026-09-28 from `ffca3f6edd1571d003974da1d899aa54672fb0dd`
+at digest `sha256:a4a0478cbbee2c70b44b3dc4672af6f57167b2e4aa5777c3e036259406803dfa`.
+It added the audited active-ticket policy migration endpoint and migration 592
+for direct owner-comment continuation. The live TRA-634 check exposed a later
+agent transfer that migration 592 did not account for; `.9` corrects that
+selection. The `.8` backup is under
+`utility-server:/opt/multica/config-backups/before-v0.5.1-janez.8`.
+
+## Previous backend: v0.5.1-janez.7
 
 The 2026-09-27 continuation correction addresses the observed TRA-625, TRA-623
 and TRA-634 failures below. Selected format-2 tickets receive durable terminal
