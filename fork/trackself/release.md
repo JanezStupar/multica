@@ -1,6 +1,37 @@
 # Mica release and deployment
 
-## Current backend: v0.5.1-janez.13
+## Current backend, web and desktop: v0.5.1-janez.14
+
+Deployed on 2026-09-29 from `08b0c7b747dcc306adfad73d3fddc7a169351f0a`.
+Explicit human Done now
+uses ordinary status updates with a durable member decision, even when legacy
+candidate bookkeeping is incomplete. Agent and background workflow guards
+remain enforced. Candidate/review/PR evidence is preserved, and later human
+reopening, rejection and migration decisions supersede the earlier decision.
+Shared web/desktop controls no longer redirect Done to candidate acceptance.
+
+Backend digest: `sha256:13cdd453f5c55fceba682949c6286f80e2d06ce5f3e7898c141f14cfd5222d4e`.
+Web digest: `sha256:217c824c3b45c1f557ce77c3b1114e409a5601901ce7ca43e3aacf87121f9a55`.
+Exact source, metadata and the installed Linux AppImage are checksum-verified
+in their matching Forgejo generic packages. Desktop profiles/launcher were
+preserved; its daemon now uses the bundled
+`.11` CLI. Other agent runtimes and policy bindings were not changed.
+
+Independent Sol review, focused database race/UI regressions, typechecks,
+vulnerability scan, image/AppImage checks and production validation passed.
+The full frontend suite retains unrelated translation/contrast failures and
+desktop git-fixture failures from the sandbox run. No full GUI or real-agent
+canary is claimed. Runtime identity and migration 596 were verified.
+
+TRA-583 is Done at revision 41 through the supported human status API, with
+repeated stable readback and no active runs. Its existing evidence and linked
+merged PRs #5/#9 were preserved; no candidate or acceptance was fabricated.
+Private-infra's `infra/automation-server/multica/upgrade-v0.5.1-janez.14.md`
+owns detailed validation and recovery instructions. Protected host state is
+under `before-v0.5.1-janez.14`; the installed desktop predecessor is retained
+beside its AppImage. Mobile was not released.
+
+## Previous backend: v0.5.1-janez.13
 
 Deployed on 2026-09-29 from `28bb04f64d95da53a7e3c0fed1d5647df3dea37a`,
 at digest `sha256:bb62c69d210dc5187769d8ac16ac56a9cabc3f2599b6ff45d332604c0c843d6e`.
