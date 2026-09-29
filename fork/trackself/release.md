@@ -1,6 +1,6 @@
 # Mica release and deployment
 
-## Current agent CLIs: v0.5.1-janez.15
+## Current backend, web and agent CLIs: v0.5.1-janez.15
 
 Agent rollout verified on 2026-09-29 from
 `3d3938025f48ee8d6b6e93d100cc082a1f05070c`. All three Linux and both native
@@ -12,19 +12,20 @@ The current-account refresh has a 15-second bound and failed catalogs retain
 fallback provenance so recovery can retry. No real-agent inference was run.
 
 Backend/web `.15` images and six CLI archives are published and checksum-verified.
-Production remains `.14` pending utility-server SSH authentication. Source is
-committed; its GitHub push awaits the local SSH key unlock. The new server
-review classification and translated web waiting message are not yet active.
-Existing ticket pins, candidate/review evidence and PR state were preserved.
+Production backend/web are deployed at the exact `.15` digests recorded in
+private-infra. Protected database/config backups, readiness, exact source identity,
+service-setting comparisons and the production validator passed. Source is
+committed and pushed. TRA-639 was restored to `in_review` at revision 44 through
+an exact-revision status update without starting an agent. Its existing policy,
+candidate/PASS and acceptance/delivery evidence were preserved; no PR was changed.
 Private-infra `infra/automation-server/multica/upgrade-v0.5.1-janez.15.md`
-owns exact artifact identities, validation, pending activation and recovery.
+owns exact artifact identities, validation, activation and recovery.
 Desktop/mobile apps were not released in this round.
 
-## Workflow correction in validation
+## TRA-639 workflow correction
 
 The user authorized the TRA-639 correction on 2026-09-29, alongside current-account
-Codex model discovery. Live rollout and ticket recovery are recorded separately
-when verified.
+Codex model discovery. Live rollout and ticket recovery are verified above.
 
 ### TRA-639: passing review escalated on its own unfinished run
 
@@ -66,7 +67,7 @@ finish normally after PASS without escalating its own pending completion; keep
 required. Regressions cover running PASS, successful completion clearing the
 pending condition, and failed/cancelled reviewer runs remaining blocked.
 Coordination status preservation is instruction guidance, not an automatic
-status mutation. Scoped ticket recovery would restore
+status mutation. Scoped ticket recovery restored
 `in_review` without replacing candidate/review evidence or granting acceptance.
 
 The original diagnosis changed no runtime or ticket state. The correction now
@@ -78,7 +79,7 @@ zero skips; the broader autonomous scope-change regression also fails against
 unchanged source `5b0fb26f` and is outside this correction. Native desktop/live-provider
 evidence gaps remain separately owned; they were not the cause of this handoff.
 
-## Current backend, web and desktop: v0.5.1-janez.14
+## Previous backend/web and current desktop: v0.5.1-janez.14
 
 Deployed on 2026-09-29 from `08b0c7b747dcc306adfad73d3fddc7a169351f0a`.
 Explicit human Done now
