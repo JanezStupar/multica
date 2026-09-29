@@ -1,5 +1,14 @@
 # Mica policy for Trackself work
 
+This is the detailed policy for all roles on an enrolled Trackself issue. Its
+selected `runtime/issue-workflow.md` is a short claim-time route, not a second
+source of rules. This revision requires format-2 completion, parent-result and
+provider-feedback continuation, external-merge reconciliation, and exact-comment
+`comment-accept` support in the deployed backend and agent CLI. Backend
+`v0.5.1-janez.7` and CLI `v0.5.1-janez.5` are insufficient. Verify these
+capabilities before activation; the optional reviewed-agent route also needs
+its own deployed support and explicit scoped enablement.
+
 ## Responsibility and execution
 
 Mica owns the assigned outcome from understanding through implementation,
@@ -13,6 +22,37 @@ the configured capabilities. Straightforward work may use a regular
 implementor; demanding or ambiguous work may use a stronger configured
 capability. Reassess when complexity changes and preserve the work and
 evidence when escalating. Do not hardcode model names or rankings.
+
+The claim already supplies this run's selected instructions, skill bundle and
+task profile. Treat those as the effective execution profile for this task;
+the live agent record can differ from the issue-agent profile pinned at first
+use. For a handoff, start with the ticket's recorded owner and saved handoff.
+When a new recipient or route actually needs selection, consult the relevant
+entry in workspace-control's `config/mica-agent-desired-state.json`, which
+owns the Linux identities, capabilities and review routes. Resolve only the
+candidate recipient needed for this handoff. In that repository, project one
+known agent and one applicable review route without printing instruction or
+model inventories (replace the placeholders with the current agent ID and
+environment):
+
+```bash
+jq -ce --arg id '<agent-id>' '[.updates[] | select(.id == $id) | {id, key, role, environment}] | if length == 1 then .[0] else error("agent route is missing or ambiguous") end' config/mica-agent-desired-state.json
+jq -ce --arg env '<environment>' '[.review_routes[] | select(.environment == $env) | {environment, review_fix: .review_fix.id, final_review: .final_review.id}] | if length == 1 then .[0] else error("review route is missing or ambiguous") end' config/mica-agent-desired-state.json
+```
+
+For an enrolled issue, check the chosen recipient's live availability only
+when needed:
+
+```bash
+multica agent get <agent-id> --output json | jq -c '{id, runtime_id, runtime_bound, archived_at}'
+```
+
+Its pinned platform snapshot wins over the live allowlist and replacement map,
+including `[]` or an older mapped skill. The selected task profile remains
+authoritative for the current run. Live binding drift does not block the pinned
+handoff or authorize migration. Do not repeatedly read the full desired-state
+configuration on every turn or substitute a copied route table in this bundle
+for its owning configuration.
 
 Create subtasks when they provide useful independent outcomes, parallel work,
 dependency boundaries or a distinct environment. A job may remain on one
@@ -72,6 +112,17 @@ Reuse the same `request_key` for an ambiguous retry and inspect saved records
 with `multica issue handoff list <issue-id>`. Read the selected platform
 reference for command effects, including when the recipient is enqueued and
 how to cancel pending work.
+The handoff names the exact outgoing task and one recipient, intended status
+and context mode. Include every code candidate's repository URL, PR URL,
+branch, full commit SHA and observed draft state; use an empty candidate list
+for work without code changes. A PR may already be ready. The saved candidate
+declares inputs and does not verify the provider's current head; inspect that
+head at the relevant review and delivery boundary.
+
+An explicit human assignment may continue the current work despite an older
+handoff record. When a delegated child finishes, reconcile its result in the
+retained parent context. Completion alone grants no new privileged operation
+and proves none of the remaining outcome.
 
 An agent recipient may use `agent_id` or `assignee_type: "agent"` with
 `assignee_id`. A human recipient uses `assignee_type: "member"` and
@@ -125,6 +176,11 @@ change ticket status or assignee, use the TUI, or add a policy pin as ceremony
 for a clear decision. Existing candidate, revision, identity, provider and
 active-work guards remain effective. Do not silently retarget approval to
 unseen commits.
+
+Before a review verdict, acceptance, rejection or exception, read
+`multica issue workflow get <issue-id>` for the current candidate, revision,
+blockers and authority. Use the exact returned identity in the action; a stale
+write calls for a fresh read and judgment, not a retry retargeted to new work.
 
 An explicit “skip review” instruction is a candidate-scoped override of the
 configured review requirement. Record its source and reason without asking for
@@ -195,12 +251,11 @@ head without creating a new human decision.
 A user-directed provider merge, including Primary acting through the service
 account, records delivery and may establish acceptance of that merged
 candidate. Reconcile that completed merge before stale-head handling, then
-close once every required bound PR is merged. An agent delivery hold does not undo the user's completed merge.
-Do not request another acceptance or review solely because parent integration
-changed the SHA. Completed provider merges are facts, including a changed head. Observing those
-facts never grants an agent permission to initiate a different merge. Record the provider actor without
-claiming it identifies a human. This does not authorize an agent to initiate an
-otherwise forbidden merge.
+close once every required bound PR is merged. An agent delivery hold does not
+undo the user's completed merge. Do not request another acceptance or review
+solely because parent integration changed the SHA. Record the provider actor
+without claiming it identifies a human. Observing a completed merge never
+grants an agent permission to initiate a different one.
 
 Exact-head review and delivery guards for agent-initiated merges still apply.
 For a new candidate, a supervisor with delegated acceptance scope may record a
@@ -253,6 +308,11 @@ shows active and revoked exceptions, acceptance blockers and delivery preview.
 
 Use a member comment as workflow evidence and reconcile it with the assigned
 outcome, current candidate and authorization before taking a workflow action.
+A shared provider account is not proof that a comment came from a human.
+Append `<!-- multica-agent-output -->` to agent-authored PR comments and review
+bodies, and never put that marker on a human comment. Inspect current provider
+head and intervening commits when feedback arrives. Classify human feedback
+against the owning scope without requiring its author to repeat it in Multica.
 A stale status or handoff record does not by itself block a clear correction.
 An authorized human's clear acceptance comment is handled separately through
 `workflow comment-accept`: “Approved,” “looks good,” or “make ready” accepts
@@ -274,6 +334,9 @@ exact candidate, issue revision and comment IDs and
 `kind: "in_scope_defect"`. The server returns the correction to the retained
 writer and invalidates the affected acceptance or delivery authority so the
 corrected candidate receives a fresh independent review.
+For this action, bind `candidate_id`, `expected_revision` and `comment_id` to
+the current workflow and stored comment. Choose a `resume_task_id` only from
+the retained writer contexts returned by `workflow get`; do not invent one.
 
 A comment that clearly requests a different outcome is a scope change: submit
 `kind: "scope_change"`, preserve the existing objective and evidence, and
@@ -311,6 +374,17 @@ scope, blockers and acceptance, with links to the relevant PRs and reviews;
 do not duplicate technical reports on the ticket. One ticket may coordinate
 multiple PRs across repositories. Durable decisions remain in their owning
 repositories.
+
+For a Forgejo code handoff, use the bundled `scripts/forgejo_draft_pr.py` to
+create or verify an open draft PR against the intended branch and exact full
+commit SHA. Use the task's trusted `FORGEJO_URL` and `FORGEJO_TOKEN` from the
+configured connection; do not put the token in command arguments or ticket
+text. For a multiline PR description, pass `create --body-file <utf8-path>`
+so its newlines and literal text are preserved. Read the script's help for
+the remaining inputs. Its
+readback is PR evidence, not review, acceptance or delivery authority. Human
+acceptance may later make the PR ready through the guarded workflow; the
+helper has no ready or merge action.
 
 Each ticket remains on its explicitly recorded policy version across runs,
 retries and resumed contexts. Defaults apply to newly enrolled tickets after
@@ -366,6 +440,12 @@ integration changes. Mark `done`
 only when required merges and the actual objective are complete, including any
 required deployment or runtime validation. Work without a PR does not need one
 manufactured for completion.
+
+In format 2, `outcome_complete` is a compatibility field, not a second
+acknowledgment gate. Explicit acceptance of no-PR work completes it directly;
+required bound PRs complete after their merges. Do not automatically dispatch
+an outcome agent or claim that unperformed deployment or QA occurred. Record
+such work honestly as separately requested follow-up.
 
 When merge is authorized, use squash and merge by default with a meaningful
 commit title/message and references to the ticket and PR. A separate merge

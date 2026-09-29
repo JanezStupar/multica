@@ -1,34 +1,20 @@
 ---
 name: trackself-platform
 description: "Coordinate Trackself ticket work under the versioned Mica workflow and Multica platform contracts."
-allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
+allowed-tools: Bash(multica *), Bash(git *), Bash(gh *), Bash(python3 *)
 ---
 
-# Mica ticket workflow
+# Trackself issue workflow
 
-This policy requires the format-2 completion implementation: accepted work
-remains `PR Ready` until required bound PRs merge; no extra outcome acknowledgment is required.
-It also requires external-merge reconciliation, exact-comment feedback
-continuation and the `comment-accept` action in the deployed backend and agent
-CLI. The default acceptance path uses a clear human comment to accept the exact
-candidate and make its PR ready; merging requires a separate explicit human
-instruction. The optional scoped autonomous-reviewed route additionally
-requires its acceptance support to be deployed and explicitly enabled. Verify required capabilities before
-activation; backend `v0.5.1-janez.7` and CLI `v0.5.1-janez.5` do not support this
-bundle.
-Existing tickets keep their pinned policy until explicitly migrated.
+For an enrolled issue, follow its pinned policy and the detailed
+[`references/workflow.md`](references/workflow.md). An issue run also receives
+[`runtime/issue-workflow.md`](runtime/issue-workflow.md) in its runtime brief;
+use that short route to find the applicable workflow section. The selected
+workflow governs authority, review, acceptance and delivery for every role.
 
-This bundle defines the Trackself workflow for every role working on an
-enrolled ticket. Read [`references/workflow.md`](references/workflow.md) for
-the shared policy. For issue turns, also follow
-[`runtime/issue-workflow.md`](runtime/issue-workflow.md). These selected
-instructions replace conflicting generic workflow defaults.
-
-The eight `references/*.md` files describe Multica command and platform
-effects. Open only the reference needed for the action at hand. Those platform
-contracts govern what a command does; the selected workflow governs when and
-under what authority to use it.
-
-An archive name identifies these packaged contents. It does not establish a
-ticket's policy pin or activate this workflow. Use the version explicitly
-recorded for the ticket. Do not silently enroll or migrate existing work.
+Open the relevant `references/*.md` platform contract only when you need a
+Multica command's effects. A bundle name or current workspace default does not
+establish a ticket pin. Existing tickets retain their recorded version until
+an authorized migration. Building or importing this bundle does not activate
+it. The capability requirements and activation boundary are in the workflow
+reference.

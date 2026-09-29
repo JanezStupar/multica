@@ -28,6 +28,7 @@ REQUIRED_POLICY_FILES = {
     "SKILL.md",
     "runtime/issue-workflow.md",
     "references/workflow.md",
+    "scripts/forgejo_draft_pr.py",
 }
 POLICY_VERSION_RE = re.compile(r"mica-v[0-9]+(?:\.[0-9]+)*\Z")
 BASE_SKILL_NAME = "trackself-platform"

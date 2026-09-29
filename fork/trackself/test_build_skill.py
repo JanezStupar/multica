@@ -21,6 +21,7 @@ POLICY_FILES = {
     ),
     "runtime/issue-workflow.md": "Follow the active ticket policy.\n",
     "references/workflow.md": "Mica coordinates the assigned outcome.\n",
+    "scripts/forgejo_draft_pr.py": "#!/usr/bin/env python3\nprint('test helper')\n",
 }
 
 
@@ -60,6 +61,16 @@ class BuildSkillTests(unittest.TestCase):
         self.assertIn(f"name: {first_name}\n", root_skill)
         self.assertEqual(len(manifest["bundle_identity_sha256"]), 64)
         self.assertIn("multica-platform/references/issues.md", manifest["source_hashes_sha256"])
+        self.assertIn("policy/scripts/forgejo_draft_pr.py", manifest["source_hashes_sha256"])
+        self.assertEqual(
+            manifest["packaged_file_hashes_sha256"]["scripts/forgejo_draft_pr.py"],
+            manifest["source_hashes_sha256"]["policy/scripts/forgejo_draft_pr.py"],
+        )
+        with zipfile.ZipFile(first_archive) as archive:
+            self.assertEqual(
+                archive.read("scripts/forgejo_draft_pr.py"),
+                POLICY_FILES["scripts/forgejo_draft_pr.py"].encode("utf-8"),
+            )
 
     def test_policy_version_and_upstream_reference_content_change_identity(self):
         v1_name, _, v1_manifest = build_skill.build_bundle(self.policy, self.platform)
@@ -81,6 +92,12 @@ class BuildSkillTests(unittest.TestCase):
         self.assertNotEqual(v1_name, changed_name)
         self.assertNotEqual(v1_manifest["bundle_identity_sha256"], changed_manifest["bundle_identity_sha256"])
 
+        helper = self.policy / "scripts" / "forgejo_draft_pr.py"
+        helper.write_text(helper.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8")
+        helper_name, _, helper_manifest = build_skill.build_bundle(self.policy, self.platform)
+        self.assertNotEqual(changed_name, helper_name)
+        self.assertNotEqual(changed_manifest["bundle_identity_sha256"], helper_manifest["bundle_identity_sha256"])
+
     def test_nested_skill_md_is_rejected(self):
         nested = self.policy / "references" / "other" / "SKILL.md"
         nested.parent.mkdir(parents=True)
@@ -99,6 +116,13 @@ class BuildSkillTests(unittest.TestCase):
         with self.assertRaisesRegex(build_skill.BundleError, "missing required files"):
             build_skill.build_bundle(self.policy, self.platform)
 
+        (self.policy / "runtime" / "issue-workflow.md").write_text(
+            POLICY_FILES["runtime/issue-workflow.md"], encoding="utf-8"
+        )
+        (self.policy / "scripts" / "forgejo_draft_pr.py").unlink()
+        with self.assertRaisesRegex(build_skill.BundleError, "scripts/forgejo_draft_pr.py"):
+            build_skill.build_bundle(self.policy, self.platform)
+
     def test_noncanonical_base_skill_name_is_rejected(self):
         path = self.policy / "SKILL.md"
         path.write_text(POLICY_FILES["SKILL.md"].replace("trackself-platform", "other-skill"), encoding="utf-8")
@@ -113,6 +137,54 @@ class BuildSkillTests(unittest.TestCase):
         path.write_text(malformed, encoding="utf-8")
         with self.assertRaisesRegex(build_skill.BundleError, "unterminated quoted value"):
             build_skill.build_bundle(self.policy, self.platform)
+
+    def test_tracked_policy_routes_to_one_detailed_reference(self):
+        root = (build_skill.DEFAULT_POLICY / "SKILL.md").read_text(encoding="utf-8")
+        runtime = (build_skill.DEFAULT_POLICY / "runtime/issue-workflow.md").read_text(encoding="utf-8")
+        reference = (build_skill.DEFAULT_POLICY / "references/workflow.md").read_text(encoding="utf-8")
+        self.assertLess(len(root.splitlines()), 30)
+        self.assertLess(len(runtime.splitlines()), 55)
+        self.assertIn("references/workflow.md", root)
+        self.assertIn("references/workflow.md", runtime)
+        for section in (
+            "## Responsibility and execution",
+            "## Status and handoffs",
+            "## Review and exceptions",
+            "## Member feedback continuation",
+            "## PRs, ticket records and delivery",
+        ):
+            self.assertIn(section, reference)
+        for safeguard in (
+            "pinned Trackself policy",
+            "fresh, read-only final reviewer",
+            "comment-accept",
+            "explicit human instruction",
+        ):
+            self.assertIn(safeguard, runtime)
+        self.assertIn("config/mica-agent-desired-state.json", reference)
+        self.assertIn("live agent record can differ", reference)
+        self.assertIn("scripts/forgejo_draft_pr.py", reference)
+        for safeguard in (
+            "parent-result and",
+            "external-merge reconciliation",
+            "<!-- multica-agent-output -->",
+            "candidate_id",
+            "expected_revision",
+            "comment_id",
+            "resume_task_id",
+            "waive_review",
+            "release_hold: true",
+            "hold_delivery: true",
+            "outcome_complete",
+            "fresh context",
+            "makes no changes to it",
+        ):
+            self.assertIn(safeguard, reference)
+        self.assertIn("[.updates[] | select(.id == $id)", reference)
+        self.assertIn("[.review_routes[] | select(.environment == $env)", reference)
+        self.assertIn("{id, runtime_id, runtime_bound, archived_at}", reference)
+        self.assertIn("pinned platform snapshot wins over the live allowlist", reference)
+        self.assertNotIn("multica agent skills list", reference)
 
 
 if __name__ == "__main__":

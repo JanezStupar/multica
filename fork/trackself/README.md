@@ -53,7 +53,8 @@ under `fork/trackself/` with a gitignored `.skill` extension and prints its
 path.
 
 The archive contains the selected all-role workflow and runtime instructions,
-the current eight Multica platform references, and `source-manifest.json`.
+the current eight Multica platform references, the Forgejo draft-PR helper at
+`scripts/forgejo_draft_pr.py`, and `source-manifest.json`.
 The manifest records the full policy version, complete bundle SHA-256 identity,
 and hashes of every policy and platform input. The skill name uses the first
 16 identity characters. Any content or policy-version change creates a new
