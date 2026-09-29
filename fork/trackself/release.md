@@ -1,5 +1,25 @@
 # Mica release and deployment
 
+## Current agent CLIs: v0.5.1-janez.15
+
+Agent rollout verified on 2026-09-29 from
+`3d3938025f48ee8d6b6e93d100cc082a1f05070c`. All three Linux and both native
+macOS/Windows Trackself daemons, plus the operator CLI, use `.15`. Codex is
+`0.159.0` on all five agent runtimes. All 24 retained mappings are in sync;
+Senior Implementor uses GPT-6.1-Sol medium and Acceptance Reviewer high,
+with Luna settings retained. Fresh daemon catalog readback confirms medium/high.
+The current-account refresh has a 15-second bound and failed catalogs retain
+fallback provenance so recovery can retry. No real-agent inference was run.
+
+Backend/web `.15` images and six CLI archives are published and checksum-verified.
+Production remains `.14` pending utility-server SSH authentication. Source is
+committed; its GitHub push awaits the local SSH key unlock. The new server
+review classification and translated web waiting message are not yet active.
+Existing ticket pins, candidate/review evidence and PR state were preserved.
+Private-infra `infra/automation-server/multica/upgrade-v0.5.1-janez.15.md`
+owns exact artifact identities, validation, pending activation and recovery.
+Desktop/mobile apps were not released in this round.
+
 ## Workflow correction in validation
 
 The user authorized the TRA-639 correction on 2026-09-29, alongside current-account
