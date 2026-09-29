@@ -1,6 +1,59 @@
 # Mica release and deployment
 
-## Current backend and agent CLIs: v0.5.1-janez.11
+## Current backend: v0.5.1-janez.13
+
+Deployed on 2026-09-29 from `28bb04f64d95da53a7e3c0fed1d5647df3dea37a`,
+at digest `sha256:bb62c69d210dc5187769d8ac16ac56a9cabc3f2599b6ff45d332604c0c843d6e`.
+Exact source and metadata are checksum-verified in the matching Forgejo generic
+package. The backend now accepts a delivered human approval received before
+registration of the first single-PR candidate when provider-timed head evidence
+proves the same approved commit. Independent review, mapped human authority,
+current PR/head and edited/deleted-source checks remain enforced. Ambiguous
+ordering or missing historical provider head-time evidence still fails closed.
+Ready-only approval cannot become merge authority.
+
+Focused database regressions with the race detector, independent Sol review,
+vulnerability scan and the full production deployment validator passed. Exact
+running image/commit and unchanged service settings were read back. No migration,
+policy rebind or client update was required; no real-agent canary was dispatched.
+TRA-637's repeated human approval had already removed WIP before deployment;
+PR #31 was subsequently merged separately at 09:55:29 UTC. This rollout made no
+ticket/PR mutations and does not count that recovery as proof of the new path.
+
+Protected rollback state is at
+`utility-server:/opt/multica/config-backups/before-v0.5.1-janez.13`.
+Private-infra's `infra/automation-server/multica/upgrade-v0.5.1-janez.13.md`
+owns deployment and recovery evidence. Agent CLIs remain `.11`; web/desktop
+remain `.5`; `.12` policy activation and pending Windows state are unchanged.
+
+## Previous backend: v0.5.1-janez.12
+
+Deployed on 2026-09-29 from `3c8118522a6af4c64ab5228781dc4b7bd1046083`,
+at backend digest `sha256:6320b2cfa493a24a358a28dfbbf1c96de516908e710834f9d230abe071cd921a`.
+This release suppresses proven superseded-head wakeups and supplies compact
+workflow instructions plus the packaged Forgejo draft-PR helper. Exact source,
+policy archive and metadata are checksum-verified in the matching Forgejo
+generic package. No migrations or client binary updates were required.
+
+The new-ticket default is `trackself-platform-dac21bcfc12efb81`, imported skill
+`9ddee7fe-d94a-4521-98c0-a0aa3cff42b3`, policy version
+`sha256:34391ca0a78a0692419f04c21602f325b6e23c11333a54533fb0ea54d2c685b8`.
+All 12 Linux and six Mac agent bindings passed guarded apply and readback;
+their daemons restarted. Windows' six bindings remain on the previous bundle
+because its host is offline and the stopped-process guard cannot be verified.
+Existing ticket pins were preserved. CLI binaries remain `.11`; frontend and
+desktop remain `.5`.
+
+Focused Python/Go regressions, independent Sol acceptance, vulnerability scan,
+exact imported-file readback and production deployment validation passed.
+Backend service settings other than its image, frontend and PostgreSQL service
+specifications were preserved. No live agent/Forgejo mutation canary was run.
+Protected rollback state is at
+`utility-server:/opt/multica/config-backups/before-v0.5.1-janez.12`.
+Private-infra's `infra/automation-server/multica/upgrade-v0.5.1-janez.12.md`
+owns deployment recovery; workspace-control owns pending Windows activation.
+
+## Previous backend and current agent CLIs: v0.5.1-janez.11
 
 Deployed on 2026-09-28 from reviewed source commit
 `ca1d21dba1415b6ff89257ea845f85586aac5e4a`. Backend digest:
