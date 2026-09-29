@@ -13,10 +13,139 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/integrations/vcs"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
+
+func setupKnownSupersededVCSHead(t *testing.T) (workflowHumanCommentFixture, db.VcsConnection, db.VcsPullRequest, string) {
+	t.Helper()
+	ctx := context.Background()
+	f := setupWorkflowHumanCommentFixtureWithPolicy(t, func(_ string) string { return `{"format_version":2,"accepted_status_key":"in_progress"}` }, false)
+	box := withVCSBox(t)
+	connID := seedVCSConnection(t, ctx, box, "forgejo", "https://forge.example")
+	conn, err := testHandler.Queries.GetVCSConnectionByID(ctx, parseUUID(connID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cleanupVCS(ctx, "") })
+	dbfx.Cleanup(t, `DELETE FROM vcs_workflow_input WHERE issue_id=$1`, f.issueID)
+	pr, err := testHandler.Queries.UpsertVCSPullRequest(ctx, db.UpsertVCSPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), ConnectionID: conn.ID, Provider: "forgejo", RepoOwner: "team", RepoName: "repo",
+		PrNumber: 42, Title: "Feature", State: "draft", HtmlUrl: "https://forge.example/team/repo/pulls/42",
+		HeadSha: strings.Repeat("a", 40), PrCreatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+		PrUpdatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbfx.Exec(t, `INSERT INTO issue_vcs_pull_request(issue_id,pull_request_id) VALUES($1,$2)`, f.issueID, pr.ID)
+	dbfx.Cleanup(t, `DELETE FROM issue_vcs_pull_request WHERE issue_id=$1`, f.issueID)
+	oldHead := strings.Repeat("b", 40)
+	// Candidate history is immutable. This row represents an earlier completed
+	// writer handoff for the same PR and is ordered before the reviewed head.
+	dbfx.Exec(t, `INSERT INTO issue_workflow_candidate
+	 (id,workspace_id,issue_id,policy_version,digest,scope_digest,source_handoff_id,source_task_id,writer_task_id,pr_set,created_at)
+	 SELECT $2,workspace_id,issue_id,policy_version,'historical-head',scope_digest,source_handoff_id,source_task_id,writer_task_id,
+	 jsonb_set(pr_set,'{0,commit_sha}',to_jsonb($3::text)),created_at-interval '1 hour'
+	 FROM issue_workflow_candidate WHERE id=$1`, f.before.WorkflowCandidateID, dbid.NewV7(), oldHead)
+	dbfx.Insert(t, "issue_workflow_review", testutil.Cols{
+		"id": dbid.NewV7(),
+		"workspace_id": testWorkspaceID, "issue_id": f.issueID, "candidate_id": f.before.WorkflowCandidateID,
+		"reviewer_task_id": f.coordinatorTaskID, "verdict": "pass", "pr_review_urls": testutil.Raw("'[]'::jsonb"),
+	})
+	return f, conn, pr, oldHead
+}
+
+func TestVCSWorkflowFeedbackRetiresKnownSupersededHead(t *testing.T) {
+	ctx := context.Background()
+	f, conn, pr, oldHead := setupKnownSupersededVCSHead(t)
+	worker := NewWorkflowDeliveryWorker(testHandler)
+	if err := testHandler.recordVCSInput(ctx, conn, pr.ID, "head", "old-head-alone", "PR head changed to "+oldHead, pr.HtmlUrl, oldHead); err != nil {
+		t.Fatal(err)
+	}
+	if worked, err := worker.RecoverNextVCSWorkflowInput(ctx); err != nil || !worked {
+		t.Fatalf("retire known old head: %v %v", worked, err)
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND status='queued'`, f.issueID); got != 0 {
+		t.Fatalf("known old head enqueued %d writer runs", got)
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM vcs_workflow_input WHERE issue_id=$1 AND event_key='old-head-alone' AND processed_at IS NOT NULL AND task_id IS NULL`, f.issueID); got != 1 {
+		t.Fatal("retired head lost its evidence or was dispatched")
+	}
+
+	// Coalescing must suppress the stale head even when a human comment is the
+	// due input. The human's words and both input records remain available.
+	if err := testHandler.recordVCSDiscussion(ctx, conn, vcs.PullRequestFeedbackEvent{RepoOwner: "team", RepoName: "repo", Number: 42,
+		Kind: "comment", ObjectID: "human-1", Body: "Please fix the spacing", HTMLURL: pr.HtmlUrl + "#issuecomment-human-1",
+		UpdatedAt: "2026-09-29T12:00:00Z", AuthorLogin: "Multica"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := testHandler.recordVCSInput(ctx, conn, pr.ID, "head", "old-head-coalesced", "PR head changed to "+oldHead, pr.HtmlUrl, oldHead); err != nil {
+		t.Fatal(err)
+	}
+	dbfx.Exec(t, `UPDATE vcs_workflow_input SET created_at=now()-interval '1 minute' WHERE issue_id=$1 AND object_id='human-1'`, f.issueID)
+	if worked, err := worker.RecoverNextVCSWorkflowInput(ctx); err != nil || !worked {
+		t.Fatalf("coalesce human comment: %v %v", worked, err)
+	}
+	var taskID pgtype.UUID
+	var note string
+	if err := testPool.QueryRow(ctx, `SELECT id,handoff_note FROM agent_task_queue WHERE issue_id=$1 AND status='queued'`, f.issueID).Scan(&taskID, &note); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(note, "Please fix the spacing") || strings.Contains(note, oldHead) {
+		t.Fatalf("coalesced note lost human input or included stale head: %s", note)
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM vcs_workflow_input WHERE issue_id=$1 AND task_id=$2 AND processed_at IS NOT NULL`, f.issueID, taskID); got != 2 {
+		t.Fatalf("coalesced input evidence count = %d", got)
+	}
+}
+
+func TestVCSWorkflowFeedbackKeepsUnprovenHeadChanges(t *testing.T) {
+	for _, tc := range []struct {
+		name, head string
+		change     func(*testing.T, workflowHumanCommentFixture, db.VcsPullRequest)
+	}{
+		{name: "unknown SHA", head: strings.Repeat("c", 40)},
+		{name: "different historical PR", head: strings.Repeat("b", 40), change: func(t *testing.T, f workflowHumanCommentFixture, pr db.VcsPullRequest) {
+			dbfx.Exec(t, `UPDATE issue_workflow_candidate SET pr_set=jsonb_set(pr_set,'{0,pr_url}',to_jsonb($2::text))
+			 WHERE issue_id=$1 AND id<>$3`, f.issueID, pr.HtmlUrl+"-other", f.before.WorkflowCandidateID)
+		}},
+		{name: "different historical workspace", head: strings.Repeat("b", 40), change: func(t *testing.T, f workflowHumanCommentFixture, _ db.VcsPullRequest) {
+			dbfx.Exec(t, `UPDATE issue_workflow_candidate SET workspace_id=$2 WHERE issue_id=$1 AND id<>$3`,
+				f.issueID, dbid.NewV7(), f.before.WorkflowCandidateID)
+		}},
+		{name: "mirrored head moved again", head: strings.Repeat("b", 40), change: func(t *testing.T, _ workflowHumanCommentFixture, pr db.VcsPullRequest) {
+			dbfx.Exec(t, `UPDATE vcs_pull_request SET head_sha=$2 WHERE id=$1`, pr.ID, strings.Repeat("c", 40))
+		}},
+		{name: "latest review requested changes", head: strings.Repeat("b", 40), change: func(t *testing.T, f workflowHumanCommentFixture, _ db.VcsPullRequest) {
+			dbfx.Insert(t, "issue_workflow_review", testutil.Cols{
+				"id": dbid.NewV7(),
+				"workspace_id": testWorkspaceID, "issue_id": f.issueID, "candidate_id": f.before.WorkflowCandidateID,
+				"reviewer_task_id": f.coordinatorTaskID, "verdict": "changes_requested", "pr_review_urls": testutil.Raw("'[]'::jsonb"),
+				"submitted_at": testutil.Raw("now()+interval '1 second'"),
+			})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			f, conn, pr, _ := setupKnownSupersededVCSHead(t)
+			if tc.change != nil {
+				tc.change(t, f, pr)
+			}
+			if err := testHandler.recordVCSInput(ctx, conn, pr.ID, "head", "unproven-head", "PR head changed to "+tc.head, pr.HtmlUrl, tc.head); err != nil {
+				t.Fatal(err)
+			}
+			if worked, err := NewWorkflowDeliveryWorker(testHandler).RecoverNextVCSWorkflowInput(ctx); err != nil || !worked {
+				t.Fatalf("unproven head recovery: %v %v", worked, err)
+			}
+			if got := dbfx.Count(t, `SELECT count(*) FROM vcs_workflow_input WHERE issue_id=$1 AND event_key='unproven-head' AND task_id IS NOT NULL`, f.issueID); got != 1 {
+				t.Fatal("unproven head was suppressed")
+			}
+		})
+	}
+}
 
 func TestVCSWorkflowFeedbackResumesWriterAndDeduplicates(t *testing.T) {
 	ctx := context.Background()

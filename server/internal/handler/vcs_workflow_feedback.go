@@ -27,6 +27,31 @@ type vcsFeedbackMeta struct {
 	suppress                                                bool
 }
 
+// A historical candidate proves that this exact head was handed off by a
+// completed writer. Only retire it when the mirrored PR is still at the
+// newer, independently passed current candidate head. A later push back to
+// the old SHA (or an unknown SHA) remains work for the retained writer.
+const knownSupersededVCSHead = `EXISTS (
+ SELECT 1 FROM issue_workflow_candidate current_candidate
+ JOIN vcs_pull_request pr ON pr.id=input.pull_request_id AND pr.workspace_id=input.workspace_id AND pr.connection_id=input.connection_id
+ JOIN issue_workflow_candidate historical ON historical.issue_id=input.issue_id AND historical.workspace_id=input.workspace_id
+   AND historical.id<>current_candidate.id AND historical.created_at<current_candidate.created_at
+ JOIN issue_wakeup handoff ON handoff.id=historical.source_handoff_id AND handoff.issue_id=input.issue_id
+   AND handoff.workspace_id=input.workspace_id AND handoff.source_task_id=historical.source_task_id
+ JOIN agent_task_queue writer ON writer.id=historical.writer_task_id AND writer.id=historical.source_task_id
+   AND writer.issue_id=input.issue_id AND writer.status='completed'
+ CROSS JOIN LATERAL jsonb_array_elements(historical.pr_set) historical_pr
+ CROSS JOIN LATERAL jsonb_array_elements(current_candidate.pr_set) current_pr
+ WHERE input.kind='head' AND input.head_sha<>'' AND current_candidate.id=$2
+ AND current_candidate.issue_id=input.issue_id AND current_candidate.workspace_id=input.workspace_id
+ AND historical_pr->>'pr_url'=pr.html_url AND lower(historical_pr->>'commit_sha')=lower(input.head_sha)
+ AND current_pr->>'pr_url'=pr.html_url AND lower(current_pr->>'commit_sha')=lower(pr.head_sha)
+ AND lower(input.head_sha)<>lower(pr.head_sha)
+ AND (SELECT verdict FROM issue_workflow_review review
+      WHERE review.candidate_id=current_candidate.id AND review.issue_id=input.issue_id AND review.workspace_id=input.workspace_id
+      ORDER BY review.submitted_at DESC,review.id DESC LIMIT 1)='pass'
+)`
+
 func (h *Handler) recordVCSDiscussion(ctx context.Context, conn db.VcsConnection, ev vcs.PullRequestFeedbackEvent) error {
 	markedAgentOutput := strings.HasSuffix(strings.TrimSpace(ev.Body), vcs.AgentOutputMarker)
 	clearedBody := strings.TrimSpace(ev.Body) == "" && ev.Action != "deleted"
@@ -191,6 +216,15 @@ func (w *WorkflowDeliveryWorker) RecoverNextVCSWorkflowInput(ctx context.Context
 	if kind == "head" && alreadyCandidate {
 		return finish()
 	}
+	if kind == "head" {
+		var superseded bool
+		if err = tx.QueryRow(ctx, `SELECT `+knownSupersededVCSHead+` FROM vcs_workflow_input input WHERE input.id=$1`, inputID, issue.WorkflowCandidateID).Scan(&superseded); err != nil {
+			return true, err
+		}
+		if superseded {
+			return finish()
+		}
+	}
 	// A review URL can become registered after its webhook arrived while the
 	// reviewer was running. Suppress that output after the run settles too.
 	var registeredReview bool
@@ -237,7 +271,8 @@ func (w *WorkflowDeliveryWorker) RecoverNextVCSWorkflowInput(ctx context.Context
 	rows, err := tx.Query(ctx, `SELECT input.id,input.content,
       EXISTS(SELECT 1 FROM issue_workflow_review r WHERE r.issue_id=input.issue_id AND r.workspace_id=input.workspace_id AND r.pr_review_urls @> jsonb_build_array(input.html_url))
       OR (input.kind='head' AND EXISTS(SELECT 1 FROM issue_workflow_candidate c CROSS JOIN LATERAL jsonb_array_elements(c.pr_set) p JOIN vcs_pull_request pr ON pr.id=input.pull_request_id
-        WHERE c.id=$2 AND c.issue_id=input.issue_id AND p->>'pr_url'=pr.html_url AND p->>'commit_sha'=input.head_sha)) AS suppress
+        WHERE c.id=$2 AND c.issue_id=input.issue_id AND p->>'pr_url'=pr.html_url AND p->>'commit_sha'=input.head_sha))
+      OR `+knownSupersededVCSHead+` AS suppress
       FROM vcs_workflow_input input WHERE input.issue_id=$1 AND input.workspace_id=$3 AND input.processed_at IS NULL
       ORDER BY (input.id=$4) DESC,input.created_at,input.id LIMIT 20 FOR UPDATE OF input`, issueID, issue.WorkflowCandidateID, workspaceID, inputID)
 	if err != nil {
