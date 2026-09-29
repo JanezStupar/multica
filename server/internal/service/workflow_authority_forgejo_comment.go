@@ -55,22 +55,38 @@ func workflowForgejoCommentAuthorityWithLock(ctx context.Context, tx pgx.Tx, iss
 	    AND parent.originator_user_id IS NOT DISTINCT FROM child.originator_user_id
 	    AND parent.accountable_user_id IS NOT DISTINCT FROM child.accountable_user_id
 	)
-	SELECT input.connection_id,input.pull_request_id,input.candidate_id,conn.provider,
+	SELECT input.connection_id,input.pull_request_id,candidate.id,conn.provider,
 	       input.kind,input.object_id,input.object_revision,input.object_revision_at,input.object_action,
 	       input.provider_author_id,input.provider_author_login,input.body,input.html_url,input.head_sha,input.created_at,
 	       pr.html_url,conn.workflow_approvers
 	FROM vcs_workflow_input input
 	JOIN vcs_connection conn ON conn.id=input.connection_id AND conn.workspace_id=input.workspace_id
 	JOIN vcs_pull_request pr ON pr.id=input.pull_request_id AND pr.connection_id=conn.id AND pr.workspace_id=input.workspace_id
-	JOIN issue_workflow_candidate candidate ON candidate.id=input.candidate_id AND candidate.issue_id=input.issue_id
+	JOIN issue_workflow_candidate candidate ON candidate.id=$6 AND candidate.issue_id=input.issue_id
 	  AND candidate.workspace_id=input.workspace_id
 	WHERE input.id=$1 AND input.workspace_id=$2 AND input.issue_id=$3
-	  AND input.candidate_id=$6 AND conn.provider='forgejo'
+	  AND conn.provider='forgejo'
 	  AND input.kind IN ('comment','review') AND input.object_id<>''
 	  AND input.provider_author_id<>'' AND input.object_revision_at IS NOT NULL
 	  AND input.object_action NOT IN ('deleted','agent_output')
 	  AND input.processed_at IS NOT NULL AND input.task_id IN (SELECT id FROM lineage)
-	  AND input.object_revision_at>=candidate.created_at
+	  -- Null binding is usable only for the first single-PR candidate registered
+	  -- after receipt. The last provider-timed head before the approval must
+	  -- match, so a delayed old comment cannot inherit a newer mirrored SHA.
+	  AND (input.candidate_id=candidate.id AND input.object_revision_at>=candidate.created_at
+	    OR input.candidate_id IS NULL AND input.created_at<=candidate.created_at
+	      AND jsonb_array_length(candidate.pr_set)=1
+	      AND NOT EXISTS(SELECT 1 FROM issue_workflow_candidate intervening
+	        WHERE intervening.workspace_id=input.workspace_id AND intervening.issue_id=input.issue_id
+	          AND intervening.id<>candidate.id AND intervening.created_at>=input.created_at
+	          AND intervening.created_at<=candidate.created_at)
+	      AND EXISTS(SELECT 1 FROM LATERAL (SELECT prior.head_sha,prior.object_revision_at FROM vcs_workflow_input prior
+	        WHERE prior.workspace_id=input.workspace_id AND prior.issue_id=input.issue_id
+	          AND prior.connection_id=input.connection_id AND prior.pull_request_id=input.pull_request_id
+	          AND prior.kind='head' AND prior.object_revision_at IS NOT NULL
+	          AND prior.object_revision_at<=input.object_revision_at AND prior.created_at<=input.created_at
+	        ORDER BY prior.object_revision_at DESC,prior.created_at DESC,prior.id DESC LIMIT 1) latest
+	        WHERE latest.head_sha=input.head_sha AND latest.object_revision_at<input.object_revision_at))
 	  AND EXISTS(SELECT 1 FROM agent_task_queue invoking WHERE invoking.id=$4 AND invoking.issue_id=$3
 	    AND invoking.agent_id=$5 AND invoking.workflow_policy_version=candidate.policy_version
 	    AND invoking.workflow_profile_id IS NOT NULL)
@@ -162,10 +178,27 @@ func workflowForgejoCommentAvailable(ctx context.Context, tx pgx.Tx, issue db.Is
 		taskID, issue.ID, policyVersion).Scan(&bound); err != nil || !bound {
 		return false, err
 	}
-	rows, err := tx.Query(ctx, `SELECT id FROM vcs_workflow_input WHERE workspace_id=$1 AND issue_id=$2
-		AND candidate_id=$3 AND kind IN ('comment','review') AND processed_at IS NOT NULL
+	rows, err := tx.Query(ctx, `SELECT input.id FROM vcs_workflow_input input
+		JOIN issue_workflow_candidate candidate ON candidate.id=$3 AND candidate.issue_id=input.issue_id
+		  AND candidate.workspace_id=input.workspace_id
+		WHERE input.workspace_id=$1 AND input.issue_id=$2
+		AND (input.candidate_id=candidate.id AND input.object_revision_at>=candidate.created_at
+		  OR input.candidate_id IS NULL AND input.created_at<=candidate.created_at
+		    AND jsonb_array_length(candidate.pr_set)=1
+		    AND NOT EXISTS(SELECT 1 FROM issue_workflow_candidate intervening
+		      WHERE intervening.workspace_id=input.workspace_id AND intervening.issue_id=input.issue_id
+		        AND intervening.id<>candidate.id AND intervening.created_at>=input.created_at
+		        AND intervening.created_at<=candidate.created_at)
+		    AND EXISTS(SELECT 1 FROM LATERAL (SELECT prior.head_sha,prior.object_revision_at FROM vcs_workflow_input prior
+		      WHERE prior.workspace_id=input.workspace_id AND prior.issue_id=input.issue_id
+		        AND prior.connection_id=input.connection_id AND prior.pull_request_id=input.pull_request_id
+		        AND prior.kind='head' AND prior.object_revision_at IS NOT NULL
+		        AND prior.object_revision_at<=input.object_revision_at AND prior.created_at<=input.created_at
+		      ORDER BY prior.object_revision_at DESC,prior.created_at DESC,prior.id DESC LIMIT 1) latest
+		      WHERE latest.head_sha=input.head_sha AND latest.object_revision_at<input.object_revision_at))
+		AND input.kind IN ('comment','review') AND input.processed_at IS NOT NULL
 		AND provider_author_id<>'' AND object_revision_at IS NOT NULL
-		ORDER BY created_at DESC,id DESC`, issue.WorkspaceID, issue.ID, issue.WorkflowCandidateID)
+		ORDER BY input.created_at DESC,input.id DESC`, issue.WorkspaceID, issue.ID, issue.WorkflowCandidateID)
 	if err != nil {
 		return false, err
 	}

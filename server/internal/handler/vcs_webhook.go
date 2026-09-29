@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -311,8 +312,13 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 	}
 
 	if previousHead != "" && ev.HeadSHA != "" && (ev.State == "open" || ev.State == "draft") {
+		var headRevisionAt *time.Time
+		if at, parseErr := time.Parse(time.RFC3339Nano, ev.UpdatedAt); parseErr == nil {
+			headRevisionAt = &at
+		}
 		if err := h.recordVCSInput(ctx, conn, pr.ID, "head", providerInputKey("head", uuidToString(pr.ID), ev.HeadSHA+"@"+ev.UpdatedAt, ""),
-			fmt.Sprintf("PR head changed to %s: %s", ev.HeadSHA, ev.HTMLURL), ev.HTMLURL, ev.HeadSHA); err != nil {
+			fmt.Sprintf("PR head changed to %s: %s", ev.HeadSHA, ev.HTMLURL), ev.HTMLURL, ev.HeadSHA,
+			vcsFeedbackMeta{revision: ev.UpdatedAt, revisionAt: headRevisionAt}); err != nil {
 			slog.Warn("vcs: record PR head continuation failed", "err", err)
 			return err
 		}
