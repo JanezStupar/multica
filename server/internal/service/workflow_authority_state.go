@@ -299,6 +299,13 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 		}
 	}
 	block := func(code string) { state.AcceptanceBlockers = append(state.AcceptanceBlockers, code) }
+	blockReview := func(err error) {
+		if errors.Is(err, errWorkflowReviewPendingCompletion) {
+			block("review_pending_completion")
+		} else {
+			block("review_not_independent")
+		}
+	}
 	if issue.WorkflowFrozen {
 		block("frozen")
 	}
@@ -363,7 +370,7 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 					if len(state.Reviews) == 0 || state.Reviews[0].Verdict != "pass" {
 						block("review_missing")
 					} else if _, err := workflowReviewSatisfiedForRequest(ctx, tx, issue, candidate, true, pendingReviewerTaskID); err != nil {
-						block("review_not_independent")
+						blockReview(err)
 					}
 				}
 				// A reviewed autonomous request always requires an independent
@@ -373,7 +380,7 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 				if agentReviewedAllowed && !agentTrivialAllowed &&
 					(reviewGrant["waive"] == true || !authority.ReviewRequired) {
 					if _, err := workflowReviewSatisfiedForRequest(ctx, tx, issue, candidate, true, pendingReviewerTaskID); err != nil {
-						block("review_not_independent")
+						blockReview(err)
 					}
 				}
 				if _, err := workflowDeliveryBindings(ctx, tx, issue, candidate.PRs); err != nil {

@@ -485,6 +485,7 @@
       "blocker_candidate_head_changed": "PR의 최신 커밋이 변경되었습니다. 현재 커밋을 확인하고 평가한 후 계속하세요.",
       "blocker_source_incomplete": "구현 작업이 완료되지 않았습니다.",
       "blocker_review_missing": "통과한 독립 리뷰가 필요합니다.",
+      "blocker_review_pending_completion": "리뷰어가 아직 이 리뷰를 마무리하고 있습니다.",
       "blocker_review_not_independent": "별도의 새 세션에서 리뷰해야 합니다.",
       "blocker_active_work": "에이전트 작업이 아직 진행 중입니다.",
       "blocker_pending_handoff": "아직 완료되지 않은 인계가 있습니다.",

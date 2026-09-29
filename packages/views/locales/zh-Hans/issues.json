@@ -485,6 +485,7 @@
       "blocker_candidate_head_changed": "PR 的最新提交已更改。继续前请核对并评估当前提交。",
       "blocker_source_incomplete": "实现任务尚未完成。",
       "blocker_review_missing": "需要一项通过的独立评审。",
+      "blocker_review_pending_completion": "评审者仍在完成这项评审。",
       "blocker_review_not_independent": "评审必须来自独立的新会话。",
       "blocker_active_work": "智能体仍在执行任务。",
       "blocker_pending_handoff": "仍有交接任务未完成。",

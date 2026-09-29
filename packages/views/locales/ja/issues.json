@@ -485,6 +485,7 @@
       "blocker_candidate_head_changed": "PR の最新コミットが変わりました。現在のコミットを確認・評価してから続行してください。",
       "blocker_source_incomplete": "実装タスクが完了していません。",
       "blocker_review_missing": "独立したレビューの合格が必要です。",
+      "blocker_review_pending_completion": "レビュアーはまだこのレビューを完了していません。",
       "blocker_review_not_independent": "レビューは別の新しいセッションで行う必要があります。",
       "blocker_active_work": "エージェントの作業がまだ進行中です。",
       "blocker_pending_handoff": "引き継ぎがまだ完了していません。",

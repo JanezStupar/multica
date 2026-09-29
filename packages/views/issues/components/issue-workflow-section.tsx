@@ -87,6 +87,7 @@ function blockerKey(code: string):
   | "blocker_candidate_head_changed"
   | "blocker_source_incomplete"
   | "blocker_review_missing"
+  | "blocker_review_pending_completion"
   | "blocker_review_not_independent"
   | "blocker_active_work"
   | "blocker_pending_handoff"
@@ -109,6 +110,7 @@ function blockerKey(code: string):
     case "candidate_head_changed": return "blocker_candidate_head_changed";
     case "source_incomplete": return "blocker_source_incomplete";
     case "review_missing": return "blocker_review_missing";
+    case "review_pending_completion": return "blocker_review_pending_completion";
     case "review_not_independent": return "blocker_review_not_independent";
     case "active_work": return "blocker_active_work";
     case "pending_handoff": return "blocker_pending_handoff";

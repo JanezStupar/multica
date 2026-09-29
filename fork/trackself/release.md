@@ -1,5 +1,63 @@
 # Mica release and deployment
 
+## Workflow correction in validation
+
+The user authorized the TRA-639 correction on 2026-09-29, alongside current-account
+Codex model discovery. Live rollout and ticket recovery are recorded separately
+when verified.
+
+### TRA-639: passing review escalated on its own unfinished run
+
+Observed on backend `.14`, 2026-09-29. All times below are UTC. The revised
+desktopapp candidate is `12652aa314e3a058a3b3b9240221f9203a92f4d4`, candidate
+record `01a0ee10-c164-70c0-8d34-ac27262d3c9e`, on
+[PR #33](https://git.thn.janezstupar.com/trackself/desktopapp/pulls/33).
+Pinned policy: `sha256:487c761ae70d3c5c3073dc0ce9f0e9fc1d8849fc046a425ce2a3267f2ac8f500`.
+
+- 16:47:50: implementation handoff moved the issue to `in_review` and started
+  fresh reviewer task `01a0ee10-c17a-77a5-9ded-2d6901ff8832`, distinct from
+  writer task `01a0ee00-111f-70ca-8307-faccdda6ee13`.
+- 16:54:03: reviewer recorded PASS, review
+  `01a0ee16-72ae-7e4b-8ff2-f920b2f48b34`, with
+  [commit-bound provider evidence](https://git.thn.janezstupar.com/trackself/desktopapp/pulls/33#issuecomment-538).
+  Its subsequent workflow read reported `review_not_independent` while that
+  reviewer task was still running.
+- 16:55:39: reviewer completed. At 16:55:50 its requested handoff
+  `01a0ee17-8470-77d8-966e-30ea476138ec` executed, assigning Mika and explicitly
+  changing the issue from `in_review` to `in_progress` to investigate the guard.
+- 16:58:31: Mika reported two reads with no acceptance blockers, retained the
+  valid PASS, and finished without restoring `in_review`. Diagnostic readback
+  at revision 43 confirmed `in_progress`, the same candidate/PASS, and
+  `acceptance_blockers: []`. No acceptance or delivery was recorded.
+
+Code diagnosis: `workflowReviewSatisfiedForRequest` in
+`server/internal/service/workflow_authority_acceptance.go` requires reviewer
+completion, except for an eligible running reviewer's own autonomous acceptance
+request. `workflow_authority_state.go` maps failures from this predicate to
+`review_not_independent`, conflating pending completion with invalid review
+independence. The observed timing explains why the blocker disappeared after
+the reviewer finished. The durable handoff, rather than a failed initial status
+transition, explains the later `in_progress` state.
+
+Implemented correction: expose pending reviewer completion separately
+from invalid independence while preserving the completion guard; have a reviewer
+finish normally after PASS without escalating its own pending completion; keep
+`in_review` during procedural coordination unless implementation changes are
+required. Regressions cover running PASS, successful completion clearing the
+pending condition, and failed/cancelled reviewer runs remaining blocked.
+Coordination status preservation is instruction guidance, not an automatic
+status mutation. Scoped ticket recovery would restore
+`in_review` without replacing candidate/review evidence or granting acceptance.
+
+The original diagnosis changed no runtime or ticket state. The correction now
+adds a distinct `review_pending_completion` blocker and translated waiting copy,
+preserving human-only authority and reviewer completion/independence guards.
+Trackself reviewer/coordinator instructions preserve `in_review` for procedural
+coordination. Focused service/database race checks passed with 62 PASS events,
+zero skips; the broader autonomous scope-change regression also fails against
+unchanged source `5b0fb26f` and is outside this correction. Native desktop/live-provider
+evidence gaps remain separately owned; they were not the cause of this handoff.
+
 ## Current backend, web and desktop: v0.5.1-janez.14
 
 Deployed on 2026-09-29 from `08b0c7b747dcc306adfad73d3fddc7a169351f0a`.

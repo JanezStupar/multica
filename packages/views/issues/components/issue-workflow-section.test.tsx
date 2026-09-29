@@ -133,6 +133,17 @@ describe("IssueWorkflowSection", () => {
     expect(screen.queryByText("Assign the issue to an authorized human first.")).not.toBeInTheDocument();
   });
 
+  it("explains a review still finishing without requesting a new independent session", () => {
+    mocks.workflow = makeWorkflow({
+      acceptance_blockers: ["review_pending_completion"],
+      available_actions: { accept_human: false, reject: false, request_trivial_acceptance: false, waive_review: false },
+    });
+    renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
+
+    expect(screen.getByText("The reviewer is still finishing this review.")).toBeInTheDocument();
+    expect(screen.queryByText("The review must come from a separate fresh session.")).not.toBeInTheDocument();
+  });
+
   it("shows exact candidate commits, independent reviews, and mixed delivery outcomes", () => {
     renderWithI18n(<IssueWorkflowSection workspaceId="ws-1" issueId="issue-1" enabled />);
 

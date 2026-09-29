@@ -81,6 +81,10 @@ func workflowReviewSatisfied(ctx context.Context, tx pgx.Tx, issue db.Issue, can
 	return workflowReviewSatisfiedForRequest(ctx, tx, issue, candidate, required, pgtype.UUID{})
 }
 
+// Pending completion is distinct from invalid independence, but still prevents
+// acceptance unless the running reviewer is requesting its own deferred decision.
+var errWorkflowReviewPendingCompletion = errors.New("review pending completion")
+
 // A running final reviewer may request autonomous acceptance for its own task.
 // The request has no completion or delivery authority until the finalizer
 // rechecks this review after that exact task succeeds.
@@ -110,7 +114,7 @@ func workflowReviewSatisfiedForRequest(ctx context.Context, tx pgx.Tx, issue db.
 		WHERE id=$1 AND issue_id=$2`, candidate.WriterTaskID, issue.ID).Scan(&writerStatus, &writerSession)
 	reviewerFinished := reviewerStatus == "completed"
 	reviewerOwnsPendingRequest := pendingReviewerTaskID.Valid && reviewerTaskID == pendingReviewerTaskID && reviewerStatus == "running"
-	if err != nil || !(reviewerFinished || reviewerOwnsPendingRequest) || writerStatus != "completed" || !reviewerFresh ||
+	if err != nil || !(reviewerFinished || reviewerStatus == "running") || writerStatus != "completed" || !reviewerFresh ||
 		reviewerSession == "" || writerSession == "" || reviewerSession == writerSession {
 		return "", fmt.Errorf("%w: reviewer must complete in a distinct fresh provider session", ErrWorkflowAuthorityConflict)
 	}
@@ -118,6 +122,9 @@ func workflowReviewSatisfiedForRequest(ctx context.Context, tx pgx.Tx, issue db.
 		return "", err
 	} else if !genuine {
 		return "", fmt.Errorf("%w: reviewer did not originate in a fresh handoff", ErrWorkflowAuthorityConflict)
+	}
+	if !reviewerFinished && !reviewerOwnsPendingRequest {
+		return "", fmt.Errorf("%w: %w", ErrWorkflowAuthorityConflict, errWorkflowReviewPendingCompletion)
 	}
 	return util.UUIDToString(reviewID), nil
 }

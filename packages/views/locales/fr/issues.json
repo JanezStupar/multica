@@ -490,6 +490,7 @@
       "blocker_candidate_head_changed": "Le commit de tête de la PR a changé. Rapprochez et évaluez le commit actuel avant de continuer.",
       "blocker_source_incomplete": "La tâche d'implémentation n'est pas terminée.",
       "blocker_review_missing": "Une revue indépendante validée est requise.",
+      "blocker_review_pending_completion": "La personne chargée de la revue est encore en train de la terminer.",
       "blocker_review_not_independent": "La revue doit provenir d'une nouvelle session indépendante.",
       "blocker_active_work": "Un agent travaille encore sur l'issue.",
       "blocker_pending_handoff": "Un transfert doit encore être terminé.",

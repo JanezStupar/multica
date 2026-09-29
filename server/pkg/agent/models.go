@@ -189,7 +189,7 @@ func ListModels(ctx context.Context, providerType string, runtimeCmd Command) (C
 		})
 	case "codex":
 		return cachedDiscovery(discoveryCacheKey(providerType, runtimeCmd), func() (Catalog, error) {
-			return discovered(discoverCodexModels(ctx, runtimeCmd), nil)
+			return discoverCodexCatalog(ctx, runtimeCmd), nil
 		})
 	case "antigravity":
 		// agy 1.0.6 added a `--model` flag plus an `agy models` catalog

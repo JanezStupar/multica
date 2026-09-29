@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"runtime"
 	"testing"
+	"time"
 )
 
 // ── Claude help parsing ──────────────────────────────────────────────
@@ -130,17 +131,8 @@ func TestProjectClaudeLevels_PerModelSubset(t *testing.T) {
 
 // ── Codex discovery argv ────────────────────────────────────────────
 //
-// Elon's PR1 review found that `codex debug models --output json` is
-// rejected by codex-cli 0.131.0 — there is no `--output` flag on the
-// subcommand. The fix was to drop the flag and add `--bundled` (which
-// just skips network refresh). These two tests pin the contract:
-//
-//   - TestCodexDebugModelsArgs_Pinned asserts the literal argv we pass
-//     so a future "let's add a flag" refactor breaks loudly instead of
-//     silently swallowing the discovery output.
-//   - TestRunCodexDebugModels_ArgvSeenByBinary plugs a fake `codex`
-//     binary on PATH and verifies that what *actually* reaches the
-//     process matches the pinned argv, not just what the var holds.
+// Pin the current-account discovery command: --bundled can omit newly
+// available models, and --output is not supported by the subcommand.
 
 // TestRunCodexDebugModels_ArgvSeenByBinary executes runCodexDebugModels
 // against a shell-script stand-in for `codex` that records its argv to
@@ -176,7 +168,7 @@ func TestRunCodexDebugModels_ArgvSeenByBinary(t *testing.T) {
 		t.Fatalf("read argv file: %v", err)
 	}
 	got := splitNonEmptyLines(string(data))
-	want := []string{"debug", "models", "--bundled"}
+	want := []string{"debug", "models"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("fake codex received argv %v, want %v", got, want)
 	}
@@ -342,8 +334,14 @@ func TestDiscoverCodexModelsVersionGateAndFallback(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake binary requires a POSIX shell")
 	}
+	t.Run("version detection failure uses static fallback", func(t *testing.T) {
+		catalog := discoverCodexCatalog(context.Background(), Command{Path: filepath.Join(t.TempDir(), "missing-codex")})
+		if !catalog.Fallback || !reflect.DeepEqual(catalog.Models, codexStaticModels()) {
+			t.Fatalf("expected marked static fallback, got %+v", catalog)
+		}
+	})
 
-	t.Run("supported version uses bundled catalog", func(t *testing.T) {
+	t.Run("supported version uses current account catalog", func(t *testing.T) {
 		dir := t.TempDir()
 		fake := filepath.Join(dir, "codex")
 		script := `#!/bin/sh
@@ -356,8 +354,9 @@ echo '{"models":[{"slug":"runtime-model","display_name":"Runtime Model","visibil
 `
 		writeTestExecutable(t, fake, []byte(script))
 
-		got := discoverCodexModels(context.Background(), Command{Path: fake})
-		if len(got) != 1 || got[0].ID != "runtime-model" || got[0].Thinking == nil || !hasThinkingLevel(got[0].Thinking, "high") {
+		catalog := discoverCodexCatalog(context.Background(), Command{Path: fake})
+		got := catalog.Models
+		if catalog.Fallback || len(got) != 1 || got[0].ID != "runtime-model" || got[0].Thinking == nil || !hasThinkingLevel(got[0].Thinking, "high") {
 			t.Fatalf("expected runtime catalog, got %+v", got)
 		}
 		if got[0].SupportsExplicitStandardServiceTier {
@@ -373,8 +372,9 @@ echo '{"models":[{"slug":"runtime-model","display_name":"Runtime Model","visibil
 			"exit 99\n"
 		writeTestExecutable(t, fake, []byte(script))
 
-		got := discoverCodexModels(context.Background(), Command{Path: fake})
-		if len(got) == 0 || got[0].ID != "gpt-6-astra" {
+		catalog := discoverCodexCatalog(context.Background(), Command{Path: fake})
+		got := catalog.Models
+		if !catalog.Fallback || len(got) == 0 || got[0].ID != "gpt-6-astra" {
 			t.Fatalf("expected static fallback, got %+v", got)
 		}
 		if got[0].SupportsExplicitStandardServiceTier {
@@ -390,14 +390,119 @@ echo '{"models":[{"slug":"runtime-model","display_name":"Runtime Model","visibil
 			"exit 1\n"
 		writeTestExecutable(t, fake, []byte(script))
 
-		got := discoverCodexModels(context.Background(), Command{Path: fake})
-		if len(got) == 0 || got[0].ID != "gpt-6-astra" || got[0].Thinking == nil {
+		catalog := discoverCodexCatalog(context.Background(), Command{Path: fake})
+		got := catalog.Models
+		if !catalog.Fallback || len(got) == 0 || got[0].ID != "gpt-6-astra" || got[0].Thinking == nil {
 			t.Fatalf("expected model + thinking fallback, got %+v", got)
 		}
 		if !got[0].SupportsExplicitStandardServiceTier {
 			t.Fatalf("supported Codex version must retain explicit-standard capability through catalog fallback: %+v", got[0])
 		}
 	})
+	for _, payload := range []string{"not-json", `{"models":[]}`} {
+		t.Run("invalid catalog "+payload+" uses static fallback", func(t *testing.T) {
+			fake := filepath.Join(t.TempDir(), "codex")
+			writeTestExecutable(t, fake, []byte("#!/bin/sh\n"+
+				"if [ \"$1\" = \"--version\" ]; then echo 'codex-cli 0.159.0'; exit 0; fi\n"+
+				"echo '"+payload+"'\n"))
+			catalog := discoverCodexCatalog(context.Background(), Command{Path: fake})
+			got := catalog.Models
+			if !catalog.Fallback || !reflect.DeepEqual(got, annotateCodexExplicitStandardServiceTier(codexStaticModels(), true)) {
+				t.Fatalf("expected static fallback, got %+v", got)
+			}
+		})
+	}
+}
+
+func TestCodexCurrentAccountCatalogValidatesNewModelAndCachesDiscovery(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary requires a POSIX shell")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "codex")
+	calls := filepath.Join(dir, "calls")
+	writeTestExecutable(t, fake, []byte(`#!/bin/sh
+if [ "$1" = "--version" ]; then echo 'codex-cli 0.159.0'; exit 0; fi
+printf '%s\n' "$*" >> '`+calls+`'
+if [ "$#" != 2 ] || [ "$1" != debug ] || [ "$2" != models ]; then
+  echo '{"models":[]}'
+  exit 0
+fi
+echo '{"models":[{"slug":"gpt-6.1-sol","visibility":"list","default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"medium"},{"effort":"high"}]}]}'
+`))
+	cmd := Command{Path: fake}
+	catalog, err := ListModels(context.Background(), "codex", cmd)
+	if err != nil || len(catalog.Models) != 1 || catalog.Models[0].ID != "gpt-6.1-sol" {
+		t.Fatalf("expected exact current-account model, got %+v, err %v", catalog, err)
+	}
+	for _, tc := range []struct {
+		level string
+		want  bool
+	}{{"medium", true}, {"high", true}, {"ultra", false}} {
+		ok, err := ValidateThinkingLevel(context.Background(), "codex", cmd, "gpt-6.1-sol", tc.level)
+		if err != nil || ok != tc.want {
+			t.Errorf("ValidateThinkingLevel(%q) = %v, %v; want %v", tc.level, ok, err, tc.want)
+		}
+	}
+	data, err := os.ReadFile(calls)
+	if err != nil || string(data) != "debug models\n" {
+		t.Fatalf("expected one account refresh shared by capability checks, got %q, err %v", data, err)
+	}
+}
+
+func TestCodexFailedAccountRefreshIsNotCached(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary requires a POSIX shell")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "codex")
+	calls := filepath.Join(dir, "calls")
+	writeTestExecutable(t, fake, []byte(`#!/bin/sh
+if [ "$1" = "--version" ]; then echo 'codex-cli 0.159.0'; exit 0; fi
+if [ ! -f '`+calls+`' ]; then
+  echo first > '`+calls+`'
+  exit 1
+fi
+echo recovered >> '`+calls+`'
+echo '{"models":[{"slug":"gpt-6.1-sol","visibility":"list","default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"medium"},{"effort":"high"}]}]}'
+`))
+	cmd := Command{Path: fake}
+	first, err := ListModels(context.Background(), "codex", cmd)
+	if err != nil || !first.Fallback || len(first.Models) == 0 {
+		t.Fatalf("failed refresh must return a marked static fallback, got %+v, err %v", first, err)
+	}
+	recovered, err := ListModels(context.Background(), "codex", cmd)
+	if err != nil || recovered.Fallback || len(recovered.Models) != 1 || recovered.Models[0].ID != "gpt-6.1-sol" {
+		t.Fatalf("next call must retry and return the current account catalog, got %+v, err %v", recovered, err)
+	}
+	data, err := os.ReadFile(calls)
+	if err != nil || string(data) != "first\nrecovered\n" {
+		t.Fatalf("expected failed refresh followed by immediate retry, got %q, err %v", data, err)
+	}
+}
+
+func TestDiscoverCodexModelsSlowRefreshHonorsCallerDeadline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary requires a POSIX shell")
+	}
+	t.Parallel()
+	fake := filepath.Join(t.TempDir(), "codex")
+	writeTestExecutable(t, fake, []byte("#!/bin/sh\n"+
+		"if [ \"$1\" = \"--version\" ]; then echo 'codex-cli 0.159.0'; exit 0; fi\n"+
+		"exec sleep 30\n"))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	start := time.Now()
+	catalog := discoverCodexCatalog(ctx, Command{Path: fake})
+	got := catalog.Models
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("slow refresh exceeded caller deadline bound: %v", elapsed)
+	}
+	if !catalog.Fallback || !reflect.DeepEqual(got, annotateCodexExplicitStandardServiceTier(codexStaticModels(), true)) {
+		t.Fatalf("expected static fallback after refresh timeout, got %+v", got)
+	}
 }
 
 func TestValidateThinkingLevelCodexPerModelFallbackCatalog(t *testing.T) {
@@ -985,7 +1090,7 @@ func writeFakeClaudePreEffortHelpBinary(t *testing.T) string {
 }
 
 // writeFakeCodexModelsBinary writes a stand-in `codex` that answers
-// `debug models --bundled` with a Codex 0.144.1-shaped gpt-5.6 catalog
+// `debug models` with a Codex 0.144.1-shaped gpt-5.6 catalog
 // (sol/terra advertise max+ultra, luna tops out at max) and prints a version
 // string for any other invocation (DetectVersion's probe). Used to exercise
 // ValidateThinkingLevel against a real per-model catalog without a codex install.

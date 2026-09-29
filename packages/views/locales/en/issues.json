@@ -490,6 +490,7 @@
       "blocker_candidate_head_changed": "The PR head changed. Reconcile and evaluate the current commit before proceeding.",
       "blocker_source_incomplete": "The implementation task is not complete.",
       "blocker_review_missing": "A passing independent review is required.",
+      "blocker_review_pending_completion": "The reviewer is still finishing this review.",
       "blocker_review_not_independent": "The review must come from a separate fresh session.",
       "blocker_active_work": "Agent work is still active.",
       "blocker_pending_handoff": "A handoff still needs to finish.",
