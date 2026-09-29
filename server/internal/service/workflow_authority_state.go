@@ -202,7 +202,7 @@ func (s WorkflowAuthorityService) ReadState(ctx context.Context, workspaceID, is
 		}
 		rows.Close()
 	}
-	if actor.Type == "member" && !issue.WorkflowFrozen && (issue.Status == "done" || authority.FormatVersion == 2 && issue.Status == authority.AcceptedStatusKey) &&
+	if actor.Type == "member" && !issue.WorkflowFrozen && (authority.FormatVersion == 1 && issue.Status == "done" || authority.FormatVersion == 2 && issue.Status == authority.AcceptedStatusKey) &&
 		state.Candidate != nil && state.Acceptance != nil && state.Acceptance.State == "accepted" &&
 		state.Acceptance.CandidateID == state.Candidate.ID && len(state.Delivery) > 0 {
 		candidate, candidateErr := loadCurrentWorkflowCandidate(ctx, tx, issue, policy.Version)

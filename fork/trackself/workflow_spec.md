@@ -174,7 +174,7 @@ the delegated deliverable boundary above.
 | `in_review`, independent final reviewer | A fresh context evaluates the current resulting surface. |
 | `in_review`, human | A human decision is due. The human may express acceptance or feedback in a clear comment on the issue or bound PR; assignment routes attention but is not required evidence. |
 | `PR Ready`, accepted work awaiting delivery | Required review and acceptance passed; delivery may be pending, held or failed. |
-| `done`, completed work | All required bound PRs have merged, or work needing no PR has been explicitly accepted. Closing does not claim unperformed deployment or validation. |
+| `done`, completed work | Automated completion requires all required bound PRs merged, or explicit acceptance of work needing no PR. A human may explicitly close work through the status control with an audited decision despite incomplete workflow bookkeeping. Closing does not claim unperformed deployment or validation. |
 
 Routine corrections remain within the review/fix cycle. Material work that must
 return to implementation can move back to `in_progress` and the appropriate

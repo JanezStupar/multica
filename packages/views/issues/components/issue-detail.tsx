@@ -66,7 +66,7 @@ import { isBuiltInIssueStatus } from "@multica/core/issue-statuses";
 import { commentLandingTarget } from "@multica/core/issues/comment-deletion";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
-import { useAcceptIssueWorkflow, useIssueWorkflow } from "@multica/core/issues/workflow";
+import { useAcceptIssueWorkflow } from "@multica/core/issues/workflow";
 import { toast } from "sonner";
 import { errorCode } from "@multica/core/api";
 import { StatusIcon } from "./status-icon";
@@ -81,7 +81,6 @@ import { LabelPicker } from "./pickers/label-picker";
 import { CustomPropertyValueEditor, CustomPropertyValueDisplay } from "./pickers/custom-property-picker";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { IssueActionsDropdown, useIssueActions, IssueActionsContextMenu, IssueContextMenuProvider } from "../actions";
-import type { IssueSurfaceMutationOptions } from "../surface/actions-context";
 import { LabelChip } from "../../labels/label-chip";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
 import { SubIssuesAgentWorkingChip } from "./sub-issues-agent-working-chip";
@@ -313,6 +312,11 @@ function formatActivity(
       return t(($) => $.activity.status_changed, {
         from: statusLabel(details.from ?? "?", t, resolveStatusLabel),
         to: statusLabel(details.to ?? "?", t, resolveStatusLabel),
+      });
+    case "workflow_human_status_decision":
+      return t(($) => $.activity.human_status_decision, {
+        from: statusLabel(details.from_status ?? "?", t, resolveStatusLabel),
+        to: statusLabel(details.to_status ?? "?", t, resolveStatusLabel),
       });
     case "priority_changed":
       return t(($) => $.activity.priority_changed, {
@@ -622,19 +626,20 @@ function ActivityBlock({
       )}
       {visibleEntries.map((entry) => {
         const details = (entry.details ?? {}) as Record<string, string>;
-        const isStatusChange = entry.action === "status_changed";
+        const isStatusChange = entry.action === "status_changed" || entry.action === "workflow_human_status_decision";
+        const toStatus = entry.action === "workflow_human_status_decision" ? details.to_status : details.to;
         const isPriorityChange = entry.action === "priority_changed";
         const isStartDateChange = entry.action === "start_date_changed";
         const isDueDateChange = entry.action === "due_date_changed";
 
         let leadIcon: React.ReactNode;
-        if (isStatusChange && details.to) {
+        if (isStatusChange && toStatus) {
           leadIcon = (
             <StatusIcon
-              status={details.to as IssueStatus}
-              category={resolveStatusCategory(details.to ?? "")}
-              color={resolveStatusColor(details.to ?? "")}
-              icon={resolveStatusIcon(details.to ?? "")}
+              status={toStatus as IssueStatus}
+              category={resolveStatusCategory(toStatus)}
+              color={resolveStatusColor(toStatus)}
+              icon={resolveStatusIcon(toStatus)}
               className="h-4 w-4 shrink-0"
             />
           );
@@ -2103,43 +2108,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // Shared issue actions (mutations, pin, copy-link, modal dispatch, etc.).
   // Called before the `if (!issue)` early return so hook order stays stable.
   const actions = useIssueActions(issue);
-  const workflowEnabled = issue?.workflow_policy_present === true || issue?.workflow_frozen === true;
-  const { data: workflowSnapshot } = useIssueWorkflow(wsId, issue?.id ?? id, issue?.workflow_policy_present === true);
   const { mutate: acceptWorkflowCandidate, isPending: acceptingWorkflow, error: workflowAcceptError } = useAcceptIssueWorkflow(wsId, issue?.id ?? id);
-  const updateIssueField = actions.updateField;
-  const handleUpdateField = useCallback(
-    (updates: Partial<UpdateIssueRequest>, options?: IssueSurfaceMutationOptions) => {
-      const targetCategory = updates.status === "done"
-        ? "done"
-        : updates.status
-          ? resolveStatusCategory(updates.status)
-          : undefined;
-      if (issue && workflowEnabled && targetCategory === "done") {
-        if (acceptingWorkflow) {
-          navigation.push(`${paths.issueDetail(issue.identifier || issue.id)}?workflow=accept`);
-          return;
-        }
-        const candidate = workflowSnapshot?.candidate;
-        const requiresExplicitOrder = workflowSnapshot?.delivery_preview?.requires_order === true && (candidate?.prs.length ?? 0) > 1;
-        const snapshotMatchesIssue = typeof issue.revision === "number" && workflowSnapshot?.issue_revision === issue.revision;
-        const canAcceptDisplayedCandidate = !!candidate && snapshotMatchesIssue &&
-          workflowSnapshot?.available_actions.accept_human === true && !workflowSnapshot.frozen &&
-          workflowSnapshot.acceptance_blockers.length === 0 &&
-          !!workflowSnapshot.delivery_preview && !requiresExplicitOrder;
-        if (canAcceptDisplayedCandidate && !workflowSnapshot.accepted_status_key) {
-          acceptWorkflowCandidate({
-            candidate_id: candidate.id,
-            expected_revision: workflowSnapshot.issue_revision,
-          });
-        } else {
-          navigation.push(`${paths.issueDetail(issue.identifier || issue.id)}?workflow=accept`);
-        }
-        return;
-      }
-      updateIssueField(updates, options);
-    },
-    [updateIssueField, acceptWorkflowCandidate, acceptingWorkflow, issue, workflowEnabled, workflowSnapshot, resolveStatusCategory, navigation, paths],
-  );
+  const handleUpdateField = actions.updateField;
 
   // Labels live in their own query (not on the issue body) — fetch the count
   // here so seeding can decide whether the "Labels" optional row should be
@@ -2858,11 +2828,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                       size="icon-sm"
                       className="text-muted-foreground"
                       aria-label={t(($) => $.detail.mark_done_tooltip)}
-                      disabled={workflowEnabled && acceptingWorkflow}
-                      aria-busy={workflowEnabled && acceptingWorkflow}
                       onClick={() => {
-                        handleUpdateField({ status: "done" });
-                        if (!issue.workflow_policy_present && !issue.workflow_frozen) onDone?.();
+                        handleUpdateField({ status: "done" }, { onSuccess: () => onDone?.() });
                       }}
                     >
                       <CircleCheck />

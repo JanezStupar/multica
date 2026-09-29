@@ -472,8 +472,9 @@ func (h *Handler) MigrateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	var prior []byte
 	var frozen bool
 	var priorStatus string
+	var priorRevision int64
 	var candidateID pgtype.UUID
-	err = tx.QueryRow(r.Context(), `SELECT workflow_policy, workflow_frozen, status, workflow_candidate_id FROM issue WHERE id=$1 AND workspace_id=$2 FOR UPDATE NOWAIT`, issue.ID, issue.WorkspaceID).Scan(&prior, &frozen, &priorStatus, &candidateID)
+	err = tx.QueryRow(r.Context(), `SELECT workflow_policy, workflow_frozen, status, workflow_candidate_id,revision FROM issue WHERE id=$1 AND workspace_id=$2 FOR UPDATE NOWAIT`, issue.ID, issue.WorkspaceID).Scan(&prior, &frozen, &priorStatus, &candidateID, &priorRevision)
 	if workflowLockConflict(err) {
 		writeError(w, http.StatusConflict, "issue activity is busy; retry migration")
 		return
@@ -599,6 +600,24 @@ func (h *Handler) MigrateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to migrate issue policy")
 		return
+	}
+	var priorHumanDone bool
+	if err = tx.QueryRow(r.Context(), `SELECT workflow_human_last_done($1)`, issue.ID).Scan(&priorHumanDone); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check prior human decision")
+		return
+	}
+	if priorHumanDone {
+		_, err = tx.Exec(r.Context(), `INSERT INTO activity_log(workspace_id,issue_id,actor_type,actor_id,action,details)
+			VALUES($1,$2,'member',$3,'workflow_human_status_decision',
+			jsonb_build_object('from_status',$4::text,'to_status',$5::text,
+				'from_revision',$6::bigint,'to_revision',$6::bigint+1,
+				'candidate_id',COALESCE($7::uuid::text,''),
+				'transaction_id',pg_current_xact_id()::text,'source','workflow_migration'))`,
+			issue.WorkspaceID, issue.ID, member.UserID, priorStatus, nextStatus, priorRevision, candidateID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to record human migration decision")
+			return
+		}
 	}
 	details, _ := json.Marshal(map[string]any{"reason": input.Reason, "reconciliation": input.Reconciliation,
 		"previous_policy": json.RawMessage(prior), "new_policy": policy,

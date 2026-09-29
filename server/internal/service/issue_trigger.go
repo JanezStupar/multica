@@ -110,6 +110,9 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 	// so moving to done/closed cannot start work.
 	currentStatus := issuestatus.Effective(ctx, s.Queries, issue.WorkspaceID, issue.Status)
 	prevStatus := issuestatus.Effective(ctx, s.Queries, issue.WorkspaceID, in.PrevStatus)
+	if currentStatus == "done" || currentStatus == "cancelled" {
+		return IssueRunTrigger{}, false
+	}
 
 	// Triage is stricter than the backlog parking lot: backlog defers a run,
 	// Triage refuses one outright (MUL-7189 §2.3). Deciding it here is what

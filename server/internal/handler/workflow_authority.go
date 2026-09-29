@@ -44,7 +44,8 @@ func workflowAuthorityError(w http.ResponseWriter, err error) {
 
 func (h *Handler) workflowActorForIssue(r *http.Request, workspaceID string) service.WorkflowActor {
 	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
-	return service.WorkflowActor{Type: actorType, ID: actorID, SourceTaskID: uuidToString(h.wakeupSourceTaskID(r))}
+	return service.WorkflowActor{Type: actorType, ID: actorID, SourceTaskID: uuidToString(h.wakeupSourceTaskID(r)),
+		HumanCredential: actorType == "member" && !isMachineCredentialActor(r)}
 }
 
 func (h *Handler) workflowAuthorityService() service.WorkflowAuthorityService {

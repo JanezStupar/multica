@@ -737,9 +737,17 @@ describe("IssueDetail (shared)", () => {
     mockApiObj.getProject.mockReset();
   });
 
-  it("accepts the displayed workflow candidate directly from Done when its revision matches", async () => {
+  it("marks an enrolled issue Done through the ordinary update when acceptance has no candidate", async () => {
     const enrolledIssue = { ...mockIssue, workflow_policy_present: true };
     mockApiObj.getIssue.mockResolvedValue(enrolledIssue);
+    mockApiObj.updateIssue.mockResolvedValueOnce({ ...enrolledIssue, status: "done" });
+    mockApiObj.getIssueWorkflow.mockResolvedValue({
+      ...mockIssueWorkflow,
+      candidate: null,
+      delivery_preview: null,
+      acceptance_blockers: ["candidate_missing"],
+      available_actions: { ...mockIssueWorkflow.available_actions, accept_human: false },
+    });
     const onDone = vi.fn();
     renderIssueDetail("issue-1", onDone);
 
@@ -747,16 +755,37 @@ describe("IssueDetail (shared)", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Mark as done" }));
 
     await waitFor(() => {
-      expect(mockApiObj.acceptIssueWorkflow).toHaveBeenCalledWith("issue-1", {
-        candidate_id: "candidate-42",
-        expected_revision: 3,
-      });
+      expect(mockApiObj.updateIssue).toHaveBeenCalledWith("issue-1", { status: "done" });
     });
-    expect(mockApiObj.updateIssue).not.toHaveBeenCalled();
+    expect(mockApiObj.acceptIssueWorkflow).not.toHaveBeenCalled();
+    expect(mockNavigationPush).not.toHaveBeenCalled();
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+  });
+
+  it("does not archive an enrolled inbox item when the ordinary Done update fails", async () => {
+    mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, workflow_policy_present: true });
+    mockApiObj.getIssueWorkflow.mockResolvedValue({
+      ...mockIssueWorkflow,
+      candidate: null,
+      delivery_preview: null,
+      acceptance_blockers: ["candidate_missing"],
+      available_actions: { ...mockIssueWorkflow.available_actions, accept_human: false },
+    });
+    mockApiObj.updateIssue.mockRejectedValueOnce(new Error("Update failed"));
+    const onDone = vi.fn();
+    renderIssueDetail("issue-1", onDone);
+
+    await screen.findByRole("heading", { name: "Workflow acceptance" });
+    fireEvent.click(await screen.findByRole("button", { name: "Mark as done" }));
+
+    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalledWith("issue-1", { status: "done" }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(mockApiObj.acceptIssueWorkflow).not.toHaveBeenCalled();
+    expect(mockNavigationPush).not.toHaveBeenCalled();
     expect(onDone).not.toHaveBeenCalled();
   });
 
-  it("opens the acceptance options for format-2 workflow issues instead of accepting from Done", async () => {
+  it("keeps the acceptance controls separate from Done when a candidate was already accepted", async () => {
     mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, workflow_policy_present: true });
     mockApiObj.getIssueWorkflow.mockResolvedValue({ ...mockIssueWorkflow, accepted_status_key: "pr_ready" });
     renderIssueDetail("issue-1", vi.fn());
@@ -764,12 +793,13 @@ describe("IssueDetail (shared)", () => {
     await screen.findByRole("heading", { name: "Workflow acceptance" });
     fireEvent.click(await screen.findByRole("button", { name: "Mark as done" }));
 
+    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalledWith("issue-1", { status: "done" }));
     expect(mockApiObj.acceptIssueWorkflow).not.toHaveBeenCalled();
-    expect(mockNavigationPush).toHaveBeenCalledWith("/test/issues/TES-1?workflow=accept");
+    expect(mockNavigationPush).not.toHaveBeenCalled();
     expect(screen.getByRole("checkbox", { name: "The actual outcome is complete" })).toBeInTheDocument();
   });
 
-  it("focuses the candidate panel instead of accepting when the snapshot revision is stale", async () => {
+  it("uses ordinary Done even when the workflow snapshot revision is stale", async () => {
     const enrolledIssue = { ...mockIssue, workflow_policy_present: true };
     mockApiObj.getIssue.mockResolvedValue(enrolledIssue);
     mockApiObj.getIssueWorkflow.mockResolvedValue({ ...mockIssueWorkflow, issue_revision: 2 });
@@ -778,13 +808,14 @@ describe("IssueDetail (shared)", () => {
     await screen.findByRole("heading", { name: "Workflow acceptance" });
     fireEvent.click(await screen.findByRole("button", { name: "Mark as done" }));
 
+    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalledWith("issue-1", { status: "done" }));
     expect(mockApiObj.acceptIssueWorkflow).not.toHaveBeenCalled();
-    expect(mockNavigationPush).toHaveBeenCalledWith("/test/issues/TES-1?workflow=accept");
-    expect(mockApiObj.updateIssue).not.toHaveBeenCalled();
+    expect(mockNavigationPush).not.toHaveBeenCalled();
   });
 
   it("shows the frozen legacy state without requesting workflow authority", async () => {
     mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, workflow_policy_present: false, workflow_frozen: true });
+    mockApiObj.updateIssue.mockResolvedValueOnce({ ...mockIssue, workflow_policy_present: false, workflow_frozen: true, status: "done" });
     const onDone = vi.fn();
     renderIssueDetail("issue-1", onDone);
 
@@ -793,9 +824,13 @@ describe("IssueDetail (shared)", () => {
     expect(mockApiObj.acceptIssueWorkflow).not.toHaveBeenCalled();
     expect(mockApiObj.updateIssue).not.toHaveBeenCalled();
     expect(onDone).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: "Mark as done" }));
+    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalledWith("issue-1", { status: "done" }));
+    expect(mockNavigationPush).not.toHaveBeenCalled();
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
   });
 
-  it("requires the panel order controls before a multi-PR merge acceptance", async () => {
+  it("leaves multi-PR merge order in the acceptance panel while Done updates status", async () => {
     const enrolledIssue = { ...mockIssue, workflow_policy_present: true };
     const secondPR = { ...mockIssueWorkflow.candidate!.prs[0]!, repository_url: "https://github.com/acme/worker", pr_url: "https://github.com/acme/worker/pull/9" };
     mockApiObj.getIssue.mockResolvedValue(enrolledIssue);
@@ -810,8 +845,9 @@ describe("IssueDetail (shared)", () => {
     await screen.findByRole("heading", { name: "Workflow acceptance" });
     fireEvent.click(await screen.findByRole("button", { name: "Mark as done" }));
 
+    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalledWith("issue-1", { status: "done" }));
     expect(mockApiObj.acceptIssueWorkflow).not.toHaveBeenCalled();
-    expect(mockNavigationPush).toHaveBeenCalledWith("/test/issues/TES-1?workflow=accept");
+    expect(mockNavigationPush).not.toHaveBeenCalled();
     expect(screen.getByRole("combobox", { name: "Merge order for pull request 1" })).toBeInTheDocument();
   });
 
@@ -1877,6 +1913,25 @@ describe("IssueDetail (shared)", () => {
     await waitFor(() => {
       expect(screen.getByText(/from Todo to mystery_status/i)).toBeInTheDocument();
     });
+  });
+
+  it("renders the explicit human workflow status decision with its before and after statuses", async () => {
+    mockApiObj.listTimeline.mockResolvedValue([
+      {
+        type: "activity",
+        id: "act-human-status-decision",
+        actor_type: "member",
+        actor_id: "user-1",
+        action: "workflow_human_status_decision",
+        details: { from_status: "in_review", to_status: "done", from_revision: 3, to_revision: 4 },
+        created_at: "2026-01-18T00:00:00Z",
+      },
+    ] as TimelineEntry[]);
+
+    renderIssueDetail();
+
+    expect(await screen.findByText("chose status Done (was In Review)")).toBeInTheDocument();
+    expect(screen.queryByText("workflow_human_status_decision")).not.toBeInTheDocument();
   });
 
   // -------------------------------------------------------------------------

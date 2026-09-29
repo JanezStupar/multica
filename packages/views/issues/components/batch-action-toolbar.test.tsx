@@ -156,20 +156,32 @@ describe("BatchActionToolbar picker wiring", () => {
     expect(screen.queryByTestId("status-picker")).toBeNull();
   });
 
-  it("does not batch-mark workflow-managed issues done and offers the acceptance panel", () => {
+  it("batch-marks workflow-managed issues Done without opening acceptance", async () => {
     const issue = makeIssue({ workflow_policy_present: true });
     selection.selectedIds = new Set([issue.id]);
     render(<BatchActionToolbar issues={[issue]} />);
 
     screen.getByRole("button", { name: "done" }).click();
 
-    expect(batchUpdateMutate).not.toHaveBeenCalled();
-    expect(toastError).toHaveBeenCalledWith("label", {
-      action: { label: "label", onClick: expect.any(Function) },
+    await waitFor(() => {
+      expect(batchUpdateMutate).toHaveBeenCalledWith({ ids: [issue.id], updates: { status: "done" } });
     });
-    const toastOptions = toastError.mock.calls[0]![1] as { action: { onClick: () => void } };
-    toastOptions.action.onClick();
-    expect(navigationPush).toHaveBeenCalledWith("/workspace/issues/MUL-1?workflow=accept");
+    expect(toastError).not.toHaveBeenCalled();
+    expect(navigationPush).not.toHaveBeenCalled();
+  });
+
+  it("batch-marks frozen issues Done without opening acceptance", async () => {
+    const issue = makeIssue({ workflow_frozen: true });
+    selection.selectedIds = new Set([issue.id]);
+    render(<BatchActionToolbar issues={[issue]} />);
+
+    screen.getByRole("button", { name: "done" }).click();
+
+    await waitFor(() => {
+      expect(batchUpdateMutate).toHaveBeenCalledWith({ ids: [issue.id], updates: { status: "done" } });
+    });
+    expect(toastError).not.toHaveBeenCalled();
+    expect(navigationPush).not.toHaveBeenCalled();
   });
 
   it("removes the toolbar after the final selected issue is cleared", async () => {

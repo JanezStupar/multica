@@ -576,6 +576,7 @@
     "removed_assignee": "담당자를 제거했습니다",
     "changed_assignee": "담당자를 변경했습니다",
     "status_changed": "상태를 {{from}}에서 {{to}}로 변경했습니다",
+    "human_status_decision": "상태를 {{to}}로 선택했습니다 (이전: {{from}})",
     "priority_changed": "우선순위를 {{from}}에서 {{to}}로 변경했습니다",
     "start_date_set": "시작일을 {{date}}로 설정했습니다",
     "start_date_removed": "시작일을 제거했습니다",

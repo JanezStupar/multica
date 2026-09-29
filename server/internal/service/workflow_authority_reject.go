@@ -311,6 +311,20 @@ func (s WorkflowAuthorityService) rejectWorkflow(ctx context.Context, workspaceI
 	if err != nil {
 		return err
 	}
+	var humanTerminal bool
+	if err := tx.QueryRow(ctx, `SELECT workflow_human_last_done($1) AND
+		(i.status='done' OR EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category='done'))
+		FROM issue i WHERE i.id=$1 AND i.workspace_id=$2`, issueID, workspaceID).Scan(&humanTerminal); err != nil {
+		return err
+	}
+	if humanTerminal {
+		if actor.Type != "member" || !actor.HumanCredential {
+			return ErrWorkflowAuthorityForbidden
+		}
+		if _, err := tx.Exec(ctx, `SELECT set_config('multica.human_rejection_member_id',$1,true)`, actor.ID); err != nil {
+			return err
+		}
+	}
 	var actorID, sourceTaskID, feedbackAuthorID pgtype.UUID
 	var feedbackRole string
 	if feedbackCommentID.Valid {
@@ -534,7 +548,7 @@ func (s WorkflowAuthorityService) rejectWorkflow(ctx context.Context, workspaceI
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
-	if !feedbackCommentID.Valid && (issue.Status == "done" || authority.FormatVersion == 2 && issue.Status == authority.AcceptedStatusKey) && !acceptanceID.Valid {
+	if !feedbackCommentID.Valid && (issue.Status == "done" || authority.FormatVersion == 2 && issue.Status == authority.AcceptedStatusKey) && !acceptanceID.Valid && !humanTerminal {
 		return fmt.Errorf("%w: accepted decision unavailable", ErrWorkflowAuthorityConflict)
 	}
 	if _, err := tx.Exec(ctx, `UPDATE issue_workflow_acceptance SET state='revoked',revoked_at=now()
@@ -582,6 +596,20 @@ func (s WorkflowAuthorityService) rejectWorkflow(ctx context.Context, workspaceI
 		contextMode, continuityNote, feedbackCommentID, feedbackRevisionValue, sourceTaskID)
 	if err != nil {
 		return err
+	}
+	if humanTerminal {
+		// This explicit human rejection supersedes the earlier human Done
+		// decision. Keep both decisions in the timeline; the current transaction
+		// is excluded from the completion fence's prior-decision lookup.
+		_, err = tx.Exec(ctx, `INSERT INTO activity_log(workspace_id,issue_id,actor_type,actor_id,action,details)
+			VALUES($1,$2,'member',$3,'workflow_human_status_decision',
+			jsonb_build_object('from_status',$4::text,'to_status','in_progress',
+				'from_revision',$5::bigint,'to_revision',$5::bigint+1,
+				'candidate_id',$6::uuid::text,'transaction_id',pg_current_xact_id()::text,
+				'source','workflow_rejection'))`, workspaceID, issueID, actorID, issue.Status, issue.Revision, candidateID)
+		if err != nil {
+			return err
+		}
 	}
 	var updatedRevision int64
 	err = tx.QueryRow(ctx, `UPDATE issue SET status='in_progress',assignee_type='agent',assignee_id=$2,

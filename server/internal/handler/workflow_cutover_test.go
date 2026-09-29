@@ -418,6 +418,9 @@ func TestWorkflowCutoverMigratesTerminalLegacyOnlyWithExplicitReopen(t *testing.
 	for _, status := range []string{"done", "cancelled", "historical_done", "historical_closed"} {
 		issues[status] = dbfx.Issue(t, "Historical "+status, testutil.Cols{"workspace_id": workspace, "status": status})
 	}
+	humanFrozen := dbfx.Issue(t, "Human completion before explicit migration", testutil.Cols{
+		"workspace_id": workspace, "status": "in_review",
+	})
 	accepted := dbfx.Issue(t, "Previously accepted policy", testutil.Cols{
 		"workspace_id": workspace, "status": "todo", "workflow_policy": testutil.Raw(`'{"version":"prior-v1"}'::jsonb`),
 	})
@@ -443,6 +446,19 @@ func TestWorkflowCutoverMigratesTerminalLegacyOnlyWithExplicitReopen(t *testing.
 	if acceptedFrozen {
 		t.Fatal("previously accepted enrolled issue was frozen")
 	}
+	humanDone := withURLParam(newRequest(http.MethodPut, "/api/issues/"+humanFrozen,
+		map[string]any{"status": "done"}), "id", humanFrozen)
+	humanDone.Header.Set("X-Workspace-ID", workspace)
+	testutil.Call(t, testHandler.UpdateIssue, humanDone).Want(http.StatusOK)
+	migrateHuman := withURLParam(workflowCutoverRequest(http.MethodPost, "/", workspace,
+		map[string]any{"skill_id": skill, "reason": "Resume the work after QA",
+			"reconciliation": "The human Done decision remains in history.", "reopen_to": "todo"}), "id", humanFrozen)
+	testutil.Call(t, testHandler.MigrateIssueWorkflow, migrateHuman).Want(http.StatusOK)
+	var humanStillDone bool
+	dbfx.QueryRow(t, `SELECT workflow_human_last_done($1)`, humanFrozen).Scan(&humanStillDone)
+	if humanStillDone || dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='workflow_human_status_decision'`, humanFrozen) != 2 {
+		t.Fatal("explicit migration did not supersede the frozen human Done decision")
+	}
 	for _, status := range []string{"done", "cancelled", "historical_done", "historical_closed"} {
 		issue := issues[status]
 		request := func(reopen string) *http.Request {
@@ -465,7 +481,7 @@ func TestWorkflowCutoverMigratesTerminalLegacyOnlyWithExplicitReopen(t *testing.
 	}
 }
 
-func TestEnrolledIssueCompletionReportsAcceptanceConflict(t *testing.T) {
+func TestEnrolledIssueMachineCompletionReportsAcceptanceConflict(t *testing.T) {
 	workspace := dbfx.Workspace(t, "Workflow completion conflict", fmt.Sprintf("workflow-acceptance-%d", time.Now().UnixNano()))
 	dbfx.Member(t, workspace, testUserID, "owner")
 	dbfx.Insert(t, "issue_status", testutil.Cols{
@@ -484,11 +500,13 @@ func TestEnrolledIssueCompletionReportsAcceptanceConflict(t *testing.T) {
 		req := withURLParam(newRequest(http.MethodPut, "/api/issues/"+issue,
 			map[string]any{"status": target}), "id", issue)
 		req.Header.Set("X-Workspace-ID", workspace)
+		req.Header.Set("X-Actor-Source", "cloud_pat")
 		testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusConflict)
 		batch := newRequest(http.MethodPatch, "/api/issues/batch", map[string]any{
 			"issue_ids": []string{issue}, "updates": map[string]any{"status": target},
 		})
 		batch.Header.Set("X-Workspace-ID", workspace)
+		batch.Header.Set("X-Actor-Source", "cloud_pat")
 		testutil.Call(t, testHandler.BatchUpdateIssues, batch).Want(http.StatusConflict)
 	}
 	var status string

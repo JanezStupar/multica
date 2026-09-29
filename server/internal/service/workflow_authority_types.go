@@ -19,6 +19,9 @@ type WorkflowActor struct {
 	Type         string
 	ID           string
 	SourceTaskID string
+	// Set only by a transport that verified a human credential. A machine
+	// credential may resolve to its backing workspace member ID.
+	HumanCredential bool
 }
 
 type WorkflowCandidateView struct {

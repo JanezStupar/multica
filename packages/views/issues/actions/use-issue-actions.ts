@@ -78,19 +78,6 @@ export function useIssueActions(issue: Issue | null): UseIssueActionsResult {
       options?: IssueSurfaceMutationOptions,
     ) => {
       if (!issueId) return;
-      const targetCategory = updates.status === "done"
-        ? "done"
-        : updates.status
-          ? entryOf(updates.status)?.category
-          : undefined;
-      if (
-        issue &&
-        (issue.workflow_policy_present === true || issue.workflow_frozen === true) &&
-        targetCategory === "done"
-      ) {
-        navigation.push(`${paths.issueDetail(issueIdentifier || issueId)}?workflow=accept`);
-        return;
-      }
       // The two writes that can hand work to an agent — giving it an owner, and
       // promoting it out of the parking lot — confirm first, through the shared
       // gate every single-issue entry point routes on (runConfirmIntent). The
@@ -130,7 +117,7 @@ export function useIssueActions(issue: Issue | null): UseIssueActionsResult {
         );
       }
     },
-    [issue, issueId, issueIdentifier, entryOf, navigation, paths, surfaceActions, updateIssue, openModal, t],
+    [issue, issueId, entryOf, surfaceActions, updateIssue, openModal, t],
   );
 
   // Explicit "open it somewhere else" CTA, so the new tab takes focus

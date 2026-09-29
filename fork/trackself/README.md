@@ -219,6 +219,17 @@ the evidence and limits. The deployed `v0.5.1-janez.2` supports this policy;
 `v0.5.1-janez.1` wrote `done` at acceptance and has been withdrawn.
 Use the workflow operations for acceptance rather than moving the status card.
 
+An authenticated human workspace member may also explicitly set an issue to
+Done through the normal status control, batch update or CLI. This records a
+human status decision and stops issue wakeups even when legacy candidate or
+delivery bookkeeping is incomplete. It preserves the candidate, review,
+acceptance and PR evidence; it neither fabricates acceptance nor authorizes
+provider changes. Machine credentials and background completion retain the
+workflow guards. A frozen issue permits only the bounded status change.
+Human-closed work without a current candidate or active acceptance can be
+reopened by a new human status decision; accepted candidate work still requires
+explicit rejection/revocation before reopening.
+
 The format-2 authority file names an active nonterminal `accepted_status_key`;
 `outcome_agent_id` is optional. These fields remain compatible with existing
 clients. Acceptance may set `hold_delivery`, but does not require an

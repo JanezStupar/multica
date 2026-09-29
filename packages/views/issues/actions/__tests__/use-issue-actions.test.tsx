@@ -180,7 +180,7 @@ describe("useIssueActions", () => {
     );
   });
 
-  it("routes Done for workflow-managed issues to the candidate acceptance panel", () => {
+  it("updates Done for a workflow-managed issue through the ordinary status mutation", () => {
     const enrolledIssue = { ...mockIssue, workflow_policy_present: true } as Issue;
     const { result } = renderHook(() => useIssueActions(enrolledIssue), { wrapper });
 
@@ -188,8 +188,26 @@ describe("useIssueActions", () => {
       result.current.updateField({ status: "done" });
     });
 
-    expect(mockNavigationPush).toHaveBeenCalledWith("/test/issues/TES-1?workflow=accept");
-    expect(mockUpdateMutate).not.toHaveBeenCalled();
+    expect(mockUpdateMutate).toHaveBeenCalledWith(
+      { id: "issue-1", status: "done" },
+      expect.any(Object),
+    );
+    expect(mockNavigationPush).not.toHaveBeenCalled();
+  });
+
+  it("also sends frozen Done through the ordinary status mutation", () => {
+    const frozenIssue = { ...mockIssue, workflow_frozen: true } as Issue;
+    const { result } = renderHook(() => useIssueActions(frozenIssue), { wrapper });
+
+    act(() => {
+      result.current.updateField({ status: "done" });
+    });
+
+    expect(mockUpdateMutate).toHaveBeenCalledWith(
+      { id: "issue-1", status: "done" },
+      expect.any(Object),
+    );
+    expect(mockNavigationPush).not.toHaveBeenCalled();
   });
 
   it("assigning an agent routes through the run-confirm modal instead of mutating directly", () => {

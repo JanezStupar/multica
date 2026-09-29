@@ -576,6 +576,7 @@
     "removed_assignee": "担当者を削除しました",
     "changed_assignee": "担当者を変更しました",
     "status_changed": "ステータスを {{from}} から {{to}} に変更しました",
+    "human_status_decision": "ステータスに {{to}} を選びました（以前は {{from}}）",
     "priority_changed": "優先度を {{from}} から {{to}} に変更しました",
     "start_date_set": "開始日を {{date}} に設定しました",
     "start_date_removed": "開始日を削除しました",

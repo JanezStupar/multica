@@ -581,6 +581,7 @@
     "removed_assignee": "removed assignee",
     "changed_assignee": "changed assignee",
     "status_changed": "changed status from {{from}} to {{to}}",
+    "human_status_decision": "chose status {{to}} (was {{from}})",
     "priority_changed": "changed priority from {{from}} to {{to}}",
     "start_date_set": "set start date to {{date}}",
     "start_date_removed": "removed start date",

@@ -248,10 +248,10 @@ func assertIssueStatusStillActive(ctx context.Context, qtx *db.Queries, workspac
 // inside a transaction that re-verifies the status under the shared catalog
 // lock (see assertIssueStatusStillActive). Request writes also carry trusted
 // wakeup actor identity in transaction-local settings, including built-in targets.
-func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, fn func(q *db.Queries) error) error {
+func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, fn func(q *db.Queries, tx pgx.Tx) error) error {
 	_, hasActor := ctx.Value(wakeupActorKey{}).(wakeupActor)
 	if !hasActor && (statusKey == "" || issuestatus.IsBuiltIn(statusKey)) {
-		return fn(h.Queries)
+		return fn(h.Queries, nil)
 	}
 	tx, err := h.beginWakeupWrite(ctx)
 	if err != nil {
@@ -263,19 +263,19 @@ func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtyp
 	if err := assertIssueStatusStillActive(ctx, qtx, workspaceID, statusKey); err != nil {
 		return err
 	}
-	if err := fn(qtx); err != nil {
+	if err := fn(qtx, tx); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
 // updateIssueWithStatusGuard writes params under the status-archive guard.
-func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, params db.UpdateIssueParams) (db.Issue, error) {
+func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, params db.UpdateIssueParams, humanActor pgtype.UUID) (db.Issue, error) {
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
-	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, func(q *db.Queries) error {
+	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, func(q *db.Queries, tx pgx.Tx) error {
 		var innerErr error
-		issue, cancelledWakeups, innerErr = updateIssueStoppingWakeups(ctx, q, params)
+		issue, cancelledWakeups, innerErr = updateIssueStoppingWakeups(ctx, q, tx, params, workspaceID, humanActor)
 		return innerErr
 	})
 	if err != nil {
@@ -289,7 +289,12 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 // into a done/closed status, ends its wakeups with the same queries. Callers
 // run it inside the status write's transaction and broadcast the returned runs
 // after commit.
-func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.UpdateIssueParams) (db.Issue, []db.AgentTaskQueue, error) {
+func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, tx pgx.Tx, params db.UpdateIssueParams, workspaceID, humanActor pgtype.UUID) (db.Issue, []db.AgentTaskQueue, error) {
+	if params.Status.Valid {
+		if err := recordHumanIssueStatusDecision(ctx, tx, workspaceID, params.ID, humanActor, params.Status.String); err != nil {
+			return db.Issue{}, nil, err
+		}
+	}
 	issue, err := q.UpdateIssue(ctx, params)
 	if err != nil || !params.Status.Valid {
 		return issue, nil, err
@@ -3548,7 +3553,7 @@ func refreshUntouchedNullableIssueParams(params *db.UpdateIssueParams, current d
 
 var errIssueFieldConflict = errors.New("issue text field conflict")
 
-func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.UUID, params db.UpdateIssueParams, rawFields map[string]json.RawMessage, titleBase, descriptionBase *string, attachmentIDs []pgtype.UUID, statusKey string) (db.Issue, db.Issue, bool, error) {
+func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.UUID, params db.UpdateIssueParams, rawFields map[string]json.RawMessage, titleBase, descriptionBase *string, attachmentIDs []pgtype.UUID, statusKey string, humanActor pgtype.UUID) (db.Issue, db.Issue, bool, error) {
 	if h.TxStarter == nil {
 		return db.Issue{}, db.Issue{}, false, errors.New("atomic issue update requires transaction starter")
 	}
@@ -3620,7 +3625,7 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	}
 	refreshUntouchedNullableIssueParams(&params, current, rawFields)
 
-	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, qtx, params)
+	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, qtx, tx, params, workspaceID, humanActor)
 	if err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("update locked issue: %w", err)
 	}
@@ -3659,10 +3664,6 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	prevIssue, ok := h.loadIssueForUser(w, r, id)
 	if !ok {
-		return
-	}
-	if prevIssue.WorkflowFrozen {
-		writeError(w, http.StatusConflict, "issue is frozen until explicit workflow migration")
 		return
 	}
 	userID := requestUserID(r)
@@ -3734,6 +3735,14 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		statusKeyForGuard = statusKey
 		params.Status = pgtype.Text{String: statusKey, Valid: true}
+	}
+	humanStatusActor := pgtype.UUID{}
+	if req.Status != nil {
+		humanStatusActor = h.humanIssueStatusActor(r, prevIssue.WorkspaceID)
+	}
+	if prevIssue.WorkflowFrozen && !humanStatusActor.Valid {
+		writeError(w, http.StatusConflict, "issue is frozen until explicit workflow migration")
+		return
 	}
 	if req.Priority != nil {
 		if !validateIssueEnum(w, "priority", *req.Priority, validIssuePriorities) {
@@ -3890,13 +3899,13 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
 		var lockedPrev db.Issue
 		issue, lockedPrev, attachmentsChanged, err = h.updateIssueAtomically(
-			r.Context(), prevIssue.WorkspaceID, params, rawFields, req.TitleBase, req.DescriptionBase, attachmentIDs, statusKeyForGuard,
+			r.Context(), prevIssue.WorkspaceID, params, rawFields, req.TitleBase, req.DescriptionBase, attachmentIDs, statusKeyForGuard, humanStatusActor,
 		)
 		if lockedPrev.ID.Valid {
 			prevIssue = lockedPrev
 		}
 	} else {
-		issue, err = h.updateIssueWithStatusGuard(r.Context(), prevIssue.WorkspaceID, statusKeyForGuard, params)
+		issue, err = h.updateIssueWithStatusGuard(r.Context(), prevIssue.WorkspaceID, statusKeyForGuard, params, humanStatusActor)
 	}
 	if err != nil {
 		if writeFrozenWorkflowMutationError(w, err) {
@@ -4437,9 +4446,6 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if h.rejectFrozenIssueBatchMutation(w, r, wsUUID, req.IssueIDs) {
-		return
-	}
 	// Status is validated against this workspace's catalog, so it has to wait
 	// for wsUUID above. One check for the whole batch — every issue in it
 	// shares the workspace — and a rejection rather than a silent skip, so a
@@ -4450,6 +4456,24 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
+	}
+	humanStatusActor := pgtype.UUID{}
+	if req.Updates.Status != nil {
+		humanStatusActor = h.humanIssueStatusActor(r, wsUUID)
+	}
+	onlyStatus := true
+	for field := range rawUpdates {
+		if field != "status" && field != "suppress_run" && field != "handoff_note" {
+			onlyStatus = false
+			break
+		}
+	}
+	if humanStatusActor.Valid && onlyStatus {
+		if h.rejectIneligibleFrozenHumanStatusBatch(w, r, wsUUID, req.IssueIDs, batchStatusKey) {
+			return
+		}
+	} else if h.rejectFrozenIssueBatchMutation(w, r, wsUUID, req.IssueIDs) {
+		return
 	}
 	if !h.validateBatchTriageLocks(w, r, wsUUID, req.IssueIDs, rawUpdates) {
 		return
@@ -4646,13 +4670,13 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			// legacy single-update clients that omit description_base.
 			var lockedPrev db.Issue
 			issue, lockedPrev, _, err = h.updateIssueAtomically(
-				r.Context(), prevIssue.WorkspaceID, params, rawUpdates, nil, nil, nil, batchStatusKey,
+				r.Context(), prevIssue.WorkspaceID, params, rawUpdates, nil, nil, nil, batchStatusKey, humanStatusActor,
 			)
 			if err == nil {
 				prevIssue = lockedPrev
 			}
 		} else {
-			issue, err = h.updateIssueWithStatusGuard(r.Context(), wsUUID, batchStatusKey, params)
+			issue, err = h.updateIssueWithStatusGuard(r.Context(), wsUUID, batchStatusKey, params, humanStatusActor)
 		}
 		if err != nil {
 			// The archive race is a property of the batch's shared target

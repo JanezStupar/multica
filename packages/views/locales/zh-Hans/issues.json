@@ -576,6 +576,7 @@
     "removed_assignee": "移除了负责人",
     "changed_assignee": "更改了负责人",
     "status_changed": "状态从 {{from}} 改为 {{to}}",
+    "human_status_decision": "选择将状态设为 {{to}}（原为 {{from}}）",
     "priority_changed": "优先级从 {{from}} 改为 {{to}}",
     "start_date_set": "开始日期设为 {{date}}",
     "start_date_removed": "移除了开始日期",
