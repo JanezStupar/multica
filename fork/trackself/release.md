@@ -1,6 +1,28 @@
 # Mica release and deployment
 
-## Current backend, web and agent CLIs: v0.5.1-janez.15
+## Current backend: v0.5.1-janez.16
+
+Deployed on 2026-10-01 from `0dcd25cd3d56a334e1c949c3852b69913b7df880`.
+Explicit member assignment now permits a fresh run after a consumed human handoff.
+Migration 597 requires the actual member caller recorded in the task snapshot,
+matching assignment audit evidence and current recipient/runtime. Creator-derived
+human attribution cannot authorize a run, including when agent audit writes fail.
+Existing acceptance, frozen/terminal, active-work, handoff and lineage fences remain.
+
+Independent Sol review and 29 final database assignment/claim/enqueue/handler checks
+passed; the exact versioned backend binary passed vulnerability scanning. The wider
+suite retained baseline-reproduced workflow failures and a fixture-residue failure;
+the owning receipt records them. Production readiness, migration readback, exact
+binary checksum, unchanged service settings and the production validator passed.
+Only backend image/version selector changed; web/agents remain `.15`.
+
+TRA-641's older queued Mika task lacks the new actual-caller proof and remains
+unclaimable. No ticket state, authority or run was changed/backfilled after the user
+reported merging its PRs. Completion does not require another agent run.
+Private-infra `infra/automation-server/multica/upgrade-v0.5.1-janez.16.md`
+owns exact artifact identities, validation limits and migration-aware recovery.
+
+## Previous backend; current web and agent CLIs: v0.5.1-janez.15
 
 Agent rollout verified on 2026-09-29 from
 `3d3938025f48ee8d6b6e93d100cc082a1f05070c`. All three Linux and both native
