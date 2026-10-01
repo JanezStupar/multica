@@ -1313,33 +1313,40 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		// from a later request against a new HEAD (TEN-356).
 		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
 	}
+	// This is execution authority from the actual mutation actor, not human
+	// attribution inherited from an issue creator or another task.
+	if actorUserID.Valid && !triggerCommentID.Valid && !rerunOfTaskID.Valid &&
+		attrEvidenceKind.String == "issue_assignment" {
+		createParams.ExplicitAssignmentActorUserID = actorUserID
+	}
 	var task db.AgentTaskQueue
 	if fireAt.Valid {
 		task, err = s.Queries.CreateDeferredChannelIssueTask(ctx, db.CreateDeferredChannelIssueTaskParams{
-			ID:                   dbid.NewV7(),
-			AgentID:              createParams.AgentID,
-			RuntimeID:            createParams.RuntimeID,
-			IssueID:              createParams.IssueID,
-			Priority:             createParams.Priority,
-			TriggerCommentID:     createParams.TriggerCommentID,
-			CoalescedCommentIds:  createParams.CoalescedCommentIds,
-			TriggerSummary:       createParams.TriggerSummary,
-			ForceFreshSession:    createParams.ForceFreshSession,
-			IsLeaderTask:         createParams.IsLeaderTask,
-			HandoffNote:          createParams.HandoffNote,
-			SquadID:              createParams.SquadID,
-			HeadSha:              createParams.HeadSha,
-			OriginatorUserID:     createParams.OriginatorUserID,
-			AccountableUserID:    createParams.AccountableUserID,
-			RuntimeMcpOverlay:    createParams.RuntimeMcpOverlay,
-			RuntimeConnectedApps: createParams.RuntimeConnectedApps,
-			OriginatorSource:     createParams.OriginatorSource,
-			DelegatedFromTaskID:  createParams.DelegatedFromTaskID,
-			RuleVersionID:        createParams.RuleVersionID,
-			RerunOfTaskID:        createParams.RerunOfTaskID,
-			TriggerEvidenceKind:  createParams.TriggerEvidenceKind,
-			TriggerEvidenceRefID: createParams.TriggerEvidenceRefID,
-			FireAt:               fireAt,
+			ID:                            dbid.NewV7(),
+			AgentID:                       createParams.AgentID,
+			RuntimeID:                     createParams.RuntimeID,
+			IssueID:                       createParams.IssueID,
+			Priority:                      createParams.Priority,
+			TriggerCommentID:              createParams.TriggerCommentID,
+			CoalescedCommentIds:           createParams.CoalescedCommentIds,
+			TriggerSummary:                createParams.TriggerSummary,
+			ForceFreshSession:             createParams.ForceFreshSession,
+			IsLeaderTask:                  createParams.IsLeaderTask,
+			HandoffNote:                   createParams.HandoffNote,
+			SquadID:                       createParams.SquadID,
+			HeadSha:                       createParams.HeadSha,
+			OriginatorUserID:              createParams.OriginatorUserID,
+			AccountableUserID:             createParams.AccountableUserID,
+			RuntimeMcpOverlay:             createParams.RuntimeMcpOverlay,
+			RuntimeConnectedApps:          createParams.RuntimeConnectedApps,
+			OriginatorSource:              createParams.OriginatorSource,
+			DelegatedFromTaskID:           createParams.DelegatedFromTaskID,
+			RuleVersionID:                 createParams.RuleVersionID,
+			RerunOfTaskID:                 createParams.RerunOfTaskID,
+			TriggerEvidenceKind:           createParams.TriggerEvidenceKind,
+			TriggerEvidenceRefID:          createParams.TriggerEvidenceRefID,
+			ExplicitAssignmentActorUserID: createParams.ExplicitAssignmentActorUserID,
+			FireAt:                        fireAt,
 		})
 	} else {
 		task, err = s.Queries.CreateAgentTask(ctx, createParams)

@@ -352,10 +352,12 @@ SELECT
     sqlc.narg(squad_id),
     CASE
         WHEN COALESCE(sqlc.narg('head_sha')::text, '') <> '' OR sqlc.narg('workflow_recovery')::jsonb IS NOT NULL
+          OR sqlc.narg('explicit_assignment_actor_user_id')::uuid IS NOT NULL
           OR workflow_comment_obligation_context($3,$1,sqlc.narg(trigger_comment_id)::uuid) IS NOT NULL
         THEN jsonb_strip_nulls(jsonb_build_object(
             'head_sha', NULLIF(COALESCE(sqlc.narg('head_sha')::text, ''), ''),
             'workflow_recovery', sqlc.narg('workflow_recovery')::jsonb,
+            'explicit_assignment_actor_user_id', sqlc.narg('explicit_assignment_actor_user_id')::uuid,
             'workflow_comment_obligation', workflow_comment_obligation_context($3,$1,sqlc.narg(trigger_comment_id)::uuid)
         ))
         ELSE NULL
@@ -402,6 +404,7 @@ SELECT
     jsonb_strip_nulls(jsonb_build_object(
         'head_sha', NULLIF(COALESCE(sqlc.narg('head_sha')::text, ''), ''),
         'channel_issue_media_pending', TRUE,
+        'explicit_assignment_actor_user_id', sqlc.narg('explicit_assignment_actor_user_id')::uuid,
         'workflow_comment_obligation', workflow_comment_obligation_context($3,$1,sqlc.narg(trigger_comment_id)::uuid)
     )),
     sqlc.narg(originator_user_id),
