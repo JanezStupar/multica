@@ -18,6 +18,8 @@ existing clients and daemons retain their versions and supported reset protocol.
 TRA-647's historical disconnected runs were not backfilled. Supported recovery
 reran Mewina from the exact latest handoff recipient and verified that the new
 Windows run retained both the explicit source and existing conversation.
+Mewina's handoff succeeded and the independent reviewer started; TRA-647 remains
+`in_review` at revision 26. Final review and product acceptance remain separate.
 Private-infra `infra/automation-server/multica/upgrade-v0.5.1-janez.17.md`
 owns exact artifacts, validation limits and migration-aware rollback.
 
