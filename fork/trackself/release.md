@@ -1,6 +1,27 @@
 # Mica release and deployment
 
-## Current backend: v0.5.1-janez.16
+## Current backend: v0.5.1-janez.17
+
+Deployed on 2026-10-02 from `27143a8bf0fd00e3b78aa3bf4f55674444378439`.
+Scheduled continuations now record their exact handoff ancestry, so subsequent
+human comments can advance the workflow without borrowing authority from a
+shared conversation ID. Migration 598 adds the server-owned source column.
+Fresh-session reset, wakeup revocation, child inputs and explicit retry/rerun
+boundaries are preserved; offline tasks retain their input receipts until claim.
+
+Independent Sol review, 49 bounded race-enabled test groups (131 unique test
+events), exact binary vulnerability scanning, production readiness, migration
+readback and the owning validator passed. Wider baseline-reproduced workflow
+failures remain outside this fix. Only backend image/version selector changed;
+existing clients and daemons retain their versions and supported reset protocol.
+
+TRA-647's historical disconnected runs were not backfilled. Supported recovery
+reran Mewina from the exact latest handoff recipient and verified that the new
+Windows run retained both the explicit source and existing conversation.
+Private-infra `infra/automation-server/multica/upgrade-v0.5.1-janez.17.md`
+owns exact artifacts, validation limits and migration-aware rollback.
+
+## Previous backend: v0.5.1-janez.16
 
 Deployed on 2026-10-01 from `0dcd25cd3d56a334e1c949c3852b69913b7df880`.
 Explicit member assignment now permits a fresh run after a consumed human handoff.
