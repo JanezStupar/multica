@@ -184,6 +184,7 @@ type AgentTaskQueue struct {
 	WorkflowPolicyVersion      pgtype.Text `json:"workflow_policy_version"`
 	CommentResumeFromTaskID    pgtype.UUID `json:"comment_resume_from_task_id"`
 	RetainedContextInvalidated bool        `json:"retained_context_invalidated"`
+	WakeupResumeFromTaskID     pgtype.UUID `json:"wakeup_resume_from_task_id"`
 }
 
 type AgentToLabel struct {

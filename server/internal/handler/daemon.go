@@ -2061,6 +2061,25 @@ func (h *Handler) finalizeClaimDelivery(
 			if err != nil {
 				return fmt.Errorf("record retained comment session source: %w", err)
 			}
+			if task.WakeupResumeFromTaskID.Valid {
+				valid, sourceErr := h.TaskService.ValidateWakeupRetainedSource(ctx, qtx, *task, task.WakeupResumeFromTaskID, response.PriorSessionID)
+				if sourceErr != nil {
+					return &service.ClaimDeliveryAuthzError{Reason: "error_wakeup_retained_context_invalid", Detail: sourceErr.Error()}
+				}
+				if !valid {
+					return &service.ClaimDeliveryAuthzError{Reason: "error_wakeup_retained_context_invalid", Detail: "wakeup retained source lost authority before delivery"}
+				}
+			}
+			if _, err := qtx.SetTaskWakeupResumeSource(ctx, db.SetTaskWakeupResumeSourceParams{
+				TaskID: task.ID, RuntimeID: task.RuntimeID, DispatchedAt: task.DispatchedAt,
+				SourceTaskID: task.WakeupResumeFromTaskID, SessionID: response.PriorSessionID,
+			}); err != nil {
+				if task.WakeupResumeFromTaskID.Valid && errors.Is(err, pgx.ErrNoRows) {
+					return &service.ClaimDeliveryAuthzError{Reason: "error_wakeup_retained_context_invalid", Detail: "wakeup retained source changed before delivery"}
+				}
+				return fmt.Errorf("record retained wakeup session source: %w", err)
+			}
+
 		}
 		return nil
 	}
@@ -2076,6 +2095,9 @@ func (h *Handler) finalizeClaimDelivery(
 	// Authorization rejected at the delivery boundary: settle through the
 	// existing failure path so the task never reaches the daemon.
 	switch authzErr.Reason {
+	case "error_wakeup_retained_context_invalid":
+		failure := h.failClaimedTaskBeforeLaunch(ctx, task, "The wakeup's retained workflow authority changed before delivery.", taskfailure.ReasonInvalidTaskIdentity, authzErr.Reason, http.StatusConflict, "wakeup retained context is unavailable")
+		return nil, failure, nil
 	case "error_agent_runtime_changed":
 		failure := h.failClaimedTaskBeforeLaunch(
 			ctx, task,
@@ -2428,6 +2450,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// A reclaimed response must select its own source, including clearing
 	// previously recorded lineage if this claim starts a fresh conversation.
 	task.CommentResumeFromTaskID = pgtype.UUID{}
+	task.WakeupResumeFromTaskID = pgtype.UUID{}
 	composioMCPEnabled := h.composioMCPAppsEnabled(r.Context())
 	if composioMCPEnabled {
 		resp.ConnectedApps = parseRuntimeConnectedAppsForClaim(task.RuntimeConnectedApps, task.ID)
@@ -3191,9 +3214,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}); err == nil && prior.SessionID.Valid {
 				if prior.RuntimeID == task.RuntimeID {
 					resp.PriorSessionID = prior.SessionID.String
-					if requestHasClientCapability(r, protocol.DaemonCapabilityRetainedContextResetV1) && !task.RetainedContextInvalidated && prior.Status == "completed" && slices.ContainsFunc(deliveredComments, func(c CoalescedCommentData) bool { return c.AuthorType == "member" }) {
+					if task.TriggerEvidenceKind.String != "issue_wakeup" && requestHasClientCapability(r, protocol.DaemonCapabilityRetainedContextResetV1) && !task.RetainedContextInvalidated && prior.Status == "completed" && slices.ContainsFunc(deliveredComments, func(c CoalescedCommentData) bool { return c.AuthorType == "member" }) {
 						task.CommentResumeFromTaskID = prior.ID
 					}
+					task.WakeupResumeFromTaskID = prior.ID
 					priorPlatformFingerprint = prior.SkillBundleFingerprint
 					priorWorkflowProfileID = prior.WorkflowProfileID
 					// Same rule as the rerun path: date the deltas from the run
@@ -3236,6 +3260,20 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 		if resp.PriorSessionID == "" {
 			task.CommentResumeFromTaskID = pgtype.UUID{}
+			task.WakeupResumeFromTaskID = pgtype.UUID{}
+		}
+
+		if !requestHasClientCapability(r, protocol.DaemonCapabilityRetainedContextResetV1) {
+			task.WakeupResumeFromTaskID = pgtype.UUID{}
+		}
+		retainedWakeup, wakeupSourceErr := h.TaskService.ValidateWakeupRetainedSource(r.Context(), h.Queries, *task, task.WakeupResumeFromTaskID, resp.PriorSessionID)
+		if wakeupSourceErr != nil {
+			return resp, nil, nil, 0, 0, h.failClaimedTaskBeforeLaunch(r.Context(), task,
+				"The wakeup cannot continue the current workflow because its retained run has no verified handoff ancestry.", taskfailure.ReasonInvalidTaskIdentity,
+				"wakeup_retained_context_invalid", http.StatusConflict, "wakeup retained context is unavailable")
+		}
+		if !retainedWakeup {
+			task.WakeupResumeFromTaskID = pgtype.UUID{}
 		}
 
 		// Both deltas, now that the resume source is known (MUL-7344).

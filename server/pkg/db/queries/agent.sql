@@ -1296,6 +1296,57 @@ WHERE current_task.id = sqlc.arg(task_id)
   )
 RETURNING current_task.id;
 
+-- name: HasAuthenticatedWakeupTaskProvenance :one
+-- Context alone cannot assert wakeup authority: dispatch must have consumed
+-- a matching receipt for this exact task and pinned its trigger identity.
+SELECT EXISTS (
+    SELECT 1 FROM issue_wakeup w
+    JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
+    WHERE w.id::text = sqlc.arg(wakeup_id)::text
+      AND w.revision = sqlc.arg(wakeup_revision)::bigint
+      AND w.disabled_at IS NULL AND w.handoff IS NULL AND w.child_issue_id IS NULL
+      AND w.issue_id = sqlc.arg(issue_id)::uuid AND w.agent_id = sqlc.arg(agent_id)::uuid
+      AND w.created_by = sqlc.arg(originator_user_id)::uuid
+      AND w.id = sqlc.arg(trigger_evidence_ref_id)::uuid
+      AND sqlc.arg(trigger_evidence_kind)::text = 'issue_wakeup'
+      AND (NOT sqlc.arg(require_receipt)::boolean OR EXISTS (
+        SELECT 1 FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.revision=w.revision
+          AND r.task_id=sqlc.arg(task_id)::uuid AND r.processed_at IS NOT NULL
+      ))
+)::boolean;
+
+-- name: SetTaskWakeupResumeSource :one
+UPDATE agent_task_queue current_task
+SET wakeup_resume_from_task_id = sqlc.narg(source_task_id)::uuid
+WHERE current_task.id = sqlc.arg(task_id)
+  AND current_task.runtime_id = sqlc.arg(runtime_id)
+  AND current_task.status = 'dispatched'
+  AND current_task.dispatched_at = sqlc.arg(dispatched_at)
+  AND (
+    sqlc.narg(source_task_id)::uuid IS NULL
+    OR (
+      NOT current_task.force_fresh_session AND NOT current_task.retained_context_invalidated
+      AND EXISTS (
+        SELECT 1 FROM agent_task_queue source_task
+        WHERE source_task.id = sqlc.narg(source_task_id)::uuid AND source_task.id <> current_task.id
+          AND source_task.issue_id = current_task.issue_id AND source_task.agent_id = current_task.agent_id
+          AND source_task.runtime_id = current_task.runtime_id AND source_task.status = 'completed'
+          AND source_task.session_id = sqlc.arg(session_id)::text
+      )
+      AND EXISTS (
+        SELECT 1 FROM issue_wakeup w JOIN issue_wakeup_receipt r ON r.wakeup_id=w.id AND r.revision=w.revision
+        WHERE w.id::text=current_task.context->>'wakeup_id'
+          AND w.revision::text=current_task.context->>'wakeup_revision'
+          AND w.disabled_at IS NULL AND w.handoff IS NULL AND w.child_issue_id IS NULL
+          AND w.issue_id=current_task.issue_id AND w.agent_id=current_task.agent_id
+          AND w.created_by=current_task.originator_user_id
+          AND current_task.trigger_evidence_kind='issue_wakeup' AND current_task.trigger_evidence_ref_id=w.id
+          AND r.task_id=current_task.id AND r.processed_at IS NOT NULL
+      )
+    )
+  )
+RETURNING current_task.id;
+
 -- name: LockHandoffSourceAgent :one
 -- Stabilize the outgoing task's runtime and authority through handoff commit.
 -- NOWAIT avoids waiting in issue/task -> agent order against agent updates.
@@ -1309,6 +1360,7 @@ FOR SHARE NOWAIT;
 UPDATE agent_task_queue
 SET retained_context_invalidated = true,
     comment_resume_from_task_id = NULL,
+    wakeup_resume_from_task_id = NULL,
     session_id = NULL
 WHERE id = sqlc.arg(task_id) AND runtime_id = sqlc.arg(runtime_id)
   AND dispatched_at = sqlc.arg(dispatched_at) AND status = 'running'

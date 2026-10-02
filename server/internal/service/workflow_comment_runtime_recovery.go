@@ -182,7 +182,7 @@ func (s *TaskService) ReplaceUnclaimedWorkflowCommentRuntime(ctx context.Context
 	// profile already pinned on the unclaimed plan. It is not a manual rerun.
 	if !coalesced {
 		if _, err := tx.Exec(ctx, `UPDATE agent_task_queue SET force_fresh_session=true,
-		 rerun_of_task_id=NULL,retry_of_task_id=NULL,comment_resume_from_task_id=NULL,
+		 rerun_of_task_id=NULL,retry_of_task_id=NULL,comment_resume_from_task_id=NULL,wakeup_resume_from_task_id=NULL,
 		 workflow_profile_id=$2,workflow_policy_version=$3 WHERE id=$1`, replacement.ID,
 			profileID, profileVersion); err != nil {
 			return false, err

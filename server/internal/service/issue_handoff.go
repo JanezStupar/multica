@@ -450,8 +450,8 @@ func handoffRecipientMatches(ctx context.Context, q *db.Queries, w db.IssueWakeu
 	}
 }
 
-// Ordinary comments may continue a handoff recipient's retained provider
-// session. Only the source selected and recorded by server claim delivery is
+// Ordinary comments and authenticated wakeups may continue a handoff's retained
+// provider session. Only the source recorded by server claim delivery is
 // authority; identical context keys, wakeup markers or client session IDs are
 // insufficient. Each completed turn must preserve the exact scope and session.
 func handoffCommentContinuationMatches(ctx context.Context, q *db.Queries, w db.IssueWakeup, task db.AgentTaskQueue) bool {
@@ -480,8 +480,26 @@ func handoffCommentContinuationMatches(ctx context.Context, q *db.Queries, w db.
 		if task.RetainedContextInvalidated {
 			return false
 		}
-		parent := task.CommentResumeFromTaskID
-		if parent.Valid {
+		parent := pgtype.UUID{}
+		if task.WakeupResumeFromTaskID.Valid {
+			if task.ForceFreshSession {
+				return false
+			}
+			valid, e := authenticatedWakeupTask(ctx, q, task, false)
+			if e != nil || !valid {
+				return false
+			}
+			if e = (&IssueWakeupService{Tasks: &TaskService{Queries: q}}).checkClaimWithQueries(ctx, q, task); e != nil {
+				return false
+			}
+			parent = task.WakeupResumeFromTaskID
+		} else if task.CommentResumeFromTaskID.Valid {
+			// A wakeup parent comment selects a delivery thread, never separate
+			// human authority that can bypass revocation of its configuration.
+			if task.TriggerEvidenceKind.String == "issue_wakeup" {
+				return false
+			}
+			parent = task.CommentResumeFromTaskID
 			if task.ForceFreshSession {
 				return false
 			}
@@ -511,7 +529,7 @@ func handoffCommentContinuationMatches(ctx context.Context, q *db.Queries, w db.
 			}
 		}
 		prior, e := q.GetAgentTask(ctx, parent)
-		if e != nil || prior.SessionID != task.SessionID || (task.CommentResumeFromTaskID.Valid && prior.Status != "completed") {
+		if e != nil || prior.SessionID != task.SessionID || ((task.CommentResumeFromTaskID.Valid || task.WakeupResumeFromTaskID.Valid) && prior.Status != "completed") {
 			return false
 		}
 		task = prior

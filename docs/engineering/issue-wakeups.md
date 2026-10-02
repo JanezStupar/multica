@@ -195,6 +195,12 @@ starting a final run on the closed issue.
   thread stays in `trigger_comment_id`. This preserves old retry SQL during a
   rolling server upgrade. Comment/assign coalescing excludes wakeup inputs, and
   the existing issue/agent execution fence still serializes actual runs.
+- A scheduled run that resumes the current workflow handoff records its exact
+  completed source at claim delivery. Its trigger identity and consumed receipt
+  must match the stored wakeup configuration. Later comment continuations can
+  follow that recorded link back to the handoff recipient; sharing a provider
+  session ID alone does not grant permission to advance the workflow. A fresh
+  session clears the link, and disabling or replacing the wakeup revokes it.
 - Issue/workspace deletion explicitly removes configurations and receipts in
   the application deletion graph. No foreign keys or cascading relationships
   are added.
@@ -203,6 +209,8 @@ starting a final run on the closed issue.
 
 Apply additive migrations before starting the new server. Existing pending-task
 indexes are not rebuilt or dropped, and historical queue rows are not rewritten.
+Migration 598 adds the scheduled continuation source. It does not infer ancestry
+for historical runs that reused a conversation without recording a source.
 Deploy the updated CLI and daemon with the server to recognize the wakeup command
 and per-turn prompt. Before rollback, disable/drain wakeups; do not remove their
 configuration tables while tasks still reference them.
@@ -329,7 +337,9 @@ instruction to read source state. This is a wakeup notification, not an immutabl
 event archive or a promise to execute once per source event. Legacy pending
 receipts remain readable and drain in batches of 100. Processed receipts become
 eligible for deletion after seven days, with up to 1,000 deleted per scheduler
-tick; backlog can extend that retention. Pending inputs are never age-expired.
+tick; backlog can extend that retention. Pending inputs and consumed inputs whose
+tasks are still queued, deferred or dispatched are never age-expired. Claim
+delivery needs the consumed receipt to verify a scheduled continuation's source.
 Run history and source comments are unaffected. Receipt keys suppress retained
 first/latest fact duplicates; they are not a permanent deduplication ledger for
 all intermediate coalesced facts.

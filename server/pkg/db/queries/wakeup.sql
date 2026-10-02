@@ -105,12 +105,15 @@ ORDER BY w.updated_at,w.id LIMIT 100;
 SELECT * FROM issue_wakeup_receipt WHERE wakeup_id= @wakeup_id AND revision= @revision AND processed_at IS NULL ORDER BY created_at,id LIMIT 100 FOR UPDATE;
 
 -- name: DeleteExpiredWakeupReceipts :execrows
--- Pending inputs are never expired. Bound work and avoid waiting on dispatch.
+-- Pending inputs and consumed inputs awaiting their first delivery are never
+-- expired. Bound work and avoid waiting on dispatch.
 -- MATERIALIZED evaluates the batch once. As an IN subquery, a nested-loop plan
 -- rescans it per outer row, skips the rows this DELETE already removed, and
 -- slides the LIMIT window until every expired row is gone.
 WITH batch AS MATERIALIZED (
  SELECT expired.id FROM issue_wakeup_receipt expired WHERE expired.processed_at < @cutoff
+ AND NOT EXISTS (SELECT 1 FROM agent_task_queue task WHERE task.id=expired.task_id
+   AND task.status IN ('queued','deferred','dispatched'))
  ORDER BY expired.processed_at,expired.id LIMIT 1000 FOR UPDATE SKIP LOCKED
 )
 DELETE FROM issue_wakeup_receipt r USING batch WHERE r.id=batch.id;

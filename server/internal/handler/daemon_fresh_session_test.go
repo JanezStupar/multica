@@ -23,7 +23,7 @@ func TestBeginFreshTaskSessionClearsRetainedLineageBeforeLatePin(t *testing.T) {
 		"session_id": "abandoned-session", "completed_at": testutil.Raw("now()-interval '1 minute'"),
 	})
 	claimCommentDeliveryFixture(t, f, protocol.DaemonCapabilityCoalescedCommentsV1+","+protocol.DaemonCapabilityRetainedContextResetV1)
-	dbfx.Exec(t, "UPDATE agent_task_queue SET status='running',session_id='abandoned-session' WHERE id=$1", f.taskID)
+	dbfx.Exec(t, "UPDATE agent_task_queue SET status='running',session_id='abandoned-session',wakeup_resume_from_task_id=$2 WHERE id=$1", f.taskID, source)
 	before, err := testHandler.Queries.GetAgentTask(ctx, parseUUID(f.taskID))
 	if err != nil {
 		t.Fatal(err)
@@ -40,13 +40,13 @@ func TestBeginFreshTaskSessionClearsRetainedLineageBeforeLatePin(t *testing.T) {
 		t.Fatalf("fresh reset: %d: %s", w.Code, w.Body.String())
 	}
 	cleared, err := testHandler.Queries.GetAgentTask(ctx, before.ID)
-	if err != nil || !cleared.RetainedContextInvalidated || cleared.CommentResumeFromTaskID.Valid || cleared.SessionID.Valid || cleared.Status != "running" {
+	if err != nil || !cleared.RetainedContextInvalidated || cleared.CommentResumeFromTaskID.Valid || cleared.WakeupResumeFromTaskID.Valid || cleared.SessionID.Valid || cleared.Status != "running" {
 		t.Fatalf("fresh reset did not synchronously revoke ancestry: task=%+v err=%v", cleared, err)
 	}
 	// An old-phase straggler must not occupy the fresh session slot.
 	pinTaskSessionViaAPI(t, f.taskID, "fresh-fallback", "abandoned-session", "")
 	after, err := testHandler.Queries.GetAgentTask(ctx, before.ID)
-	if err != nil || !after.RetainedContextInvalidated || after.CommentResumeFromTaskID.Valid || after.SessionID.Valid || after.Status != "running" {
+	if err != nil || !after.RetainedContextInvalidated || after.CommentResumeFromTaskID.Valid || after.WakeupResumeFromTaskID.Valid || after.SessionID.Valid || after.Status != "running" {
 		t.Fatalf("late old pin occupied the fresh context slot: task=%+v err=%v", after, err)
 	}
 	w = httptest.NewRecorder()
